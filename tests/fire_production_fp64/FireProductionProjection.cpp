@@ -4,6 +4,13 @@
 //
 //  FireProductionProjection.cpp - strict-binary32 P2 projection oracle
 //
+//  CPU implementation of the staggered MAC variable-density pressure
+//  projection using geometric V-cycle multigrid (2/3-damped Jacobi,
+//  cell-average restriction, trilinear prolongation with 0.75 open-BC
+//  damping, Blelloch power-of-2 nullspace mean removal). Matches the
+//  Metal kernel arithmetic in FireProductionProjectionMac.mm stage-for-
+//  stage across standalone, resident-physical, and restoration modes.
+//
 //  License Information: Please see the attached LICENSE.TXT file
 //
 //////////////////////////////////////////////////////////////////////
@@ -23,6 +30,8 @@ namespace RISEFireProductionFP64
 {
 	namespace
 	{
+		// --- Grid indexing, working-set certification, and Blelloch nullspace sum ---
+
 		struct Level
 		{
 			std::size_t nx,ny,nz;
@@ -210,6 +219,11 @@ namespace RISEFireProductionFP64
 				request.bottomFuelMask[y*request.shape.nx+x]!=0u;
 		}
 
+		// --- Variable-density MAC Poisson operator and multigrid V-cycle ---
+
+		// Arithmetic mean of adjacent cell densities at a staggered MAC face;
+		// wraps across periodic seams, averages with ambient at pressure-open
+		// boundaries, and copies the interior cell density at walls.
 		double StoredFaceDensity( const Level& level,
 			const std::array<FireProductionProjectionBoundary,6>& boundary,
 			double ambientDensity, unsigned int axis,
@@ -242,6 +256,9 @@ namespace RISEFireProductionFP64
 				ArithmeticMean(interior,ambientDensity):interior;
 		}
 
+		// Builds per-face beta = 1/rho_face (0 on solid walls) and cell diagonals
+		// of L(p) = -div(beta grad p); pressure-open Dirichlet faces contribute
+		// 2*beta/dx^2 via ghost reflection p_ghost = 2*p_b - p_interior.
 		void BuildLevelCoefficients( Level& level,
 			const std::array<FireProductionProjectionBoundary,6>& boundary,
 			double ambientDensity )
@@ -327,6 +344,9 @@ namespace RISEFireProductionFP64
 				}
 		}
 
+		// Applies the 7-point variable-density Poisson operator L(p) = -div(beta grad p)
+		// with homogeneous Dirichlet at pressure-open boundaries (inhomogeneous p_b
+		// lives in the fine RHS) and zero flux on walls.
 		void ApplyOperator( const Level& level,
 			const std::array<FireProductionProjectionBoundary,6>& boundary,
 			const std::vector<double>& pressure, std::vector<double>& output )
@@ -377,6 +397,8 @@ namespace RISEFireProductionFP64
 			},nx*ny>=4096u?1u:(4096u+nx*ny-1u)/(nx*ny));
 		}
 
+		// Weighted Jacobi smoother (omega = 2/3); removes pressure mean after each
+		// sweep when all 6 boundaries are wall/periodic (nullspace mode).
 		void Smooth( Level& level,
 			const std::array<FireProductionProjectionBoundary,6>& boundary,
 			unsigned int sweeps, bool nullspace, std::uint64_t& sweepCounter )
@@ -455,6 +477,9 @@ namespace RISEFireProductionFP64
 			},fine.nx*fine.ny>=4096u?1u:(4096u+fine.nx*fine.ny-1u)/(fine.nx*fine.ny));
 		}
 
+		// Recursive geometric V-cycle: 3 pre-sweeps, residual restriction, zero-init
+		// coarse solve (32 sweeps at coarsest <= 4^3 level), trilinear prolongation
+		// (0.75-damped with open BCs to preserve stability), and 3 post-sweeps.
 		void VCycle( std::vector<Level>& hierarchy, std::size_t levelIndex,
 			const std::array<FireProductionProjectionBoundary,6>& boundary, bool nullspace,
 			std::uint64_t& sweepCounter )
@@ -487,6 +512,8 @@ namespace RISEFireProductionFP64
 				request.shape.ny,axis,hx,hy,hz)]);
 		}
 	}
+
+	// --- Public working-set queries, residual bands, and request validation ---
 
 	std::size_t FireProductionProjectionFaceCount(
 		const FireProductionProjectionShape& shape, unsigned int axis )
@@ -704,6 +731,8 @@ namespace RISEFireProductionFP64
 		return true;
 	}
 
+	// --- Core CPU projection driver (standalone, resident-physical, restoration) ---
+
 	enum CPUProjectionExecution
 	{
 		CPUProjectionStandalone,
@@ -711,6 +740,12 @@ namespace RISEFireProductionFP64
 		CPUProjectionRestoration
 	};
 
+	// Full MAC projection pipeline matching FireProductionProjectionMac.mm:
+	// (1) fine face densities & provisional velocities, (2) open-boundary inflow
+	// classification & Bernoulli dynamic head -0.5*rho_amb*|u|^2, (3) Poisson RHS
+	// and multigrid hierarchy, (4) V-cycles (+ optional fast-mode early stop),
+	// (5) pressure-gradient face correction (preserving burner/wall BCs and
+	// periodic seam parity), (6) post-residual, complementarity, and band checks.
 	bool ProjectFireProductionCPUImplementation( const FireProductionProjectionRequest& request,
 		CPUProjectionExecution execution,FireProductionProjectionResult& result,
 		std::string* error )

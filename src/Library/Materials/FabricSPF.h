@@ -1,137 +1,27 @@
 //////////////////////////////////////////////////////////////////////
 //
 //  FabricSPF.h - Importance sampler for `fabric_material`
-//    (docs/CLOTH_FABRIC_DESIGN.md 9.2, "sample one lobe, then price the
-//    sample against the FULL mixture").
+//  (docs/CLOTH_FABRIC_DESIGN.md §9.2: sample one lobe, reprice against
+//  the full mixture).
 //
-//  MIXTURE SAMPLING, MIXTURE PDF, ONE ESTIMATOR -- CoatedSPF's shape,
-//  with a different selection weight and a different top lobe.
-//
-//  The selection weight is the sheen lobe's own DIRECTIONAL ALBEDO,
-//
-//      w  =  max3(sheenColor) * E(alpha, n.v)        (clamped to [0,1])
-//
-//  so the branch probability tracks the actual energy split rather than
-//  being an arbitrary constant.  The density is the real two-term
-//  mixture, evaluated for an ARBITRARY wo with no memory of how
-//  anything was sampled:
-//
-//      q(wo)  =  w * (cos(wo)/pi)  +  (1 - w) * q_base(wo)
-//
-//  and the emitted weight is the FULL closed form over that density:
-//
-//      kray   =  f_fabric(wi, wo) * cos(wo) / q(wo)
-//      pdf    =  q(wo)
-//
-//  DO NOT DIVIDE kray BY THE SELECTION PROBABILITY ALONE.  That
-//  convention is correct only for DELTA lobes, where `Pdf()` returns 0
-//  by contract (ISPF.h:194) and MIS routes around the density entirely
-//  through `GetSpecularInfo`.  NEITHER FABRIC LOBE IS DELTA: Charlie
-//  sheen and every allowlisted substrate have full-hemisphere support,
-//  so a given `wo` is generically reachable from BOTH branches and the
-//  density Scatter must report is the whole mixture.  Reporting
-//  `w * pdf_sheen(wo)` for a sheen-branch sample would disagree with an
-//  independent `Pdf(ri, wo)` call for that same direction whenever
-//  `q_base(wo) > 0` -- precisely the Scatter<->Pdf mismatch
-//  tests/SPFPdfConsistencyTest.cpp exists to catch, and which 9.9
-//  gate 6 commits this phase to passing.
-//
-//  SHEEN BRANCH: COSINE-HEMISPHERE, exactly as SheenSPF does today
-//  (SheenSPF.cpp:73-74).  9.4 withdrew the D-importance-sampling
-//  proposal: Charlie has no published VNDF, its mass sits near grazing
-//  half-vectors by construction, and reflecting `v` about such an `h`
-//  puts `wo` below the horizon for a substantial fraction of draws --
-//  so the accepted-sample density carries a view-dependent acceptance
-//  factor C(v) < 1 with no closed form, which fails the shipped pdf
-//  harness's integral (Part 2) and chi-squared (Part 3) sub-tests
-//  outright.  Cosine sampling is horizon-safe, integrates to 1 by
-//  construction, and its density is EXACT -- so the mixture above is
-//  exact too, and MIS against NEE carries the variance.
-//
-//  SUBSTRATE BRANCH: the base SPF chooses the direction, handed the
-//  WEAVE-ROTATED hit record (9.5) -- the same record FabricBRDF::value
-//  and this class's own `Pdf` use, because a Scatter that samples in a
-//  rotated frame while Pdf evaluates in the unrotated one is the same
-//  mismatch by another route.
-//
-//  GEOMETRIC-HORIZON GATE, mirrored between sampler and density, so a
-//  direction Scatter can no longer emit carries zero density.  A
-//  GlintModifier tilt can otherwise send a continuation ray into the
-//  solid (SheenSPF.cpp:86-99).
-//
-//  LOBE BUDGET.  This SPF emits at most ONE ray per Scatter call: the
-//  sheen branch adds one, and every material on the substrate allowlist
-//  (Lambertian, Oren-Nayar, GGX, weave) emits at most one itself.  The
-//  loop below still rewrites EVERY ray the base added, so no stale
-//  base-weight ray can escape if that ever changes.
-//
-//  ============================================================
-//  R8 P1.1 -- A SUBSTRATE THAT TRANSMITS
-//  (docs/CLOTH_FABRIC_DESIGN.md 15 debt 22)
-//  ============================================================
-//
-//  When the base reports `IMaterial::ScattersFullSphere()` -- today only
-//  a `weave_material` under `transmission thin` -- its `Scatter` can
-//  return TWO kinds of ray this class used to throw away:
-//
-//    1. A CONTINUUM back-face ray (`eRayTranslucent`, `cos(wo) < 0`).
-//       Repriced exactly as every reflect-side sample is, against the
-//       full mixture, with `|cos(wo)|` in place of `cos(wo)`:
-//
-//           q(wo)  =  (1 - w) * q_base(wo)          [wo below]
-//           kray   =  f_fabric(wi, wo) * |cos(wo)| / q(wo)
-//
-//       The sheen arm is absent below the horizon because the Charlie
-//       lobe is a cosine hemisphere about the ray-facing normal and can
-//       never draw there.  `Pdf()` reports the same expression, so
-//       cross-validation stays exact.
-//
-//    2. A DELTA ray (the gap pass-through, `isDelta = true`,
-//       `pdf = 1`).  Its convention is PRESERVED, not converted: only
-//       `kray` is repriced, by the two SINGLE-CROSSING sheen arms over
-//       this branch's own selection probability `(1 - w)`.  It does NOT
-//       carry `BaseScaling`'s `1/(1 - m*EhatMean)` recycling factor --
-//       a measure-zero direction receives none of a diffusely
-//       redistributed series -- so the wrapper can only ATTENUATE an
-//       aperture, never brighten it.  See the long note at the site in
-//       FabricSPF.cpp for the full argument, for why the two factors
-//       are algebraically one, and why it is still written as a
-//       quotient.
-//
-//  THE CONTINUUM DENSITY THEN INTEGRATES TO `w + (1 - w) * S` over the
-//  SPHERE, where `S` is the substrate's own continuum share (`1 - gap`
-//  for a thin weave).  The missing `(1 - w) * (1 - S)` is precisely the
-//  mass the substrate's delta lobe took, which `Pdf()` excludes by
-//  contract -- the same convention `WeaveSPF` and `DielectricSPF` use.
-//  SPFPdfConsistencyTest's full-sphere block asserts that number.
-//
-//  A SUBSTRATE THAT DOES NOT TRANSMIT IS UNTOUCHED: every branch above
-//  is gated on `FabricBRDF::BaseScattersFullSphere()`, and with it false
-//  `PdfWithParams` returns the committed `cosWo <= 0 -> 0` and the
-//  substrate can produce neither ray kind.
-//
-//  NOT DELTA ITSELF, NO GetSpecularInfo OVERRIDE.  Neither of THIS
-//  class's own lobes is a delta distribution, and no allowlisted
-//  substrate overrides `GetSpecularInfo` either (`WeaveSPF` deliberately
-//  does not report its gap lobe there), so the ISPF default is the right
-//  answer for the wrapper too; SMS correctly ignores fabric entirely, on
-//  hair's precedent.  See FabricMaterial.h.
-//
-//  `EvaluateKrayNM` ONLY FOR THE SUBSTRATE'S DELTA PASS-THROUGH (DL-329,
-//  2026-10-02).  Every CONTINUUM ray still declines, deliberately --
-//  CoatedSPF.h point 3's argument transfers verbatim: the ISPF default
-//  (-1) routes PathTracingIntegrator to `valueNM * cos / pS->pdf`, i.e.
-//  the pdf stored ON the sampled ray, the true HERO-wavelength mixture
-//  density that actually drew it; an override could only recompute the
-//  density at the COMPANION wavelength, which differs the moment any
-//  substrate painter is wavelength-dependent -- dividing by the wrong
-//  density is a bias, not an approximation.  A thin weave's DELTA gap
-//  ray is not in the aggregate BSDF at all, so that fallback priced it
-//  as ~0 (WeaveSPF.h); this override re-prices it exactly as
-//  `ScatterImpl`'s delta branch does -- the base's own companion kray
-//  times the fuzz layer's two crossings over `1 - w` -- and since
-//  `alpha`, `m` and therefore `w` are achromatic by construction
-//  (FabricBRDF.h), that is exact at every companion wavelength.
+//  Estimator & load-bearing invariants:
+//  - Selection weight w = clamp(max3(sheenColor) * Ehat(alpha, n.v), 0, 1);
+//    mixture density q(wo) = w * (cos(wo)/pi) + (1 - w) * q_base(wo),
+//    emitted kray = f_fabric * |cos(wo)| / q(wo), pdf = q(wo). Never
+//    divide continuum samples by the branch selection probability alone.
+//  - Sheen branch: cosine-hemisphere (horizon-safe, exact density; Charlie
+//    D-sampling lacks a closed-form horizon-acceptance factor).
+//  - Substrate branch: delegates to `baseSPF` with `WeaveRotatedRI` (same
+//    frame as FabricBRDF::value and Pdf). Geometric-horizon gate is mirrored
+//    between Scatter and Pdf. Emits at most one ray per Scatter.
+//  - Transmissive substrate (`BaseScattersFullSphere()`): continuum back-face
+//    rays reprice with q(wo) = (1 - w) * q_base(wo) and |cos(wo)|; delta gap
+//    rays preserve isDelta = true, pdf = 1 and reprice kray by two single-
+//    crossing sheen arms over (1 - w) (no recycling denominator for a
+//    measure-zero direction). Continuum integral over sphere = w + (1-w)*S.
+//  - No `GetSpecularInfo` (SMS ignores fabric). `EvaluateKrayNM` handles
+//    ONLY a substrate delta pass-through and returns -1 for continuum rays
+//    so HWSS divides by the stored hero `pS->pdf`.
 //
 //  Author: Aravind Krishnaswamy
 //  Tabs: 4
@@ -154,15 +44,8 @@ namespace RISE
 		class FabricSPF : public virtual ISPF, public virtual Reference
 		{
 		public:
-			//! @param brdf     the closed form this sampler is the
-			//!                 importance sampler FOR.  Held by
-			//!                 reference (addref'd) so `Scatter` and
-			//!                 `value` can never disagree, and so the
-			//!                 editor's rebinds reach both through one
-			//!                 copy of the state.
-			//! @param baseSPF  the substrate's own sampler; supplies the
-			//!                 substrate branch's directions and its half
-			//!                 of the mixture density.
+			//! @param brdf     Addref'd FabricBRDF (shared state with value/rebinds).
+			//! @param baseSPF  Substrate sampler supplying base directions and PDF.
 			FabricSPF( const FabricBRDF& brdf, const ISPF& baseSPF );
 
 			void Scatter(
@@ -206,10 +89,8 @@ namespace RISE
 				const Scalar nm
 				) const;
 
-			//! DL-329: the companion-wavelength kray of a DELTA ray the
-			//! substrate emitted (a thin weave's gap, `eRayRefraction`), as
-			//! `ScatterImpl`'s delta branch re-prices it.  -1 (decline) for
-			//! every continuum ray and whenever the base declines.
+			//! Companion-wavelength kray for a substrate delta pass-through ray
+			//! (`eRayRefraction`); returns -1 for all continuum rays.
 			Scalar EvaluateKrayNM(
 				const RayIntersectionGeometric& ri,
 				const Vector3& outDir,
@@ -245,20 +126,8 @@ namespace RISE
 				const IORStack& ior_stack
 				) const;
 
-			//! The mixture density with the parameters and the rotated
-			//! record ALREADY resolved.
-			//!
-			//! `ScatterImpl` needs this density up to twice per emitted
-			//! ray, and the BRDF value once, all at the same shading
-			//! point.  Routing each through the public entry points
-			//! re-sampled three painters and rebuilt a ~600-byte
-			//! `RayIntersectionGeometric` three to four times per
-			//! `Scatter` call -- on the renderer's hottest path, and
-			//! precisely for the scenes that set `weave_rotation` (the
-			//! denim / silk / satin presets), since a zero angle takes
-			//! WeaveRotatedRI's no-copy fast path.  Correctness was never
-			//! affected -- painters are deterministic -- but it was ~4x
-			//! the layered-material overhead CoatedSPF pays.
+			//! Mixture density with pre-resolved params and weave-rotated RI
+			//! (avoids re-sampling painters and copying RI on the hot Scatter path).
 			Scalar PdfWithParams(
 				const RayIntersectionGeometric& ri,
 				const Vector3& wo,
@@ -268,13 +137,8 @@ namespace RISE
 				const IORStack& ior_stack
 				) const;
 
-			//! Shared body of DeltaPassThroughTransmittance{,NM}: the
-			//! SCALAR factor ScatterImpl's delta branch multiplies the
-			//! substrate's delta kray by, times this branch's own
-			//! probability -- i.e. the expected re-pricing.  Writes the
-			//! weave rotation the substrate must be queried under (the
-			//! record ScatterImpl hands the base sampler) into
-			//! @a weaveAngleOut.  0 wherever ScatterImpl emits nothing.
+			//! Expected scalar re-pricing factor for a substrate delta pass-through
+			//! ray; writes the substrate's weave rotation into `weaveAngleOut`.
 			Scalar DeltaPassThroughScale(
 				const RayIntersectionGeometric& ri,
 				const Scalar nm,

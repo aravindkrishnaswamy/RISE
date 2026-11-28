@@ -1568,6 +1568,7 @@ namespace
 			{ "exr_painter",         "file" },
 			{ "tiff_painter",        "file" },
 			{ "datadriven_material", "filename" },
+			{ "hylios_skin_material", "response_asset" },   // HyLIoS P5: baked_local needs its .hylios asset
 		};
 		for( const FileNeeded& f : kFileNeeded )
 		{

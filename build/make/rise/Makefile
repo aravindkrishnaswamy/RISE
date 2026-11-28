@@ -223,17 +223,24 @@ librise : $(LIBRISE_A)
 #
 # TESTS_LINK_LTO keeps the old LTO build for the tests whose results depend
 # on LTO code generation: SSSNearUnityFresnelTest (last-bit compensated-
-# arithmetic oracle sensitive to cross-TU FMA), FireSimulationSolverTest (an
-# r80 recorded cycling-state replay), and FireProductionSolverTest (a pinned
-# r83 table-package digest).  All other tests link against the non-LTO
-# librise_test.a archive.
+# arithmetic oracle sensitive to cross-TU FMA) and FireSimulationSolverTest
+# (the reference fire simulator's unit tests: its r80 cycling-state replay and
+# several roundoff gates hold only for fast-math code with LTO inlining, see
+# docs/BUILD_FLAGS.md section 8).  All other tests link against the non-LTO
+# librise_test.a archive.  (FireProductionSolverTest left the list at fire
+# solver version 4: its r83 table-package digest is now the strict build's,
+# the same in every LTO mode.)
 # `make TEST_LTO=1 tests` links every test against the LTO library instead,
 # for checking something that depends on LTO code generation (run the suite
 # that way with `TEST_LTO=1 ./run_all_tests.sh`).  The mode is recorded in
 # $(TEST_MODE_STAMP), so the next make that builds tests after a switch
 # rebuilds them; dry runs leave the record alone (but see the stamp rule for
 # -t), and `clean` deletes it.
-TESTS_LINK_LTO = SSSNearUnityFresnelTest FireSimulationSolverTest FireProductionSolverTest
+FIRE_ADJACENT_STRICT_SRCS = Utilities/FireOptics.cpp Utilities/FireSimulationRecords.cpp \
+	Utilities/FireProductionTables.cpp Utilities/FireSequence.cpp Utilities/FireSequenceCache.cpp \
+	Simulation/Fire/FireParameterSchema.cpp
+FIRE_ADJACENT_STRICT_OBJS = $(addprefix $(PATHLIBRARY), $(FIRE_ADJACENT_STRICT_SRCS:.cpp=.o))
+TESTS_LINK_LTO = SSSNearUnityFresnelTest FireSimulationSolverTest
 
 ifneq ($(filter -flto%,$(CPPFLAGS) $(CXXFLAGS)),)
 ifeq ($(filter-out 0,$(strip $(TEST_LTO))),)
@@ -293,6 +300,8 @@ TEST_SAFE_FP32_OBJS += $(addprefix $(TESTOBJ_DIR)src/Library/, Simulation/Simula
 # M7: the liquid solver (strict IEEE arithmetic: thread-count-independent, reproducible checkpoints and evidence).
 TEST_SAFE_FP32_OBJS += $(addprefix $(TESTOBJ_DIR)src/Library/Simulation/Liquid/, \
 	LiquidGrid.o LiquidLevelSet.o LiquidFlow.o LiquidBodies.o LiquidViscosity.o LiquidSheets.o LiquidModel.o LiquidValidation.o LiquidSolver.o)
+# Fire solver version 4: the fire tables, records, optics, sequence, cache and schema sources.
+TEST_SAFE_FP32_OBJS += $(addprefix $(TESTOBJ_DIR)src/Library/, $(FIRE_ADJACENT_STRICT_SRCS:.cpp=.o))
 # HYLIOS compensated geometry, certified overlap and normalized surface laws require strict arithmetic.
 TEST_SAFE_FP32_OBJS += $(addprefix $(TESTOBJ_DIR)src/Library/Materials/HyLIoS/, \
 	HyLIoSParticleGeometry.o HyLIoSParticleOverlap.o HyLIoSComplexLayout.o HyLIoSSurfaceBoundary.o HyLIoSLocalBake.o HyLIoSSkinMaterial.o HyLIoSReciprocalBoundary.o HyLIoSSpatialGeometry.o)
@@ -301,7 +310,7 @@ TEST_SAFE_FP32_OBJS += $(TESTOBJ_DIR)src/Library/Rendering/BeautyMoments.o \
 	$(TESTOBJ_DIR)src/Library/Rendering/HyperspectralRadiometricRasterizer.o
 TEST_SAFE_FP32_MM_OBJS = $(addprefix $(TESTOBJ_DIR)src/Library/Utilities/, \
 	FireProductionAdvectionMac.o FireProductionProjectionMac.o \
-	FireProductionForceMac.o)
+	FireProductionForceMac.o FireProductionComputeMac.o)
 
 $(filter $(OBJTESTLIB),$(TEST_SAFE_FP32_OBJS)) : $(TESTOBJ_DIR)%.o : ../../../%.cpp
 	@mkdir -p $(dir $@)
@@ -476,6 +485,12 @@ $(PATHTESTS)FireProductionCalibrationTest.o : $(PATHTESTS)FireProductionCalibrat
 $(PATHTESTS)FireSequenceTest.o : $(PATHTESTS)FireSequenceTest.cpp
 	@echo Compiling strict calibration owner: $<
 	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
+
+# Fire solver version 4: the optics test's fixture mirror of FireOptics' PCHIP enclosure
+# arithmetic compiles strict like FireOptics itself (its enclosures are one ulp wide).
+$(PATHTESTS)FireOpticsPresetTest.o : $(PATHTESTS)FireOpticsPresetTest.cpp $(TEST_MODE_STAMP)
+	@echo "Compiling (strict fire optics mirror): $<"
+	@$(CXX) $(TEST_CPPFLAGS) $(filter-out -ffast-math,$(TEST_CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
 
 # The internal geometry-sum regression includes its strict implementation TU.
 $(PATHTESTS)HyLIoSGeometrySumTest.o : $(PATHTESTS)HyLIoSGeometrySumTest.cpp $(TEST_MODE_STAMP)
@@ -713,6 +728,21 @@ $(PATHLIBRARY)Simulation/Fire/FireSolver.o : $(PATHLIBRARY)Simulation/Fire/FireS
 # M8b: the fire CPU backend shares the CPU owner's strict binary32 arithmetic.
 $(PATHLIBRARY)Simulation/Fire/FireCPUBackend.o : $(PATHLIBRARY)Simulation/Fire/FireCPUBackend.cpp
 	@echo "Compiling (strict fire driver): $<"
+	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
+# Fire solver version 4 (docs/BUILD_FLAGS.md section 8, docs/FIRE_SMOKE_STATUS.md): the
+# fire-adjacent sources (production tables, simulation records, optics, sequence and its cache,
+# the parameter schema, the Metal compute host) compile without fast-math or FP contraction like
+# the fire solver itself, so the table package, records and keys are strict IEEE results that do
+# not depend on the LTO mode or on inlining (with fast-math they moved between full and thin LTO).
+$(FIRE_ADJACENT_STRICT_OBJS) : $(PATHLIBRARY)%.o : $(PATHLIBRARY)%.cpp
+	@echo "Compiling (strict fire): $<"
+	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
+$(PATHLIBRARY)Utilities/FireProductionComputeMac.o : $(PATHLIBRARY)Utilities/FireProductionComputeMac.mm
+	@echo "Compiling (strict fire ObjC++): $<"
+	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -x objective-c++ -fobjc-arc -c $< -o $@
+# The reference fire simulator shares fire_simulator_core.h with the strict fire CPU backend.
+$(PATHTOOLS)fire_simulator.o : $(PATHTOOLS)fire_simulator.cpp
+	@echo "Compiling (strict fire): $<"
 	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
 # M3a: the cloth solver runs without fast-math or FP contraction, so its
 # checkpoints, frames and evidence digests do not depend on the compiler's

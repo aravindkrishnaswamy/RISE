@@ -1,0 +1,469 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#                                                                                                           #
+#   File:           honey.RISEscene                                                                         #
+#   Idea:           Honey drizzled from a wooden dipper onto a linen napkin stretched in a square walnut    #
+#                   frame: the rope thins as it falls, piles into a glowing amber mound that slumps and     #
+#                   spreads, and the linen sags under it.  Low warm light from behind, so the honey glows.  #
+#   Simulations:    liquid.mac `honey` (10 Pa s, 1420 kg/m^3, implicit viscosity; the linen is a no-slip    #
+#                   wall of the viscous solve on its wetted side) and cloth.shell `linen` (1.0 kg/m^2,      #
+#                   pinned all round to the frame) in one simulation_group `pour`, coupled implicitly: the  #
+#                   liquid solves the cloth's linearised response with its pressure and viscous steps, and  #
+#                   the cloth takes the liquid's steps.                                                     #
+#   Limits:         the linen is pinned on every edge (no free edge at a waterline) and heavy enough that   #
+#                   the impact raises no rotation/linearisation warning; the honey layer is several cells   #
+#                   deep (docs/SIMULATION_SOLVER_CONTRACT.md §6).  The pour is an inflow source             #
+#                   (M9): a nozzle 1.4 cm in radius (3 cells at the final 96, 2 at the proof's 64, where    #
+#                   the rope's tip erodes: the parser README's inflow limits) emitting into air             #
+#                   26 cm above the linen; no coiling is expected at these resolutions.                    #
+#   Frame:          y up, metres; liquid domain 0..0.4 x 0..0.45 x 0..0.4.                                  #
+#   Time:           5 s at 30 fps (151 frames).                                                             #
+#   Proof/final:    a value followed by `# proof <value>` is the final setting; scripts/                    #
+#                   simulation_showcase.sh proof substitutes the proof value.                               #
+#   Bake/render:    scripts/simulation_showcase.sh proof|final honey   (docs/SIMULATION_SHOWCASE.md)         #
+#   showcase:       hero 70 frames 15 30 45 150                                                            #
+#                                                                                                           #
+#############################################################################################################
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultPathTracing
+}
+
+uniformcolor_painter
+{
+	name			pnt_env
+	color			0.25 0.24 0.23
+}
+
+pathtracing_pel_rasterizer
+{
+	samples			512		# proof 64
+	oidn_denoise	TRUE
+	radiance_map	pnt_env
+	radiance_scale	0.2
+	radiance_background	FALSE
+}
+
+file_rasterizeroutput
+{
+	pattern			rendered/showcase/honey/final/honey		# proof rendered/showcase/honey/proof/honey
+	multiple		TRUE
+	type			PNG
+	bpp				8
+	color_space		sRGB
+	display_transform	aces
+}
+
+film
+{
+	width			1920		# proof 640
+	height			1080		# proof 360
+}
+
+animation_options
+{
+	time_start		0
+	time_end		5
+	num_frames		151
+}
+
+pinhole_camera
+{
+	location		0.58 0.30 0.80
+	lookat			0.20 0.28 0.20
+	up				0 1 0
+	fov				40.0
+}
+
+#############################################################################################################
+# Simulations
+
+cloth_simulation
+{
+	name			linen
+	frames			151
+	size_u			0.32
+	size_v			0.32
+	vertices_u		33		# proof 17
+	vertices_v		33		# proof 17
+	origin			0.04 0.14 0.36
+	axis_u			1 0 0
+	axis_v			0 0 -1
+	material		cotton-plain-weave
+	material_density	1.0
+	pin				boundary
+}
+
+liquid_simulation
+{
+	name			honey
+	frames			151
+	domain_min		0 0 0
+	domain_size		0.4 0.45 0.4
+	resolution		96		# proof 64
+	threads			8
+	viscosity		10
+	density			1420
+	liquid			sphere 0.20 0.415 0.20 0.01
+	source			pour cylinder 0.20 0.415 0.20 0 -1 0 0.014 0.03 speed 0.25 schedule 0 0 0.15 1 2.6 1 3.2 0
+	sheet			linen port coupling implicit
+}
+
+simulation_group
+{
+	name			pour
+	members			honey
+	members			linen
+	connect			linen.surface_state -> honey.sheet_state
+	connect			linen.surface_mechanics -> honey.sheet_mechanics
+	connect			linen.surface_stiffness -> honey.sheet_stiffness
+	connect			linen.surface_elements -> honey.sheet_elements
+	connect			honey.sheet_load -> linen.surface_load
+	connect			honey.sheet_load_steps -> linen.surface_load_steps
+	policy			staggered
+	order			gauss-seidel
+	member_order	honey linen
+	owned			honey linen
+	macro_step		0.008333333333333333
+}
+
+#############################################################################################################
+# Materials
+
+# Honey: internal transmittance per metre (pow(tau, d)); 1 cm of it passes about 0.93 / 0.62 / 0.22.
+dielectric_material
+{
+	name				mat_honey
+	tau					7e-4 2e-21 3e-66
+	ior					1.49
+	scattering			10000
+	henyey-greenstein	FALSE
+}
+
+uniformcolor_painter
+{
+	name			pnt_linen
+	color			0.88 0.84 0.74
+}
+
+weave_material
+{
+	name			mat_linen
+	fabric			linen
+	warp_color		pnt_linen
+	weft_color		pnt_linen
+	transmission	thin
+	sheer			0.08
+	warp_transmit	0.2
+	weft_transmit	0.2
+}
+
+uniformcolor_painter
+{
+	name			pnt_walnut
+	color			0.16 0.08 0.04
+}
+
+orennayar_material
+{
+	name			mat_walnut_base
+	reflectance		pnt_walnut
+	roughness		0.5
+}
+
+coated_material
+{
+	name			mat_walnut
+	base			mat_walnut_base
+	coat_ior		1.5
+	coat_roughness	0.12
+}
+
+uniformcolor_painter
+{
+	name			pnt_table
+	color			0.32 0.30 0.27
+}
+
+orennayar_material
+{
+	name			mat_table
+	reflectance		pnt_table
+	roughness		0.7
+}
+
+uniformcolor_painter
+{
+	name			pnt_wall
+	color			0.45 0.42 0.38
+}
+
+orennayar_material
+{
+	name			mat_wall
+	reflectance		pnt_wall
+	roughness		0.9
+}
+
+dielectric_material
+{
+	name				mat_glass
+	tau					0.9 0.93 0.92
+	ior					1.52
+	scattering			10000
+	henyey-greenstein	FALSE
+}
+
+#############################################################################################################
+# Objects
+
+simulated_mesh_geometry
+{
+	name			geo_honey
+	source			honey.surface
+}
+
+standard_object
+{
+	name			honey_object
+	geometry		geo_honey
+	material		mat_honey
+}
+
+simulated_mesh_geometry
+{
+	name			geo_linen
+	source			linen.surface
+	double_sided	TRUE
+}
+
+standard_object
+{
+	name			linen_object
+	geometry		geo_linen
+	material		mat_linen
+}
+
+# The walnut frame: four bars whose inner edges hold the linen's pinned boundary (y = 0.14).
+box_geometry
+{
+	name			geo_bar_x
+	width			0.38
+	height			0.028
+	depth			0.03
+}
+
+box_geometry
+{
+	name			geo_bar_z
+	width			0.03
+	height			0.028
+	depth			0.32
+}
+
+standard_object
+{
+	name			bar_front
+	geometry		geo_bar_x
+	material		mat_walnut
+	position		0.20 0.131 0.375
+}
+
+standard_object
+{
+	name			bar_back
+	geometry		geo_bar_x
+	material		mat_walnut
+	position		0.20 0.131 0.025
+}
+
+standard_object
+{
+	name			bar_left
+	geometry		geo_bar_z
+	material		mat_walnut
+	position		0.025 0.131 0.20
+}
+
+standard_object
+{
+	name			bar_right
+	geometry		geo_bar_z
+	material		mat_walnut
+	position		0.375 0.131 0.20
+}
+
+# Four turned legs lift the frame off the table.
+cylinder_geometry
+{
+	name			geo_leg
+	axis			y
+	radius			0.012
+	height			0.117
+}
+
+standard_object
+{
+	name			leg_a
+	geometry		geo_leg
+	material		mat_walnut
+	position		0.025 0.0585 0.025
+}
+
+standard_object
+{
+	name			leg_b
+	geometry		geo_leg
+	material		mat_walnut
+	position		0.375 0.0585 0.025
+}
+
+standard_object
+{
+	name			leg_c
+	geometry		geo_leg
+	material		mat_walnut
+	position		0.025 0.0585 0.375
+}
+
+standard_object
+{
+	name			leg_d
+	geometry		geo_leg
+	material		mat_walnut
+	position		0.375 0.0585 0.375
+}
+
+# The honey dipper the pour comes from (render only: the stream is the source below its grooved head).
+lathe_geometry
+{
+	name			geo_dipper
+	axis			y
+	n_radial		64
+	profile_point	0.0 0.0
+	profile_point	0.012 0.0
+	profile_point	0.020 0.004
+	profile_point	0.024 0.008
+	profile_point	0.019 0.012
+	profile_point	0.024 0.017
+	profile_point	0.019 0.022
+	profile_point	0.024 0.027
+	profile_point	0.019 0.032
+	profile_point	0.022 0.037
+	profile_point	0.012 0.044
+	profile_point	0.006 0.05
+	profile_point	0.006 0.22
+	profile_point	0.009 0.23
+	profile_point	0.0 0.235
+}
+
+standard_object
+{
+	name			dipper
+	geometry		geo_dipper
+	material		mat_walnut
+	position		0.20 0.418 0.20
+}
+
+# A glass honey jar on the table, beside the frame (static).
+lathe_geometry
+{
+	name			geo_jar
+	axis			y
+	n_radial		96
+	profile_point	0.0 0.0
+	profile_point	0.042 0.0
+	profile_point	0.046 0.006
+	profile_point	0.046 0.10
+	profile_point	0.036 0.112
+	profile_point	0.036 0.122
+	profile_point	0.032 0.122
+	profile_point	0.032 0.113
+	profile_point	0.042 0.10
+	profile_point	0.042 0.008
+	profile_point	0.0 0.008
+}
+
+lathe_geometry
+{
+	name			geo_jar_honey
+	axis			y
+	n_radial		96
+	profile_point	0.0 0.0085
+	profile_point	0.0418 0.0085
+	profile_point	0.0418 0.075
+	profile_point	0.0 0.075
+}
+
+standard_object
+{
+	name			jar
+	geometry		geo_jar
+	material		mat_glass
+	position		0.49 0.0 0.30
+}
+
+standard_object
+{
+	name			jar_honey
+	geometry		geo_jar_honey
+	material		mat_honey
+	position		0.49 0.0 0.30
+}
+
+clippedplane_geometry
+{
+	name			geo_table
+	pta				-6 0 -6
+	ptb				 6 0 -6
+	ptc				 6 0  6
+	ptd				-6 0  6
+}
+
+standard_object
+{
+	name			table
+	geometry		geo_table
+	material		mat_table
+}
+
+clippedplane_geometry
+{
+	name			geo_wall
+	pta				-6 0 -0.7
+	ptb				 6 0 -0.7
+	ptc				 6 3 -0.7
+	ptd				-6 3 -0.7
+}
+
+standard_object
+{
+	name			wall
+	geometry		geo_wall
+	material		mat_wall
+}
+
+#############################################################################################################
+# Light: low warm window light from behind-left (backlights the honey), a soft cool fill from the camera side.
+
+rect_light
+{
+	name			window
+	center			-0.15 1.25 -0.35
+	size			0.5 0.5
+	facing			0.3 -1.0 0.45
+	color			1.0 0.82 0.6
+	exitance		55
+}
+
+rect_light
+{
+	name			fill
+	center			0.9 0.6 0.9
+	size			0.6 0.6
+	facing			-1 -0.5 -1
+	color			0.8 0.87 1.0
+	exitance		5
+}

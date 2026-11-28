@@ -1,64 +1,24 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  OslMath.h - Cycles' Safe Math (41 ops), Vector Math (30 ops),
-//    Clamp (2 modes), and Map Range (Float & Vector, 4 modes) kernels.
+//  OslMath.h - Ports of Blender Cycles' Safe Math (41 ops), Vector Math
+//    (30 ops), Clamp (2 modes), and Map Range (Float & Vector, 4 modes).
 //
-//  A PORT, not new math.  It reproduces the CPU kernel of Blender's
-//  Cycles renderer -- intern/cycles/kernel/svm/math_util.h (svm_math,
-//  svm_vector_math), intern/cycles/kernel/svm/math.h,
-//  intern/cycles/kernel/svm/clamp.h, intern/cycles/kernel/svm/map_range.h,
-//  and the scalar/float3 helpers in util/math_base.h and
-//  util/math_float3.h -- so that a Blender material translated into a
-//  RISE expression evaluates Math, Vector Math, Clamp and Map Range
-//  nodes the same way Cycles does.
+//  Ported from Blender commit afc6d7a4 (5.2 alpha, 2026-03-17):
+//    intern/cycles/kernel/svm/{math_util.h,math.h,clamp.h,map_range.h}
+//    and util/{math_base.h,math_float3.h}.  Verified against
+//    tests/data/osl_math_golden.inc by OslMathTest.
 //
-//  Ported from Blender commit afc6d7a4 (5.2 alpha, 2026-03-17), as
-//  OslNoise.h, OslVoronoi.h and OslColor.h are.  The golden values,
-//  tests/data/osl_math_golden.inc, were dumped by
-//  tools/osl_golden/dump_math_golden.sh, which runs Cycles' own
-//  svm_node_math, svm_node_vector_math<float3>, svm_node_clamp,
-//  svm_node_map_range and svm_node_vector_map_range compiled three ways
-//  (the SIMD path as Blender's arm64 build compiles it, the scalar path
-//  with Blender's math flags, and the scalar path as strict IEEE);
-//  tests/OslMathTest.cpp gates on the strict column.
+//  PRECISION.  Evaluates in strict IEEE 32-bit float in Cycles' scalar
+//  order of operations (no FMA, reassociation, or reciprocal math;
+//  OslMath.cpp is compiled with -fno-fast-math -ffp-contract=off or
+//  /fp:strict), double `Scalar` only at the interface.  Ops calling libm
+//  transcendentals (sinf..tanhf, expf, logf, powf) may differ in the last
+//  bit across platforms (gated to 1e-6 off Apple arm64).
 //
-//  PRECISION.  As OslNoise.h, OslVoronoi.h and OslColor.h: 32-bit float
-//  in the order of Cycles' scalar path ("standard implementation"),
-//  strict IEEE (no reassociation, no reciprocal substitution, no fused
-//  multiply-add; OslMath.cpp is compiled that way by every build),
-//  double only at the interface.  Measured against the strict IEEE
-//  golden table on Apple M1 Max (arm64, Apple clang 21):
-//    * Bit-exact (sign of zero included) on all 1247 rows of
-//      tests/data/osl_math_golden.inc on Apple arm64 (0 non-exact):
-//      - Math (779 rows): vs Blender SIMD/scalar, 775 exact, 4 rounding
-//        (maxRel 1.168e-7), 0 sign0, 0 nonfin.
-//      - VectorMath (330 rows): vs Blender SIMD, 323 exact, 4 sign0,
-//        3 rounding (maxRel 1.102e-7); vs Blender scalar, 318 exact,
-//        12 rounding (maxRel 1.484e-7).
-//      - Clamp (26 rows): 26/26 exact against all 3 builds.
-//      - MapRange (72 rows): 70 exact, 2 rounding (maxRel 6.535e-8).
-//      - VectorMapRange (40 rows): 40/40 exact against all 3 builds.
-//    * Operations that call libm transcendentals (sinf, cosf, tanf,
-//      asinf, acosf, atanf, atan2f, sinhf, coshf, tanhf, expf, logf,
-//      powf) are bit-exact on Apple arm64 and gated to 1e-6 relative
-//      off Apple arm64 (the same kLibmIsGoldenPlatform pattern as
-//      OslVoronoiTest.cpp).
-//
-//  WHERE THE PORT DEPARTS FROM CYCLES.
-//    1. `safe_powf(a, b)` in Cycles checks `a < 0.0f && b != float_to_int(b)`
-//       where `float_to_int` is a raw C cast `(int)b`, which is undefined
-//       behaviour in C++ when `b` is NaN, +/-inf, or outside int32 range
-//       `[-2147483648.0f, 2147483648.0f)`.  This port guards the cast:
-//       when `a < 0.0f`, if `!(b >= -2147483648.0f && b < 2147483648.0f)`
-//       it returns `0.0f` without invoking UB (matching Cycles' intent of
-//       returning 0 on non-integer/invalid exponents for negative bases).
-//       For all finite `b` in `[-2147483648.0f, 2147483520.0f]` it is
-//       bit-identical to Cycles.
-//    2. Out-of-range enum values return `0.0` (or `(0, 0, 0)`), matching
-//       Cycles' `default:` cases.  At the expression-VM boundary
-//       (ExpressionOslBuiltins.cpp), op/type/clamp arguments are checked
-//       as compile-time integer literals and any non-finite output channel
-//       reads 0.
+//  DEPARTURES.  (1) `safe_powf(a, b)` guards the float->int cast when
+//  `a < 0.0f` so NaN, +/-inf, or out-of-int32 `b` returns 0.0f without
+//  UB.  (2) Out-of-range enums return 0 / (0, 0, 0); VM builtins validate
+//  enums at compile time and map non-finite output channels to 0.
 //
 //  LICENCES.  RISE's own licence is BSD-style (LICENSE.TXT).  The ported
 //  code carries its sources' licences, reproduced here as they require:

@@ -1,3 +1,15 @@
+//////////////////////////////////////////////////////////////////////
+//
+//  SimulationPoints.cpp - Canonical binary codec for "points.v1" particle sets
+//
+//  Wire layout: "RISEPNTS" | u32 version(1) | u32 flags | text lengthUnits |
+//               [text velUnits] | u32 count | [f32 uniformRadius] | [u64[] ids] |
+//               f32[3N] pos | [f32[3N] vel] | [f32[N] radii] | u16 attrs | attr*
+//  Tabs: 4
+//  License Information: Please see the attached LICENSE.TXT file
+//
+//////////////////////////////////////////////////////////////////////
+
 #include "pch.h"
 #include "SimulationPoints.h"
 #include "../Utilities/RISECBOR64.h"
@@ -66,6 +78,7 @@ void CheckText(const std::string& s, Budget scratch)
 	Require(RISE::RISECBOR64::IsUTF8NFC(s), "points units or name text is not NFC UTF-8");
 }
 
+// IEEE binary32 bit checks: exponent != 0xff for finite; sign bit 0 for nonnegative radius.
 bool Finite(std::uint32_t bits) { return ((bits >> 23) & 0xff) != 0xff; }
 bool Radius(std::uint32_t bits) { return Finite(bits) && (bits & 0x80000000u) == 0; }
 
@@ -74,6 +87,9 @@ bool Reserved(const std::string& name)
 	return name == "position" || name == "velocity" || name == "radius" || name == "id";
 }
 
+// Validates canonical point-set invariants: finite xyz/vel, mutually exclusive
+// uniform vs. per-point nonnegative radii, strictly increasing IDs, and sorted
+// unique non-reserved custom attributes (1..16 components).
 void CheckFrame(const PointsFrame& f, Budget& scratch)
 {
 	CheckText(f.lengthUnits, scratch);
@@ -203,6 +219,9 @@ void ReadHeader(Source& src, std::uint32_t& flags)
 }
 }
 
+// ------------------------------------------------------------------ public API
+
+// Encodes canonically into a presized buffer (LE memcpy fast path) and swaps `out`.
 bool RISE::Simulation::EncodePoints(const PointsFrame& frame, std::size_t budget, Bytes& out, std::string& error)
 {
 	try {
@@ -222,6 +241,7 @@ bool RISE::Simulation::EncodePoints(const PointsFrame& frame, std::size_t budget
 	} catch (const std::exception& e) { error = e.what(); return false; }
 }
 
+// Decodes and validates "points.v1", checking payload bounds before allocations.
 bool RISE::Simulation::DecodePoints(const Bytes& bytes, std::size_t budget, PointsFrame& out, std::string& error)
 {
 	try {
@@ -265,6 +285,7 @@ bool RISE::Simulation::DecodePoints(const Bytes& bytes, std::size_t budget, Poin
 	} catch (const std::exception& e) { error = e.what(); return false; }
 }
 
+// Inspects point count and presence flags without decoding particle arrays.
 bool RISE::Simulation::PeekPoints(const Bytes& bytes, PointsHeader& out, std::string& error)
 {
 	try {
@@ -286,6 +307,8 @@ bool RISE::Simulation::PeekPoints(const Bytes& bytes, PointsHeader& out, std::st
 	} catch (const std::exception& e) { error = e.what(); return false; }
 }
 
+// Content digest identifying the point index space for external "field.v1" data:
+// hashes persistent 64-bit IDs when present, otherwise packed positions.
 std::string RISE::Simulation::PointsDomain(const PointsFrame& f)
 {
 	Bytes words;

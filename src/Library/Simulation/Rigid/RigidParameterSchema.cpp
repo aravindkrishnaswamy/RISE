@@ -65,8 +65,9 @@ bool Options(const std::vector<std::string>& t, std::size_t i, bool scene, V::Me
 		else if (k == "velocity" && Numbers(t, i + 1, 3, v)) { m.emplace_back("velocity", v); i += 4; }
 		else if (k == "spin" && Numbers(t, i + 1, 3, v)) { m.emplace_back("angular_velocity", v); i += 4; }
 		else if (k == "contact" && i + 1 < t.size() && (t[i + 1] == "on" || t[i + 1] == "off")) { m.emplace_back("contact", V::Bool(t[i + 1] == "on")); i += 2; }
+		else if (k == "surface" && !scene && i + 1 < t.size()) { m.emplace_back("surface_input", V::String(t[i + 1])); i += 2; }   // M9
 		else return Fail(error, where + ": unexpected `" + k + "` (mass m | density d | at x y z | orientation w x y z | "
-			"velocity vx vy vz | spin wx wy wz | restitution e | friction mu | contact on|off" +
+			"velocity vx vy vz | spin wx wy wz | restitution e | friction mu | contact on|off | surface <object>" +
 			(scene ? "; a scene-object body takes its pose from the object" : "") + ")");
 	}
 	return true;
@@ -102,6 +103,9 @@ bool Translate(const SchemaFieldValues& values, SchemaTranslation& out, std::str
 		V b;
 		if (!TranslateBody(text, b, error)) return false;
 		bodies.push_back(b);
+		// M9: `surface <object>` reads that object's geometry (a scene input).
+		if (const V* in = b.Find("surface_input"))
+			if (std::find(out.sceneInputs.begin(), out.sceneInputs.end(), in->GetText()) == out.sceneInputs.end()) out.sceneInputs.push_back(in->GetText());
 	}
 	for (const auto& text : all("body_object")) {
 		const auto t = Tokens(text);
@@ -155,7 +159,11 @@ ParameterSchema Build()
 	};
 	F("body", "A body: `<name> box sx sy sz | sphere r | cylinder r h` (metres, cylinder axis z) then any of `mass m` | "
 		"`density d` (kg/m^3, default 1000) | `at x y z` | `orientation w x y z` | `velocity vx vy vz` | `spin wx wy wz` (rad/s, world) | "
-		"`restitution e` | `friction mu` (body-body contact, defaults 0.5) | `contact on|off`");
+		"`restitution e` | `friction mu` (body-body contact, defaults 0.5) | `contact on|off` | `surface <object>` (M9: the coupling "
+		"surface rigid_surface places is that object's geometry, world space at t = 0 with the body at its initial pose, instead of the "
+		"shape's own tessellation, so a cloth's `collider_port <object>` made from the same object can follow the body; the body keeps "
+		"its analytic shape for mass, planes and body-body contact: an analytic body two-way coupled to cloth that also collides with "
+		"other bodies)");
 	F("body_object", "A body made from a scene object's geometry (closed mesh, world space at t = 0; the pose is its centroid "
 		"and principal axes): `<object> [mass m | density d] [velocity vx vy vz] [spin wx wy wz] [contact off]`; the body is named after the "
 		"object (a mesh body takes no body-body contact: among other bodies it needs `contact off`)");

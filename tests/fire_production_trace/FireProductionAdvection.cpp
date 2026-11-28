@@ -5,6 +5,12 @@
 //
 //  FireProductionAdvection.cpp - strict-binary32 CPU oracle for production PPM
 //
+//  Implements the deterministic CPU worker pool, NEON-accelerated sliced
+//  FNV-1a word hasher, SHA-256 Merkle payload digest, and strict-fp32 1D
+//  batched PPM conservative remap oracle (shared multi-component limiter,
+//  Blelloch line prefix sum for multi-cycle periodic wrap, exact parabola
+//  swept-face integrals). Mirrors FireProductionAdvectionMac.mm intermediates.
+//
 //  License Information: Please see the attached LICENSE.TXT file
 //
 //////////////////////////////////////////////////////////////////////
@@ -28,6 +34,8 @@
 
 namespace RISEFireProductionTrace
 {
+	// --- Persistent CPU worker pool and index-ordered failure collection ---
+
 	namespace
 	{
 		thread_local unsigned int fireProductionCPUWorkers=1u;
@@ -145,6 +153,8 @@ namespace RISEFireProductionTrace
 
 	bool FireProductionCPUFirstFailure::Failed() const { return failed_; }
 	const std::string& FireProductionCPUFirstFailure::Message() const { return message_; }
+
+	// --- Sliced FNV-1a word hashing and SHA-256 Merkle payload digests ---
 
 	namespace
 	{
@@ -319,6 +329,8 @@ namespace RISEFireProductionTrace
 
 	// Without Metal, FireProductionPayloadDigestMetal is the refusal stub in
 	// FireProductionAdvectionUnsupported.cpp (every non-Metal build links it).
+	// --- 1D batched PPM conservative remap helpers (CPU/Metal parity) ---
+
 	namespace
 	{
 		const std::uint64_t MetalAllocationQuantumBytes=UINT64_C(16384);
@@ -383,6 +395,8 @@ namespace RISEFireProductionTrace
 			return values[component*request.lineCount+line];
 		}
 
+		// Smoothly transitions open-boundary ghost values between nearest interior
+		// (outflow) and ambient (inflow) across a narrow 2^-24 velocity deadband.
 		FireProductionRoundoffTrace::TraceFloat ContinuousInflowValue( const FireProductionRoundoffTrace::TraceFloat nearest, const FireProductionRoundoffTrace::TraceFloat ambient,
 			const FireProductionRoundoffTrace::TraceFloat velocity, const bool positiveInflow, const FireProductionRoundoffTrace::TraceFloat cellWidthM,
 			const FireProductionRoundoffTrace::TraceFloat timeStepS )
@@ -426,6 +440,8 @@ namespace RISEFireProductionTrace
 			return request.values[ValueIndex(request,component,line,static_cast<std::size_t>(cell))];
 		}
 
+		// Fourth-order Colella-Woodward unlimited PPM cell edge reconstruction;
+		// constant 5-cell stencils short-circuit to exact center to preserve flats.
 		void UnlimitedEdges( const FireProductionRemapRequest& request,
 			std::size_t component, std::size_t line, std::size_t cell,
 			FireProductionRoundoffTrace::TraceFloat& left, FireProductionRoundoffTrace::TraceFloat& right )
@@ -487,6 +503,8 @@ namespace RISEFireProductionTrace
 			return std::min(alpha,cap);
 		}
 
+		// Exact analytic integral of the cell PPM parabola over [beginning, end]
+		// in [0,1] (and trailing interval [1-length, 1] for positive Courant).
 		FireProductionRoundoffTrace::TraceFloat CellIntervalIntegral( FireProductionRoundoffTrace::TraceFloat center, FireProductionRoundoffTrace::TraceFloat left, FireProductionRoundoffTrace::TraceFloat right,
 			FireProductionRoundoffTrace::TraceFloat beginning, FireProductionRoundoffTrace::TraceFloat end )
 		{
@@ -635,6 +653,8 @@ namespace RISEFireProductionTrace
 			return result;
 		}
 
+		// Blelloch work-efficient exclusive prefix scan matching the Metal kernel's
+		// exact fp32 summation tree for periodic full-line wrap integrals.
 		void BlellochPrefixLine( const FireProductionRemapRequest& request,
 			std::size_t component, std::size_t line, std::vector<FireProductionRoundoffTrace::TraceFloat>& prefix )
 		{
@@ -660,6 +680,8 @@ namespace RISEFireProductionTrace
 			prefix[base+request.lineLength]=total;
 		}
 	}
+
+	// --- Public remap working-set, validation, and CPU oracle entry points ---
 
 	bool FireProductionRemapWorkingSetBytes( const FireProductionRemapRequest& request,
 		std::uint64_t& bytes )
@@ -789,6 +811,9 @@ namespace RISEFireProductionTrace
 		return true;
 	}
 
+	// Executes 1D batched PPM remap in four stages matching Metal: (1) unlimited
+	// edges + shared multi-component limiter alpha, (2) Blelloch line prefix sums,
+	// (3) swept face fluxes (wall=0, periodic seam copied), (4) conservative update.
 	bool RemapFireProductionCPU( const FireProductionRemapRequest& request,
 		FireProductionRemapResult& result, std::string* error )
 	{

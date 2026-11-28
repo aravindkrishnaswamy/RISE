@@ -1,0 +1,464 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#                                                                                                           #
+#   File:           monsoon.RISEscene                                                                       #
+#   Idea:           A cloudburst over a courtyard basin.  Heavy rain falls on a striped awning held in a    #
+#                   frame tilted over the basin; the awning bellies under the weight, fills, and the water  #
+#                   runs over its low edge in a sheet into the basin, where wooden floats, a ball and a toy #
+#                   boat rock in the waves and knock against each other.                                    #
+#   Simulations:    three solvers in ONE simulation_group `courtyard`: liquid.mac `rain` (owner of both     #
+#                   exchanges), cloth.shell `canvas` (an implicitly coupled sheet: the liquid solves the    #
+#                   canvas's linearised response in its pressure solve) and rigid.bodies `floats` (bodies   #
+#                   solved in the same pressure system; rigid.bodies owns their body-body and basin-wall    #
+#                   contact).  The canvas and the bodies never touch each other (there is no cloth-body     #
+#                   contact inside a liquid group); they meet only through the water.                       #
+#   Limits:         the canvas is pinned on all four edges, so no free edge meets the waterline, and it     #
+#                   holds the water as a bag several cells deep (docs/SIMULATION_SOLVER_CONTRACT.md §6,     #
+#                   known limits).  The rain is an M9 drop source (5 x 4 columns, 2.8 cm drops: 2 cells at  #
+#                   proof's 64, 4 at the final 128; src/Library/Parsers/README.md), released 3.5 cm above   #
+#                   the awning, in a box tilted with it, at 0.5 m/s (released 5 cm above its high edge at    #
+#                   1.2 m/s the drops kicked it past the 1% rotation indicator); an overflow drain in a     #
+#                   corner keeps the basin below its kerb.                                                  #
+#   Frame:          y up, metres; liquid domain -0.45..0.45 x 0..0.6 x -0.25..0.25 (the basin's inside).    #
+#   Time:           4 s at 30 fps (121 frames).                                                             #
+#   Proof/final:    a value followed by `# proof <value>` is the final setting; scripts/                    #
+#                   simulation_showcase.sh proof substitutes the proof value.                               #
+#   Bake/render:    scripts/simulation_showcase.sh proof|final monsoon   (docs/SIMULATION_SHOWCASE.md)       #
+#   showcase:       hero 75 frames 15 30 45 110                                                             #
+#                                                                                                           #
+#############################################################################################################
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultPathTracing
+}
+
+uniformcolor_painter
+{
+	name			pnt_sky
+	color			0.42 0.48 0.58
+}
+
+pathtracing_pel_rasterizer
+{
+	samples			512		# proof 64
+	oidn_denoise	TRUE
+	radiance_map	pnt_sky
+	radiance_scale	0.9
+	radiance_background	TRUE
+}
+
+file_rasterizeroutput
+{
+	pattern			rendered/showcase/monsoon/final/monsoon		# proof rendered/showcase/monsoon/proof/monsoon
+	multiple		TRUE
+	type			PNG
+	bpp				8
+	color_space		sRGB
+	display_transform	aces
+}
+
+film
+{
+	width			1920		# proof 640
+	height			1080		# proof 360
+}
+
+animation_options
+{
+	time_start		0
+	time_end		4
+	num_frames		121
+}
+
+pinhole_camera
+{
+	location		0.62 0.92 1.0
+	lookat			0.02 0.28 0.0
+	up				0 1 0
+	fov				42.0
+}
+
+#############################################################################################################
+# Simulations
+
+# The awning: a 0.5 m by 0.42 m frame tilted down toward +x, a stretchy knit (polyester-knit, its membrane
+# stiffened to 600/500 N/m and made heavier) pinned on all four edges, so the rain's weight pulls it into a bag that holds the water
+# deep before it brims over the low edge.
+cloth_simulation
+{
+	name			canvas
+	frames			121
+	size_u			0.5
+	size_v			0.42
+	vertices_u		41		# proof 21
+	vertices_v		35		# proof 18
+	origin			-0.43 0.50 0.21
+	axis_u			0.9689 -0.2474 0
+	axis_v			0 0 -1
+	material		polyester-knit
+	material_density	2.0
+	material_stretch_warp	600
+	material_stretch_weft	500
+	pin				boundary
+}
+
+rigid_simulation
+{
+	name			floats
+	frames			121
+	substeps		16
+	body			float_a sphere 0.032 density 450 at 0.20 0.14 0.08 restitution 0.3 friction 0.4
+	body			float_b sphere 0.028 density 450 at 0.30 0.14 -0.06 restitution 0.3 friction 0.4
+	body			float_c sphere 0.03 density 450 at 0.12 0.14 -0.12 restitution 0.3 friction 0.4
+	body			boat box 0.12 0.035 0.05 density 380 at 0.33 0.125 0.12 orientation 0.9239 0 0.3827 0 restitution 0.3 friction 0.4
+	plane			0 0 0 0 1 0 restitution 0.1 friction 0.5
+	plane			-0.45 0 0 1 0 0 restitution 0.2 friction 0.4
+	plane			0.45 0 0 -1 0 0 restitution 0.2 friction 0.4
+	plane			0 0 -0.25 0 0 1 restitution 0.2 friction 0.4
+	plane			0 0 0.25 0 0 -1 restitution 0.2 friction 0.4
+}
+
+liquid_simulation
+{
+	name			rain
+	frames			121
+	domain_min		-0.45 0 -0.25
+	domain_size		0.9 0.6 0.5
+	resolution		128		# proof 64
+	threads			8
+	liquid			fill 0.11
+	source			rain box -0.188 0.488 0.0 0.46 0.03 0.38 orientation 0.9922 0 0 -0.1247 speed 0.5 start 0.0 end 2.6 drops 5 4 0.028 0.22
+	drain			overflow box 0.42 0.135 -0.22 0.05 0.03 0.05
+	sheet			canvas port coupling implicit
+	body			float_a sphere 0.032 motion port at 0.20 0.14 0.08
+	body			float_b sphere 0.028 motion port at 0.30 0.14 -0.06
+	body			float_c sphere 0.03 motion port at 0.12 0.14 -0.12
+	body			boat box 0.12 0.035 0.05 motion port at 0.33 0.125 0.12 orientation 0.9239 0 0.3827 0
+}
+
+simulation_group
+{
+	name			courtyard
+	members			rain
+	members			canvas
+	members			floats
+	connect			canvas.surface_state -> rain.sheet_state
+	connect			canvas.surface_mechanics -> rain.sheet_mechanics
+	connect			canvas.surface_stiffness -> rain.sheet_stiffness
+	connect			canvas.surface_elements -> rain.sheet_elements
+	connect			rain.sheet_load -> canvas.surface_load
+	connect			rain.sheet_load_steps -> canvas.surface_load_steps
+	connect			floats.body_state -> rain.body_state
+	connect			floats.body_mass_properties -> rain.body_mass_properties
+	connect			floats.body_contact -> rain.body_contact
+	connect			rain.body_load -> floats.body_load
+	policy			staggered
+	order			gauss-seidel
+	member_order	rain canvas floats
+	owned			rain canvas floats
+	macro_step		0.004166666666666667
+}
+
+#############################################################################################################
+# Materials
+
+dielectric_material
+{
+	name				mat_water
+	tau					0.45 0.75 0.80
+	ior					1.333
+	scattering			10000
+	henyey-greenstein	FALSE
+}
+
+# Canvas stripes along the awning's u (material UVs are metres): madder red and unbleached cotton.
+expression_painter
+{
+	name			pnt_stripes
+	def				band	step(0.5, frac(u/0.07))
+	expr			mix(vec3(0.62, 0.10, 0.07), vec3(0.80, 0.74, 0.62), band)
+}
+
+weave_material
+{
+	name			mat_canvas
+	fabric			cotton
+	warp_color		pnt_stripes
+	weft_color		pnt_stripes
+	transmission	thin
+	sheer			0.05
+	warp_transmit	0.25
+	weft_transmit	0.25
+}
+
+uniformcolor_painter
+{
+	name			pnt_wood
+	color			0.55 0.36 0.18
+}
+
+orennayar_material
+{
+	name			mat_wood_base
+	reflectance		pnt_wood
+	roughness		0.6
+}
+
+coated_material
+{
+	name			mat_wood
+	base			mat_wood_base
+	coat_ior		1.5
+	coat_roughness	0.2
+}
+
+uniformcolor_painter
+{
+	name			pnt_paint
+	color			0.08 0.22 0.45
+}
+
+lambertian_material
+{
+	name			mat_paint_base
+	reflectance		pnt_paint
+}
+
+coated_material
+{
+	name			mat_paint
+	base			mat_paint_base
+	coat_ior		1.5
+	coat_roughness	0.08
+}
+
+uniformcolor_painter
+{
+	name			pnt_stone
+	color			0.30 0.28 0.25
+}
+
+orennayar_material
+{
+	name			mat_stone
+	reflectance		pnt_stone
+	roughness		0.8
+}
+
+uniformcolor_painter
+{
+	name			pnt_tile
+	color			0.10 0.32 0.36
+}
+
+lambertian_material
+{
+	name			mat_tile_base
+	reflectance		pnt_tile
+}
+
+coated_material
+{
+	name			mat_tile
+	base			mat_tile_base
+	coat_ior		1.5
+	coat_roughness	0.05
+}
+
+uniformcolor_painter
+{
+	name			pnt_iron
+	color			0.04 0.04 0.04
+}
+
+ggx_material
+{
+	name			mat_iron
+	rd				pnt_iron
+	rs				pnt_iron
+	alphax			0.3
+	alphay			0.3
+}
+
+#############################################################################################################
+# Objects
+
+simulated_mesh_geometry
+{
+	name			geo_water
+	source			rain.surface
+}
+
+standard_object
+{
+	name			water_object
+	geometry		geo_water
+	material		mat_water
+}
+
+simulated_mesh_geometry
+{
+	name			geo_canvas
+	source			canvas.surface
+	double_sided	TRUE
+}
+
+standard_object
+{
+	name			canvas_object
+	geometry		geo_canvas
+	material		mat_canvas
+}
+
+sphere_geometry
+{
+	name			geo_float_a
+	radius			0.032
+}
+
+sphere_geometry
+{
+	name			geo_float_b
+	radius			0.028
+}
+
+sphere_geometry
+{
+	name			geo_float_c
+	radius			0.03
+}
+
+standard_object
+{
+	name			float_a
+	geometry		geo_float_a
+	material		mat_wood
+	position		0.20 0.14 0.08
+	transform_source	floats.bodies[float_a]
+}
+
+standard_object
+{
+	name			float_b
+	geometry		geo_float_b
+	material		mat_paint
+	position		0.30 0.14 -0.06
+	transform_source	floats.bodies[float_b]
+}
+
+standard_object
+{
+	name			float_c
+	geometry		geo_float_c
+	material		mat_wood
+	position		0.12 0.14 -0.12
+	transform_source	floats.bodies[float_c]
+}
+
+box_geometry
+{
+	name			geo_boat
+	width			0.12
+	height			0.035
+	depth			0.05
+}
+
+standard_object
+{
+	name			boat
+	geometry		geo_boat
+	material		mat_paint
+	position		0.33 0.125 0.12
+	transform_source	floats.bodies[boat]
+}
+
+# The basin: a tiled floor at the domain floor and a stone kerb round the domain's walls, open on top.
+clippedplane_geometry
+{
+	name			geo_basin_floor
+	pta				-0.45 -0.0005 -0.25
+	ptb				 0.45 -0.0005 -0.25
+	ptc				 0.45 -0.0005  0.25
+	ptd				-0.45 -0.0005  0.25
+}
+
+standard_object
+{
+	name			basin_floor
+	geometry		geo_basin_floor
+	material		mat_tile
+}
+
+box_geometry
+{
+	name			geo_kerb_x
+	width			1.02
+	height			0.15
+	depth			0.06
+}
+
+box_geometry
+{
+	name			geo_kerb_z
+	width			0.06
+	height			0.15
+	depth			0.5
+}
+
+standard_object
+{
+	name			kerb_front
+	geometry		geo_kerb_x
+	material		mat_stone
+	position		0 0.075 0.281
+}
+
+standard_object
+{
+	name			kerb_back
+	geometry		geo_kerb_x
+	material		mat_stone
+	position		0 0.075 -0.281
+}
+
+standard_object
+{
+	name			kerb_left
+	geometry		geo_kerb_z
+	material		mat_stone
+	position		-0.481 0.075 0
+}
+
+standard_object
+{
+	name			kerb_right
+	geometry		geo_kerb_z
+	material		mat_stone
+	position		0.481 0.075 0
+}
+
+clippedplane_geometry
+{
+	name			geo_ground
+	pta				-4 -0.002 -4
+	ptb				 4 -0.002 -4
+	ptc				 4 -0.002  4
+	ptd				-4 -0.002  4
+}
+
+standard_object
+{
+	name			ground
+	geometry		geo_ground
+	material		mat_stone
+}
+
+directional_light
+{
+	name			sun
+	power			2.4
+	color			1.0 0.86 0.68
+	direction		-0.5 0.55 0.6
+}

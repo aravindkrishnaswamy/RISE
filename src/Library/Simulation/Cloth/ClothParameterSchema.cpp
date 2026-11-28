@@ -1,7 +1,9 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  ClothParameterSchema.cpp - see ClothParameterSchema.h
-//
+//  ClothParameterSchema.cpp - Scene-chunk parameter schema and text-to-
+//  CBOR translator for the cloth.shell solver (materials, pins,
+//  analytic/mesh/port colliders, and solver defaults; SI units).
+//  Tabs: 4
 //  License Information: Please see the attached LICENSE.TXT file
 //
 //////////////////////////////////////////////////////////////////////
@@ -62,6 +64,8 @@ bool Number(const std::vector<std::string>& tokens, std::size_t at, V& out)
 	out = V::Float(x);
 	return true;
 }
+
+// ------------------------------------------------------------------ token & field translators
 
 const char* const MaterialFields[][2] = {
 	{"material_name", "name"}, {"material_source", "source"},
@@ -155,6 +159,8 @@ bool TranslateCollider(const std::string& text, V& collider, std::string& error)
 	return true;
 }
 
+// Converts parsed cloth chunk fields into canonical CBOR solver parameters (material
+// overrides, pin motions, analytic/mesh/port colliders) and collects ordered sceneInputs.
 bool Translate(const SchemaFieldValues& values, SchemaTranslation& out, std::string& error)
 {
 	auto all = [&](const char* name) -> const std::vector<std::string>& {
@@ -224,6 +230,10 @@ bool Translate(const SchemaFieldValues& values, SchemaTranslation& out, std::str
 	return true;
 }
 
+// ------------------------------------------------------------------ schema definition
+
+// Builds the authoritative cloth.shell parameter schema (scalar/enum/vector defaults,
+// mode overrides, repeatable chunk directives, and mesh.v2 surface output).
 ParameterSchema Build()
 {
 	ParameterSchema s;

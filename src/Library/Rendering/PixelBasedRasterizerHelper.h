@@ -90,23 +90,10 @@ namespace RISE
 				Scalar base_cur_time;
 			};
 
-			//! Tier 2 (docs/gui/CAMERAS_AND_VIEWS.md §5.5): a viewport-private
-			//! camera the INTERACTIVE RasterizeScene (still-frame) path renders
-			//! THROUGH in place of `pScene.GetCamera()`, so free-fly / axis-snap /
-			//! named-view-restore navigate without mutating the scene's active
-			//! camera and without touching production render.  Non-owning: the
-			//! caller (SceneEditController) owns the camera's ref and keeps it
-			//! alive for the pass; nullptr (default) renders through the scene
-			//! camera.  Applies ONLY to RasterizeScene -- the animation
-			//! (RenderFrameOfAnimation / RasterizeSceneAnimation) and prediction
-			//! paths ignore it (a movie / production frame always uses the scene
-			//! camera).  Set/cleared by the controller's interactive pass under
-			//! its cancel-and-park, so it is render-thread-only (no atomic needed).
-			//! Chosen over the §5.5 (b) scene-view wrapper because wrapping the
-			//! IScene dangles (the caster stores + addrefs the scene across passes)
-			//! and defeats the render path's IScenePriv/Scene downcasts (photon-map
-			//! build, light-sampler regen); overriding at the camera-read site keeps
-			//! the real scene flowing to the caster.
+			//! Viewport-private camera override for interactive still-frame
+			//! RasterizeScene (docs/gui/CAMERAS_AND_VIEWS.md §5.5).  Non-owning;
+			//! ignored by animation and prediction paths; set/cleared on render
+			//! thread under cancel-and-park.
 			void SetViewportCameraOverride( const ICamera* pCam ) { m_pViewportCameraOverride = pCam; }
 
 		private:
@@ -142,11 +129,7 @@ namespace RISE
 				const bool resetAOVs
 				) const;
 
-			//! Original "red corner-marker" tile decoration.  Kept as a
-			//! back-pocket debug viz; no production call site as of
-			//! L8 round 19 (`DimTileBorder` replaced it everywhere
-			//! that DrawToggles was previously invoked).  See
-			//! `DimTileBorder` for the rationale.
+			//! Legacy red corner-marker tile decoration (debug only; replaced by DimTileBorder).
 			void DrawToggles(
 				IRasterImage& image,
 				const Rect& rc_region,
@@ -154,38 +137,9 @@ namespace RISE
 				const double toggle_size
 				) const;
 
-			//! Tile-border dim — replaces `DrawToggles` as the per-
-			//! block "this is being rendered" visual indicator.
-			//!
-			//! Multiplies each pixel's RGB by `dim_factor` for pixels
-			//! within `border_w` of any edge of `rc_region`.  Alpha is
-			//! untouched.  The block's interior is left as-is so the
-			//! previous frame's content remains visible there — useful
-			//! when the user is watching variance reduction across
-			//! progressive passes.
-			//!
-			//! Why border instead of full-tile dim or corner markers:
-			//!   * Corner markers (the old DrawToggles) flash in then
-			//!     out unevenly as the per-pixel loop overwrites
-			//!     corners at different times; user-reported as
-			//!     visually noisy.
-			//!   * Full-tile dim loses spatial context — user can't
-			//!     see the previous frame's content while waiting for
-			//!     this block to re-render.
-			//!   * Border-only preserves the interior (variance-
-			//!     reduction reference) while still signalling "this
-			//!     block is being processed" via a ring around it.
-			//!
-			//! Cost: O(border_w × perimeter) pixel ops per block,
-			//! typically ~1000-2000 ops/block on a 64x64 block with
-			//! 5 px border, ~1 ms total over a multi-second render.
-			//! Negligible.
-			//!
-			//! Edge case: if the block is too small to support two
-			//! non-overlapping border strips (height or width <=
-			//! 2 × border_w, only happens at image edges where the
-			//! block is clipped), the whole region is dimmed.  No
-			//! double-dim from overlapping strips.
+			//! Dims RGB by `dim_factor` within `border_w` of `rc_region`'s edges
+			//! (alpha and interior untouched; dims whole block if <= 2*border_w
+			//! to avoid double-dimming).
 			void DimTileBorder(
 				IRasterImage& image,
 				const Rect& rc_region,
@@ -270,43 +224,18 @@ namespace RISE
 			IPixelFilter*		pPixelFilter;
 			bool				useZSobol;		///< Use Morton-indexed Sobol (blue-noise error distribution)
 
-			//! Model-B F2 S3 fix round (P1): holds the scene-authored kernel
-			//! WHILE `SetSampleCountOverride(1)` has `pSampling` forced to
-			//! null (the "null == implicit 1 SPP" render-path convention --
-			//! see `pSampling`'s own doc).  Owns a reference exactly like
-			//! `pSampling` does (transferred, not addref'd again, on the
-			//! 1-override path; released and nulled on the >1-restore
-			//! path) so the override round-trip through
-			//! GetSampleCountOverride()'s bare int can still recover the
-			//! ORIGINAL kernel TYPE, not just its count.  Null whenever no
-			//! override-of-a-real-kernel is in flight (the overwhelming
-			//! common case).  Released in the destructor for the same
-			//! reason `pSampling` is: neither has any other scene-lifecycle
-			//! hook (`DetachFromScene` is a no-op on this class), so the
-			//! destructor is the only place that must not leak it.
+			//! Stashes the scene-authored sampling kernel while SetSampleCountOverride(1)
+			//! forces pSampling == nullptr (implicit 1 SPP) so restoring >1 preserves
+			//! the original kernel type.  Owns a ref; released in destructor.
 			ISampling2D*		pSamplingStashedByOverride;
 
 			mutable FilteredFilm*	pFilteredFilm;		///< Film buffer for wide-support filter reconstruction
 			mutable IRasterImage*	pFilteredScratch;	///< Scratch image for progressive display with film
 			ProgressiveConfig		progressiveConfig;	///< Multi-pass progressive rendering configuration
 
-			//! Persistent IRasterImage held across RasterizeScene calls.
-			//! Allocated lazily in AcquireRenderImage on first use, kept
-			//! alive until the rasterizer is destroyed or the camera
-			//! dimensions change.  Two consumers benefit:
-			//!
-			//!   1. Interactive viewport — the cancel-restart loop
-			//!      reuses the previous frame's pixels so cancelled
-			//!      passes degrade gracefully (no buffer-clear flash
-			//!      between motion frames).
-			//!
-			//!   2. Production "save image" — once a render completes,
-			//!      the final pixel data is queryable via
-			//!      GetLastRenderedImage() so the host UI can write it
-			//!      to disk in any format without re-rendering.
-			//!
-			//! `mutable` because Acquire is `const` (called from the
-			//! const RasterizeScene path).
+			//! Persistent IRasterImage kept across RasterizeScene calls until
+			//! destruction or dimension change (supports interactive cancel-restart
+			//! and GetLastRenderedImage()).
 			mutable IRasterImage*	mPersistentImage;
 			mutable unsigned int	mPersistentW;
 			mutable unsigned int	mPersistentH;
@@ -314,38 +243,20 @@ namespace RISE
 			mutable ProgressiveFilm*	mProgressiveFilm;	///< Per-pixel state for progressive multi-pass rendering
 			mutable unsigned int		mTotalProgressiveSPP;	///< Total SPP budget across all progressive passes
 
-			// Weighted progress state.  The progressive loop fills
-			// these before each RasterizeScenePass call so the
-			// dispatcher can report a single 0..1 progress bar
-			// across the whole render (weighted by SPP-per-tile for
-			// the current pass).  When mProgressTotal is 0,
-			// RasterizeScenePass falls back to per-pass 0..1 mode.
+			// Weighted multi-pass progress state (0 total = per-pass 0..1 fallback).
 			mutable double				mProgressBase;		///< Work units done before this pass
 			mutable double				mProgressWeight;	///< Work units per tile in this pass (= passSPP)
 			mutable double				mProgressTotal;		///< Total work units across all passes
 
-			//! True only while PreRenderSetup runs for the SECOND field of an
-			//! interlaced animation frame (RenderFrameOfAnimation with
-			//! resetAOVs == false).  Both fields render into ONE image that is
-			//! flushed once, so per-frame accumulators shared across the frame
-			//! (BDPT/VCM splat film, adaptive sample counter) must survive the
-			//! second field's setup (DL-462).  Per-field state (light vertex
-			//! store, light sampler) is still rebuilt at the field's time.
+			//! True during PreRenderSetup for the second field of an interlaced
+			//! frame: per-frame accumulators survive; per-field state rebuilds.
 			mutable bool				mContinuingInterlacedFrame;
 
-			//! DL-463 (a): true while a motion-blurred animation frame runs
-			//! its progressive passes at ONE shutter time per pass (see
-			//! WantsPerPassShutterTime): the scene has been moved to the
-			//! pass's time before OnProgressivePassBegin, so per-pass state
-			//! (VCM's light vertex store) must be rebuilt for EVERY pass,
-			//! pass 0 included.
+			//! True while progressive passes render at one shutter time per pass
+			//! (WantsPerPassShutterTime): per-pass state must rebuild on pass 0 too.
 			mutable bool				mPerPassShutterTime = false;
-			//! DL-463: true only while PreRenderSetup runs for a frame that
-			//! MAY render with a per-pass shutter time (exposure, no scanning
-			//! / pixel rate).  A hook whose pass-0 state the per-pass loop
-			//! would rebuild anyway may skip building it at the frame time.
+			//! True during PreRenderSetup when a frame may use per-pass shutter time.
 			mutable bool				mPerPassShutterTimeCandidate = false;
-			//! DL-465: the single-threaded-fallback note was logged for this frame.
 			mutable bool				mTimeIndexedFallbackLogged = false;
 
 			mutable AOVBuffers*		pAOVBuffers;		///< Planned first-hit AOV sidecar (OIDN and/or FrameStore consumers)
@@ -362,88 +273,23 @@ namespace RISE
 				) const;
 
 #ifdef RISE_ENABLE_OIDN
-			//! Whether OIDN should be invoked at the end of a render
-			//! (or render attempt — see below).  Default just gates
-			//! on `bDenoisingEnabled`; the cancel state is INTENTIONALLY
-			//! NOT consulted, so cancelling a render mid-flight still
-			//! produces a denoised partial image.  Per-pixel coverage
-			//! varies (some tiles may be un-rendered or under-sampled),
-			//! but the resulting denoised partial is more useful for
-			//! interactive workflows than the raw-noisy partial that
-			//! would otherwise be flushed.  Interactive subclasses can
-			//! add their own policy gates on top — see
-			//! `InteractivePelRasterizer::ShouldDenoise` for the
-			//! preview-mode toggle.  Documented in docs/OIDN.md
-			//! (decision log: 2026-04-29 cancel-still-denoises).
+			//! Whether OIDN runs at end of render (docs/OIDN.md).  Intentionally
+			//! ignores cancel state so cancelled renders still denoise partials.
 			virtual bool ShouldDenoise() const;
 
-			//! Number of primary-ray AOV samples to collect when the
-			//! renderer did not accumulate AOVs during shading.  The
-			//! production default keeps DOF/AA coverage; interactive
-			//! preview overrides to 1 for latency.
+			//! Primary-ray AOV sample count when shading did not accumulate AOVs.
 			virtual unsigned int GetDenoiseAOVSamplesPerPixel() const;
 
-			// DL-360: fixed family policy in seconds per million samples.
 			virtual double DenoiseWorkPerMegaSample() const { return 0.1; }
 		public:
-			// Scene-static policy rate, also available to diagnostics.
 			double EstimateDenoiseWorkPerMegapixel() const;
 		protected:
 
 #endif
 
-			//! L8 round 6 / 9 / 13 — Whether `SPRasterizeSingleBlock`
-			//! / `SPRasterizeSingleBlockOfAnimation` should fire the
-			//! "split bracket" pair that exposes the toggle-decorated
-			//! image to FrameStore observers BEFORE the per-pixel
-			//! writes overwrite it.
-			//!
-			//! **Default TRUE** as of L8 round 13 — restores the
-			//! pre-regression "red tile-corner toggles appear
-			//! immediately when a render starts" UX.
-			//!
-			//! Timeline:
-			//!   Round 1 (original) — added the split-bracket
-			//!     EndTile→BeginTile pair after DrawToggles so
-			//!     FrameStore observers see the toggle-decorated
-			//!     image briefly before the per-pixel loop overwrites
-			//!     the red corners.
-			//!   Round 7 — defaulted FALSE to dodge a
-			//!     `bufferMutex_ ↔ tile-mutex` lock inversion that
-			//!     was caused by the bridge's synchronous per-tile
-			//!     observer dispatch holding `bufferMutex_` while
-			//!     trying to acquire a tile shared_lock.
-			//!   Round 9 — eliminated the inversion structurally:
-			//!     the platform bridges no longer wire the per-tile
-			//!     observer callback at all (production VFS's
-			//!     `tileCb_` is left null; the 30 Hz polling timer
-			//!     is the sole driver of progressive UI updates).
-			//!     Observer dispatch from EndTile becomes a no-op at
-			//!     the bridge layer.
-			//!   Round 13 — re-enable by default.  The split-bracket
-			//!     `EndTile` bumps `globalGeneration_`, which the
-			//!     bridge's poll catches within ~33 ms — the user
-			//!     sees the red toggles as soon as the block starts,
-			//!     even for heavy scenes whose per-pixel loop takes
-			//!     seconds.
-			//!
-			//! Cost: one extra mutex unlock/lock + generation bump
-			//! per tile per block — ~100 ns each on Apple Silicon,
-			//! ~1 µs total even for a 64x64 block with 4 FS tiles.
-			//! Negligible vs the per-pixel cost of ANY rendering
-			//! integrator.
-			//!
-			//! Subclasses can still override to `false` to opt out
-			//! (e.g. for benchmarks where the toggle visualisation
-			//! adds measurement noise).
-			//!
-			//! **Placement note**: this method intentionally lives
-			//! OUTSIDE the `RISE_ENABLE_OIDN` guard above — it has
-			//! nothing to do with denoising and is called from the
-			//! tile bracket regardless of OIDN availability.
-			//! Pre-round-9 it lived inside the guard, which broke
-			//! the Android build (Android does not define
-			//! `RISE_ENABLE_OIDN`).
+			//! Whether tile blocks emit a split EndTile/BeginTile pair after tile
+			//! decoration so polled FrameStore observers see active tiles promptly.
+			//! Kept outside `#ifdef RISE_ENABLE_OIDN` (independent of OIDN/Android).
 			virtual bool ShouldFireToggleObserverEvents() const { return true; }
 
 			/// Returns true when the pixel filter's support extends beyond
@@ -507,101 +353,37 @@ namespace RISE
 				}
 			}
 
-			/// Returns the image the caller hands to OutputIntermediateImage
-			/// together with @a region.  The primary accumulation buffer is
-			/// never mutated: when a FilteredFilm (or, in
-			/// BidirectionalRasterizerBase, a SplatFilm) is active the result
-			/// is a scratch image composed from the primary plus the films;
-			/// otherwise it is @a primary itself.
-			///
-			/// Contract:
-			///  * @a region non-null: only the pixels inside that INCLUSIVE
-			///    rect, clamped to the image, are valid in the returned
-			///    image (film contributions are additionally limited to the
-			///    active output / splat region, exactly as a full-frame
-			///    composition would produce them).  Pixels outside it are not
-			///    composed by this call.  In THIS helper's filtered scratch
-			///    (pFilteredScratch) they hold the film as it was before the
-			///    render (RasterizeScene copies in the prepared image,
-			///    RasterizeSceneAnimation the image as acquired, both before
-			///    any worker starts), or an earlier composition;
-			///    AgentFrameStoreIsolationTest checks that every outside pixel
-			///    of a regional pixel-based render's previews equals the film
-			///    as it was before the render.  BidirectionalRasterizerBase's
-			///    override composes into its own scratch, which starts
-			///    transparent black, so there they are black or an earlier
-			///    composition.  (With no film or no scratch the getter returns
-			///    the primary image itself.)  Callers must still read only
-			///    the region.
-			///    An empty or wholly off-image region composes nothing.
-			///  * @a region null: the whole image is valid.
-			///  * The returned reference is valid until the caller's
-			///    consumers have returned; consumers must not retain it.
-			///  * Concurrent calls are allowed only for pairwise-DISJOINT
-			///    regions on the same primary (the per-block worker shape:
-			///    each worker passes its own finished tile).  A null region
-			///    must not run concurrently with any other call.
-			///  * The scratch image is never allocated or resized here; it is
-			///    prepared single-threaded before any worker pass (render
-			///    dimensions are constant within a pass).  If it is missing
-			///    or its dimensions do not match @a primary, the primary is
-			///    returned unchanged (one warning per process).
+			/// Returns the image to hand to OutputIntermediateImage for @a region
+			/// without mutating @a primary (composes into a pre-allocated scratch
+			/// buffer when a FilteredFilm/SplatFilm is active, else returns @a primary).
+			/// Contract: @a region is inclusive (null = full frame, single-threaded);
+			/// concurrent calls are allowed only for pairwise-disjoint regions;
+			/// scratch is never allocated/resized here; callers must not retain the ref.
 			virtual IRasterImage& GetIntermediateOutputImage( IRasterImage& primary, const Rect* region ) const;
 
-			/// Clamps an inclusive region to a w x h image (null = whole
-			/// image).  False when nothing of it lies on the image.
 			static bool ClampRegionToImage( const Rect* region, unsigned int w, unsigned int h, Rect& out );
-
-			/// Inclusive intersection of @a a with @a b (null @a b = no
-			/// limit).  False when the intersection is empty.
 			static bool IntersectRegion( const Rect& a, const Rect* b, Rect& out );
-
-			/// Copies src -> dst over an inclusive region already clamped
-			/// to both images.
 			static void CopyRegion( const IRasterImage& src, IRasterImage& dst, const Rect& r );
 
-			/// Region the single-threaded per-pass preview composes: the
-			/// render's clamped output crop (ConfigureOutputRegion), or null
-			/// (whole image) when there is none.  An invalid crop renders the
-			/// full frame (BoundsFromRect), so it composes the full frame too.
+			/// Clamped output crop for per-pass preview composition (null = full frame).
 			const Rect* PreviewCompositionRegion() const {
 				return mHasActiveOutputRegion ? &mActiveOutputRegion : 0;
 			}
 
-			/// Release the render-scoped preview composition resources
-			/// (filtered film + its scratch here; subclasses add their own
-			/// composition scratch).  Called by every top-level render
-			/// entry point's scope guard -- on success, cancel and unwind --
-			/// on the dispatching thread after all workers have joined and
-			/// the last preview consumer has returned, so no frame-sized
-			/// buffer outlives the render.  Must be idempotent.
+			/// Idempotent cleanup of render-scoped preview buffers (filtered film +
+			/// scratch); called via scope guard on the dispatching thread after workers join.
 			virtual void ReleaseRenderScopedPreviewResources() const;
 
-			/// Whether GetIntermediateOutputImage composes into
-			/// pFilteredScratch.  True for the base getter; a subclass whose
-			/// getter composes elsewhere returns false so the render entry
-			/// points do not allocate an unread frame-sized scratch.
+			/// False if a subclass composes into its own scratch rather than pFilteredScratch.
 			virtual bool UsesFilteredPreviewScratch() const { return true; }
 
-			// Our own functions
 			virtual void FlushToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const;
-
-			// Dispatch the pre-denoised splatted image to rasterizer outputs.
-			// File outputs write to the normal filename; non-file outputs
-			// no-op (they will receive the denoised final via
-			// FlushDenoisedToOutputs).
+			/// Pre-denoised flush: file outputs write normal filename; non-file outputs no-op.
 			virtual void FlushPreDenoisedToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const;
-
-			// Dispatch the denoised final image to rasterizer outputs.  File
-			// outputs write with a "_denoised" filename suffix; non-file
-			// outputs forward to OutputImage so they still observe the
-			// denoised final (existing behavior).
+			/// Denoised flush: file outputs write "_denoised" suffix; non-file outputs forward to OutputImage.
 			virtual void FlushDenoisedToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const;
 
-			/// Reuses the normal block dispatcher for internal passes such as
-			/// path-guiding training, so derived rasterizers can run those
-			/// passes multithreaded without duplicating dispatch logic.
-			/// Returns false if the progress callback requested cancellation.
+			/// Reuses block dispatch for internal passes (e.g. guiding training). Returns false on cancel.
 			bool RasterizeBlocksForPass(
 				const RuntimeContext::PASS pass,
 				const IScene& scene,
@@ -616,7 +398,6 @@ namespace RISE
 		public:
 			PixelBasedRasterizerHelper( IRayCaster* pCaster_ , RISE::Implementation::FrameStore* frameStore = nullptr);
 
-			//! Test-only observation of the private post-processing crop state.
 			bool ForTest_HasActiveOutputRegion() const {
 				return mHasActiveOutputRegion;
 			}
@@ -624,90 +405,28 @@ namespace RISE
 				return mActiveOutputRegion;
 			}
 
-			/// \return The ray caster this rasterizer drives (borrowed,
-			/// not addref'd).  Used by Job::SetActiveRasterizerRadianceScale
-			/// to reach the concrete RayCaster (via a further dynamic_cast)
-			/// and push a `> modify rasterizer radiance_scale` override.
-			/// Every in-tree pixel-based rasterizer (PT / BDPT / VCM / MLT
-			/// and their spectral variants) routes through this base, so
-			/// the cast from IRasterizer succeeds for all of them.
+			/// Borrowed ray caster pointer (not addref'd).
 			IRayCaster* GetRayCaster() const { return pCaster; }
 
-			/// Called after a RuntimeContext is created, before any rendering
-			/// with it.  Subclasses can override to inject per-context state
-			/// (e.g. path guiding field pointers).  Default installs shared
-			/// progressive render state.
 			virtual void PrepareRuntimeContext( RuntimeContext& rc ) const;
-
-			/// Total sample budget for progressive rendering.  Rasterizers with
-			/// adaptive sampling override this to use their adaptive max.
 			virtual unsigned int GetProgressiveTotalSPP() const;
 
-			/// Whether the adaptive-sample-map heatmap should be emitted in
-			/// place of beauty when ProgressiveFilm::Resolve runs.  Default
-			/// FALSE; rasterizers that carry an `adaptiveConfig` override to
-			/// return `adaptiveConfig.showMap && adaptive-is-active`.
-			///
-			/// Why this exists: the per-pixel `cret` heatmap write in each
-			/// rasterizer's IntegratePixel is silently overwritten in
-			/// progressive mode by the ProgressiveFilm resolve step, so the
-			/// resolve also needs to know to emit the heatmap.  See the
-			/// audit "show_adaptive_map ineffective in progressive mode"
-			/// fix landed 2026-05-24.
+			/// True when ProgressiveFilm::Resolve should emit the adaptive sample-count heatmap.
 			virtual bool GetAdaptiveShowMap() const { return false; }
-
-			/// Target sample count used as the denominator for the
-			/// adaptive-sample-map heatmap.  Default 0; rasterizers with
-			/// adaptive sampling return `adaptiveConfig.maxSamples`.
 			virtual unsigned int GetAdaptiveTargetSamples() const { return 0; }
 
-		/// Pointer to the IRasterImage produced by the most recent
-		/// RasterizeScene call (or nullptr if no render has run yet).
-		/// Refcount is held by this rasterizer; callers must NOT
-		/// release.  The buffer is invalidated when:
-		///   - the rasterizer is destroyed
-		///   - a subsequent RasterizeScene at different dimensions
-		///     reallocates it (interactive viewport scale step)
-		///   - PrepareImageForNewRender clears it for the next pass
-		///     (default impl; interactive subclass skips the clear)
-		///
-		/// Intended use: production rasterizers expose this so the
-		/// host UI can save the final image to disk in any format
-		/// after a completed render, without re-running the render.
-		/// Thread-safe to read AFTER RasterizeScene returns; not safe
-		/// to read concurrently with RasterizeScene.
+		/// Most recent RasterizeScene image (borrowed; safe to read only after RasterizeScene returns).
 		const IRasterImage* GetLastRenderedImage() const { return mPersistentImage; }
 
-		/// Called at the beginning of RasterizeScene, before the main
-		/// render pass.  Subclasses can override to perform setup such
-		/// as path guiding training.  Default does nothing.
 		virtual void PreRenderSetup( const IScene& pScene, const Rect* pRect ) const {}
 
-		/// Called after PrepareForRendering() and before PreRenderSetup().
-		/// Subclasses (BDPT, VCM) override to refuse unsupported scene
-		/// features cleanly with an eLog_Error diagnostic.
+		/// Called after PrepareForRendering() and before PreRenderSetup(); return false to refuse unsupported scenes.
 		virtual bool ValidateSceneForRasterizer( const IScene& /*pScene*/ ) const { return true; }
 
-		/// DL-457: moves the scene to ONE motion-blur sample's time.
-		/// Evaluating the animator alone leaves parented objects composed
-		/// against their parents' frame-time pose; the hierarchy re-bake
-		/// carries them along.
-		///
-		/// DL-465: inside a time-indexed pass (TimeIndexedMotionBlur.h) the
-		/// calling render thread poses only its OWN clones of the moving
-		/// elements -- the same evaluation and re-compose -- and the shared
-		/// scene is never written, so such a frame renders multi-threaded.
-		/// Otherwise (the single-threaded fallback, the shutter sweep and
-		/// the per-pass VCM time) the shared scene moves, on the one
-		/// thread rendering it.
+		/// Poses the scene (or current TimeIndexedThread's clones) to motion-blur sample time `t`.
+		/// Enters Transformable::BeginPreparedInternalMutation so the prepared mutation freeze permits posing.
 		static void AnimateSceneToSampleTime( const IScene& pScene, const Scalar t )
 		{
-			// The per-sample pose is the render's own internal mutation.
-			// A Job render request holds the prepared mutation freeze
-			// (Job::BeginPreparedRequest) for the whole call, and under it
-			// the keyframe setters refuse external mutation -- on render
-			// worker threads too -- so without this capability every
-			// sample silently kept the frame-time pose (no motion blur).
 			struct InternalMutation {
 				InternalMutation() { Transformable::BeginPreparedInternalMutation(); }
 				~InternalMutation() { Transformable::EndPreparedInternalMutation(); }
@@ -720,126 +439,45 @@ namespace RISE
 			pScene.GetObjects()->RecomposeAnimatedHierarchy();
 		}
 
-		/// DL-457: the interval [t0, t1] every motion-blur sample time of
-		/// the frame at `time` falls in (camera exposure plus any scanning
-		/// / pixel rate across the image).  False when the camera has no
-		/// exposure (no per-sample time).
+		/// Shutter interval [t0, t1] for the frame at `time` (false if camera has no exposure).
 		static bool FrameShutterInterval( const ICamera& cam, const Scalar time, const unsigned int width, const unsigned int height, Scalar& t0, Scalar& t1 );
 
-		/// DL-457: moves the scene to a frame's nominal time and prepares
-		/// the spatial structure for it -- over the whole shutter when the
-		/// camera has exposure and `bSweepShutter` is set, so a ray that
-		/// meets an object anywhere it goes during the exposure tests it.
-		/// The AOV fallback passes FALSE: it traces the nominal time only.
+		/// Poses scene to `time` and builds acceleration/light structures (sweeping shutter when `bSweepShutter`).
 		void PrepareSceneForFrame( const IScene& pScene, const Scalar time, const bool bHasKeyframedObjects, const unsigned int width, const unsigned int height, const bool bSweepShutter = true ) const;
 
-		/// Called at the beginning of each progressive pass, before
-		/// the per-pixel dispatch.  Subclasses can override to
-		/// refresh per-iteration state (e.g. VCM rebuilds its
-		/// light vertex store).  Default does nothing.
-		/// \param pScene  Scene being rendered
-		/// \param passIdx Zero-based progressive pass index
 		virtual void OnProgressivePassBegin(
 			const IScene& pScene,
 			const unsigned int passIdx ) const {}
 
-		/// DL-463 (a): true when this rasterizer's progressive passes
-		/// share state ACROSS pixel samples that must be traced at the
-		/// samples' own time -- VCM's vertex-merging light store, which
-		/// every eye sample of a pass merges against.  A motion-blurred
-		/// animation frame (exposure, no scanning / pixel rate) then
-		/// moves the whole scene to one shutter time per pass (one stratum
-		/// per pass, strata in a random order, jittered within each) and renders
-		/// the pass's light store and all its eye samples at that time,
-		/// instead of a per-sample time against a frame-time store.  The
-		/// progressive film's average over passes is the shutter average.
-		/// Queried after PreRenderSetup.  Default false.
+		/// True if progressive passes share cross-pixel time-dependent state (e.g. VCM light
+		/// vertex store), rendering one shutter stratum per pass instead of per-sample times.
 		virtual bool WantsPerPassShutterTime() const { return false; }
 
-		/// DL-465: may a motion-blurred animation frame of this rasterizer
-		/// render MULTI-threaded through per-thread time-indexed scene
-		/// state (TimeIndexedMotionBlur.h)?  True for the PT, BDPT and VCM
-		/// rasterizers, whose per-sample work reaches moving state only
-		/// through the time-indexed interfaces.  Default false: the legacy
-		/// rasterizers (frozen) keep the single-threaded per-sample path.
+		/// True for rasterizers safe to run multi-threaded motion blur via TimeIndexedMotionBlur.h.
 		virtual bool SupportsTimeIndexedMotionBlur() const { return false; }
 
-		/// When true, per-block intermediate output is skipped during
-		/// the block dispatch.  The end-of-pass flush still runs.
-		/// VCM overrides this to true because each pass is a single
-		/// SPP — flushing after every 32×32 block is wasted I/O.
+		/// Skip per-block intermediate output (end-of-pass flush still runs; used by 1-SPP/pass VCM).
 		virtual bool SkipPerBlockIntermediateOutput() const { return false; }
 
 #ifdef RISE_ENABLE_OIDN
-		/// Called immediately before the canonical beauty denoiser.  Subclasses
-		/// with companion outputs can reuse the same pre-denoise render timing
-		/// for any derived rasterizer that needs render-duration telemetry.
 		virtual void OnBeforeDenoise( double /*renderElapsedSeconds*/ ) const {}
 #endif
 
-		/// Called at the end of RasterizeScene, after the main render
-		/// pass and output flush.  Subclasses can override to perform
-		/// cleanup.  Default does nothing.
 		virtual void PostRenderCleanup() const {}
 
-		/// Acquire the IRasterImage that this RasterizeScene call will
-		/// fill.  Default impl allocates a fresh zero-initialized image
-		/// per call (production behaviour).  Subclasses can override
-		/// (e.g. InteractivePelRasterizer) to return a persistent
-		/// buffer whose pixel content survives across calls — this
-		/// lets the interactive viewport's cancel-restart loop start
-		/// each new render on top of the previous frame's pixels
-		/// instead of a freshly cleared buffer, eliminating black /
-		/// debug-color flashes between cancelled passes.
-		///
-		/// The returned pointer must have its refcount incremented for
-		/// the caller (RasterizeScene pairs this with ReleaseRenderImage).
+		/// Acquire/release target image for RasterizeScene (returns addref'd pointer).
 		virtual IRasterImage* AcquireRenderImage( unsigned int width, unsigned int height ) const;
-
-		/// Release the IRasterImage acquired by AcquireRenderImage.
-		/// Default impl calls safe_release.  Subclasses caching the
-		/// image (interactive viewport) decrement the caller's
-		/// reference but keep the persistent reference alive.
 		virtual void ReleaseRenderImage( IRasterImage* pImage ) const;
 
-		/// Per-pass entry hook called once at the top of RasterizeScene
-		/// after the image is acquired.  Default: clear the image to a
-		/// random pastel and fire OutputIntermediateImage on every
-		/// rasterizer output (the random clear is a debug visualization
-		/// — un-rendered tiles end up in a distinctive colour that
-		/// makes incomplete coverage easy to spot).  Interactive
-		/// subclasses override to skip the clear entirely so the
-		/// previous frame's pixels remain visible while new tiles
-		/// render in place.
+		/// Per-pass entry hook (default: random pastel clear; interactive subclasses skip clear).
 		virtual void PrepareImageForNewRender( IRasterImage& img, const Rect* pRect ) const;
 
-		/// Factory for the default tile-dispatch sequence used when
-		/// RasterizeScene is invoked with pRasterSequence == nullptr.
-		/// Default returns a Morton (Z-curve) sequence — production
-		/// rasterizers don't care about tile order because they
-		/// always render to completion.  Interactive subclasses
-		/// override to return a centre-out sequence so partial
-		/// buffers from cancelled passes show useful image content
-		/// in the middle of the frame rather than upper-left corner
-		/// noise.  Returned object has refcount 1; caller releases.
+		/// Default tile sequence when pRasterSequence == nullptr (default: Morton; caller releases ref).
 		virtual IRasterizeSequence* CreateDefaultRasterSequence( unsigned int tileEdge ) const;
 
 			// Rasterizer interface implementations
-			//
-			// Model-B F2 slice S3 note: adding `override` to
-			// SetSampleCountOverride/GetSampleCountOverride below flips on
-			// clang's -Winconsistent-missing-override heuristic for this
-			// WHOLE class (it only checks once a class uses `override`
-			// anywhere) -- these five pre-existing IRasterizer overrides
-			// were silently missing the keyword and had never been flagged
-			// before.  Added here (not touched otherwise) to keep the
-			// clean-rebuild warning-free per CLAUDE.md's "compiler
-			// warnings are bugs" rule; verified this is the actual
-			// mechanism by a stash-rebuild-pop A/B (0 warnings on HEAD,
-			// these 5 appear only once `override` is introduced anywhere
-			// in this class).
-			virtual void AttachToScene( const IScene* ) override {};		// We don't need to do anything to attach
-			virtual void DetachFromScene( const IScene* ) override {};	// We don't need to do anything to detach
+			virtual void AttachToScene( const IScene* ) override {};
+			virtual void DetachFromScene( const IScene* ) override {};
 
 			void SPRasterizeSingleBlock( const RuntimeContext& rc, IRasterImage& image, const IScene& scene, const Rect& rect, const unsigned int height ) const;
 			void SPRasterizeSingleBlockOfAnimation( const RuntimeContext& rc, IRasterImage& image, const IScene& scene, const Rect& rect, const unsigned int height, const AnimFrameData& framedata ) const;
@@ -863,87 +501,17 @@ namespace RISE
 			virtual void SubSampleRays( ISampling2D* pSampling_, IPixelFilter* pPixelFilter_ );
 			void SetProgressiveConfig( const ProgressiveConfig& config );
 
-			//! Model-B F2 slice S3 (EffectiveRenderConfig) -- see the
-			//! IRasterizer base doc for the full capture/apply/restore
-			//! contract.  Implemented here (the pixel-based rasterizer
-			//! family's shared base -- PT, spectral PT, BDPT, VCM all
-			//! derive from this) rather than per-subclass: every one of
-			//! them already owns `pSampling`/SetNumSamples via this class,
-			//! so ONE override covers the whole family.
-			//!
-			//! Model-B F2 S3 fix round (P1): the capture/apply/restore
-			//! contract round-trips through `GetSampleCountOverride()`'s
-			//! bare INT ONLY (see `SampleCountRestoreGuard` in
-			//! AgentSession.cpp) -- there is no channel for the caller to
-			//! also hand back a kernel TYPE.  Without `pSamplingStashedByOverride`,
-			//! a samples==1 call used to RELEASE the scene-authored kernel
-			//! outright, so a later samples>1 restore had no way to tell
-			//! "scene authored Sobol/Halton/whatever" apart from "scene
-			//! never authored a kernel at all" -- both look like `pSampling
-			//! == null` -- and silently rebuilt a fresh MultiJittered
-			//! kernel either way.  On a session that previews at 1 spp and
-			//! then restores to the scene's real sample count, this
-			//! swapped the kernel TYPE under the user for every subsequent
-			//! render, invisible to both ReadDocument (never touched) and
-			//! the count-only override tests.  The stash makes the API
-			//! non-lossy across ANY call sequence while leaving the "null
-			//! pSampling == implicit 1 SPP" render-path convention exactly
-			//! as-is (the stash is invisible to the render path --
-			//! `pSampling` itself stays null while overridden to 1).
-			//!
-			//! samples < 1: no-op, returns false (never applied -- mirrors
-			//! the "-1 means absent" convention one layer up).
-			//! samples == 1, `pSampling` non-null: the reference is
-			//! TRANSFERRED (not released) into `pSamplingStashedByOverride`
-			//! -- no addref, no release, just a pointer move -- then
-			//! `pSampling` is set null.  samples == 1, `pSampling` already
-			//! null: a true no-kernel scene; nothing to stash (any earlier
-			//! stash, if present, is left untouched -- see the
-			//! orig=1->64->1 sequence in the header's class-level test doc).
-			//! samples > 1, `pSampling` already set (the scene authored a
-			//! `samples` param and no 1-override is currently in flight):
-			//! mutates the EXISTING kernel's count IN PLACE via
-			//! ISampling2D::SetNumSamples -- preserves whichever kernel
-			//! TYPE the scene author chose (stratified / Sobol / Halton /
-			//! multi-jittered / ...); only the count changes.
-			//! samples > 1, `pSampling` null AND a stash is present:
-			//! REINSTALLS the stash (transfers it back into `pSampling`,
-			//! `SetNumSamples(samples)`) instead of constructing a new
-			//! kernel -- this is the restore-after-a-1-override path and is
-			//! exactly what recovers the original TYPE.
-			//! samples > 1, `pSampling` null AND no stash: the genuine
-			//! scene-authored-1-spp case -- constructs a fresh MultiJittered
-			//! kernel (the same kernel type
-			//! InteractivePelRasterizer::SetSampleCount uses for its own
-			//! from-scratch polish-pass case) via SubSampleRays.
-			//! Always returns true once past the samples<1 guard -- this
-			//! override never fails on the pixel-based family.
-			//!
-			//! Double-override sequences (why the stash alone is sufficient
-			//! for the guard's int-only capture/restore, worked through
-			//! explicitly since this is easy to get wrong):
-			//!   orig=8 (Sobol) -> 1 -> 8: apply(1) stashes Sobol, pSampling
-			//!     null; restore(8) reinstalls the Sobol stash, SetNumSamples(8).
-			//!   orig=8 (Sobol) -> 1 -> 64 -> 8: apply(1) stashes Sobol;
-			//!     a SECOND override to 64 (samples>1, pSampling null, stash
-			//!     present) reinstalls the stash and sets count 64 -- the
-			//!     stash is consumed/cleared on reinstall, so `pSampling` is
-			//!     the live Sobol kernel again (count 64) with no stash
-			//!     outstanding; the final restore(8) hits the ordinary
-			//!     in-place-mutation branch (pSampling already set) and
-			//!     mutates count back to 8.  Type preserved throughout.
-			//!   orig=1 (no kernel authored, pSampling null, no stash) -> 64
-			//!     -> 1: apply(64) has no stash to reinstall, so it builds a
-			//!     fresh MultiJittered kernel (the genuine-1-spp branch);
-			//!     restore(1) releases that MultiJittered kernel outright
-			//!     (no stash created, because samples==1's stash step only
-			//!     fires when `pSampling` is non-null at that call) -- back
-			//!     to the true original null/1-spp state.
+			//! Overrides sample count for the pixel-based family while preserving
+			//! the scene-authored kernel type across `orig -> 1 -> orig` via
+			//! `pSamplingStashedByOverride`:
+			//!   - samples < 1: no-op, returns false
+			//!   - samples == 1: transfers non-null pSampling to stash and nulls pSampling
+			//!   - samples > 1: mutates existing pSampling in place, or restores stash,
+			//!     or constructs a MultiJittered kernel if neither exists.
 			virtual bool SetSampleCountOverride( int samples ) override;
 
 #ifdef RISE_ENABLE_OIDN
-			//! Test-only parked-render oracle for live/full OIDN lifecycle tests.
-			//! Call only when no RasterizeScene invocation is in flight.
+			//! Test-only parked-render oracle (call only when no RasterizeScene is in flight).
 			bool ForTest_GetAOVBufferDimensions(
 				unsigned int& width, unsigned int& height ) const
 			{
@@ -954,32 +522,10 @@ namespace RISE
 			}
 #endif
 
-			//! The samples-per-pixel this rasterizer will actually use on
-			//! its next RasterizeScene call: `pSampling->GetNumSamples()`
-			//! when a kernel is installed, else 1 (implicit single-ray
-			//! per pixel -- the SAME idiom RasterizeSceneAnimation already
-			//! uses for `totalSPPPerFrame`).  Never -1 on this class (that
-			//! sentinel is reserved for a rasterizer that does NOT support
-			//! the override at all -- see the IRasterizer base doc).
-			//!
-			//! Model-B F2 S3 fix round: intentionally reads `pSampling`
-			//! ONLY, never `pSamplingStashedByOverride` -- the live render
-			//! state while overridden to 1 spp really is "no kernel, 1
-			//! sample," and this accessor's contract is "what will the
-			//! NEXT RasterizeScene call actually do," not "what kernel is
-			//! parked for a future restore."  A caller mid-1-override
-			//! correctly reads back 1 here even though a stash exists.
+			//! Live SPP for next RasterizeScene (`pSampling->GetNumSamples()`, else 1; never reads stash).
 			virtual int GetSampleCountOverride() const override;
 
-			//! Test-only accessor: `typeid(*pSampling).name()`'s mangled
-			//! name, or "" when `pSampling` is null (the 1-spp / no-kernel
-			//! state).  Exists so a test can red-prove the P1 fix above --
-			//! no other public seam exposes the sampling kernel's
-			//! CONCRETE TYPE (only its sample COUNT, via
-			//! GetSampleCountOverride).  RTTI is available on every RISE
-			//! build (no `-fno-rtti` anywhere in the make/Xcode/VS2022
-			//! configs), so `typeid` is safe to use unconditionally here.
-			//! Production code never calls this.
+			//! Test-only RTTI name of `pSampling` ("" when null).
 			const char* ForTest_SamplingKernelName() const
 			{
 				return pSampling ? typeid( *pSampling ).name() : "";

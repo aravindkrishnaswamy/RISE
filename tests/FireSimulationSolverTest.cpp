@@ -1636,6 +1636,16 @@ int main()
 			r80OneWorker.maximumActiveSetComplementarityDiscrepancyMPerS,
 			r80ManyWorkers.maximumActiveSetComplementarityDiscrepancyMPerS,
 			r80OneWorker.activeSetCycleLength,r80ManyWorkers.activeSetCycleLength);
+	// Re-pinned at fire solver version 4 under the new default thin LTO (were 0.0029506166530252633
+	// and 0.038419987516982668 under full LTO).  This test's own translation unit is fast-math
+	// reference-simulator code linked with LTO, so these bits still depend on the LTO mode; it is
+	// the one fire test that does (docs/BUILD_FLAGS.md section 8, docs/FIRE_SMOKE_STATUS.md).
+	{
+		const double selectedDiscrepancy=OpenActiveSetComplementarityDiscrepancy3D(r80Shape,r80Boundary,r80OneWorker),
+			otherDiscrepancy=OpenActiveSetComplementarityDiscrepancy3D(r80Shape,r80Boundary,r80OtherBranch);
+		if(selectedDiscrepancy!=0.0029506166530252841||otherDiscrepancy!=0.038419987516984999)
+			std::printf("r80 observed discrepancies: selected=%.17g other=%.17g\n",selectedDiscrepancy,otherDiscrepancy);
+	}
 	Check(r80OneOK&&r80ManyOK&&r80OtherOK&&r80ReversedOK&&
 		r80OneWorker.activeSetDiscontinuousClass&&r80ReversedVisit.activeSetDiscontinuousClass&&
 		r80OneWorker.activeSetCycleLength==2u&&r80OneWorker.activeSetDifferingFaceCount==1u&&
@@ -1643,9 +1653,9 @@ int main()
 		FlattenOpenActiveSet3D(r80OneWorker.inflow)==r80ExpectedSelected&&
 		FlattenOpenActiveSet3D(r80OtherBranch.inflow)==r80ExpectedOther&&
 		OpenActiveSetComplementarityDiscrepancy3D(r80Shape,r80Boundary,r80OneWorker)==
-			0.0029506166530252633&&
+			0.0029506166530252841&&
 		OpenActiveSetComplementarityDiscrepancy3D(r80Shape,r80Boundary,r80OtherBranch)==
-			0.038419987516982668&&
+			0.038419987516984999&&
 		r80OneWorker.inflow==r80ReversedVisit.inflow&&
 		r80OneWorker.velocityMPerS.component==r80ReversedVisit.velocityMPerS.component&&
 		r80OneWorker.maximumDivergenceResidualPerS<=2.0e-8&&

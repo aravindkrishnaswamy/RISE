@@ -2,6 +2,14 @@
 //
 // FireProductionSource.cpp - compiled canonical methane source authority
 //
+// Implements FireProductionCanonicalSourceAuthority (the sole issuer of
+// sealed FireProductionFrozenSourcePacketSeal objects). Converts fp32
+// cell-centered conservative states Q[9][cells] (x-fast (z*ny+y)*nx+x)
+// to binary64, runs canonical EOS inversion, ignition BFS + rim CFT
+// eligibility, two-pass EDC reaction + backward-Euler radiation, optional
+// radiatively adiabatic floor / inert-plume doses, and seals FNV-1a
+// lineage identities for both CPU and Metal step owners.
+//
 // License Information: Please see the attached LICENSE.TXT file
 //
 //////////////////////////////////////////////////////////////////////
@@ -54,6 +62,8 @@ namespace RISE
 				return true;
 			}
 		}
+		// --- FNV-1a lineage hashing helpers for source packet seals ---
+
 		//! The only authority allowed to mint a production frozen-source seal.  It
 		//! wraps the already qualified canonical grid producer; callers cannot seal
 		//! a precomputed delta, pilot pair, or radiation factor.
@@ -105,6 +115,8 @@ namespace RISE
 					*value;++value)HashByte(hash,*value);
 			}
 
+		// --- Working-set certification and canonical frozen-source builder ---
+
 		bool FireProductionCanonicalSourceAuthority::WorkingSetBytes(
 			const FireProductionProjectionShape& shape,const unsigned int workerCount,
 			std::uint64_t& bytes,std::string* error )
@@ -139,6 +151,10 @@ namespace RISE
 			if(error)error->clear();return true;
 		}
 
+		// Builds and seals one step's frozen source packet: validates records and
+		// 2 GiB cap, inverts beginning/eligibility EOS in parallel, builds ignition
+		// eligibility + reaction/radiation packets (+ optional floor/inert doses),
+		// derives dt*S_div <= 0.5 divergence targets, and finalizes lineage hashes.
 		bool FireProductionCanonicalSourceAuthority::Build(
 				const FireProductionFrozenMethaneSourceRequest& request,
 				FireProductionFrozenSourcePacketSeal& result,

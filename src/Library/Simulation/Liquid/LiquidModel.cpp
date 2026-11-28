@@ -84,8 +84,11 @@ V3 CrossingPoint(const Grid& g, const SheetCrossing& c)
 }
 
 // m7l: the trilinear weights of the cell-centred sample at x (LiquidGrid.cpp Trilinear's clamping), added
-// to `out` (cell, weight) times `scale`.
-void TrilinearWeights(const Grid& g, const V3& x, double scale, std::vector<std::pair<std::size_t, double>>& out)
+// to `out` (cell, weight) times `scale`: at most 8 entries at out + n (n advanced).  (An array, not a
+// vector: these are built for every band cell of every sheet at every step; profiled, the allocations
+// were most of LiquidModel::CloseSheetFaces.)
+using Weight = std::pair<std::size_t, double>;
+void TrilinearWeights(const Grid& g, const V3& x, double scale, Weight* out, int& n)
 {
 	int i0[3];
 	double t[3];
@@ -101,7 +104,7 @@ void TrilinearWeights(const Grid& g, const V3& x, double scale, std::vector<std:
 		double w = scale;
 		int q[3];
 		for (int a = 0; a < 3; ++a) { w *= d[a] ? t[a] : 1 - t[a]; q[a] = std::min(i0[a] + d[a], g.n[a] - 1); }
-		if (w != 0) out.emplace_back(g.C(q[0], q[1], q[2]), w);
+		if (w != 0) out[n++] = Weight(g.C(q[0], q[1], q[2]), w);
 	}
 }
 
@@ -125,22 +128,34 @@ bool ExtensionRecipe(const Grid& g, const V3& x, const V3& p, const V3& n, int t
 	}
 	reach = offset - target*d;   // |x - x_o| along the normal
 	if (!(reach > 0)) return false;
-	std::vector<std::pair<std::size_t, double>> w0, w1;
-	TrilinearWeights(g, xo, 1, w0);
-	TrilinearWeights(g, x1, 1/h, w1);
-	TrilinearWeights(g, xo, -1/h, w1);
-	for (const auto* list : {&w0, &w1})
-		for (const auto& e : *list) {
-			const std::int32_t s = side(e.first);
-			if (s != 2 && s != targetLabel) return false;
-		}
-	std::map<std::size_t, std::pair<double, double>> terms;
-	for (const auto& e : w0) terms[e.first].first += e.second;
-	for (const auto& e : w1) terms[e.first].second += e.second;
-	for (const auto& e : terms) {
-		out.term.push_back(std::uint32_t(e.first));
-		out.w0.push_back(e.second.first);
-		out.w1.push_back(e.second.second);
+	Weight w0[8], w1[16];
+	int n0 = 0, n1 = 0;
+	TrilinearWeights(g, xo, 1, w0, n0);
+	TrilinearWeights(g, x1, 1/h, w1, n1);
+	TrilinearWeights(g, xo, -1/h, w1, n1);
+	for (int k = 0; k < n0; ++k) { const std::int32_t s = side(w0[k].first); if (s != 2 && s != targetLabel) return false; }
+	for (int k = 0; k < n1; ++k) { const std::int32_t s = side(w1[k].first); if (s != 2 && s != targetLabel) return false; }
+	// Merged by cell (each cell's sums in list order from zero, as a std::map of the pairs did), in cell order.
+	std::size_t cell[24];
+	double s0[24], s1[24];
+	int m = 0;
+	auto slot = [&](std::size_t c) {
+		for (int k = 0; k < m; ++k) if (cell[k] == c) return k;
+		cell[m] = c; s0[m] = 0.0; s1[m] = 0.0;
+		return m++;
+	};
+	for (int k = 0; k < n0; ++k) s0[slot(w0[k].first)] += w0[k].second;
+	for (int k = 0; k < n1; ++k) s1[slot(w1[k].first)] += w1[k].second;
+	int order[24];
+	for (int k = 0; k < m; ++k) {
+		int j = k;
+		for (; j > 0 && cell[order[j - 1]] > cell[k]; --j) order[j] = order[j - 1];
+		order[j] = k;
+	}
+	for (int k = 0; k < m; ++k) {
+		out.term.push_back(std::uint32_t(cell[order[k]]));
+		out.w0.push_back(s0[order[k]]);
+		out.w1.push_back(s1[order[k]]);
 	}
 	return true;
 }
@@ -409,6 +424,9 @@ bool LiquidModel::Initialize(const LiquidSetup& setup, const SolverOptions& opti
 	clampedFaces = clampedSteps = 0;
 	sheetCrossedCells = sheetUnfedCells = 0;
 	sheetCrossedVolume = 0;
+	sourceVolume.assign(setup.sources.size(), 0.0);   // M9
+	sourceMeasured = sourceActive = sourceVolume;
+	stepDrops_.clear();
 	if (!bodies.empty()) ExtrapolateEnclosed();
 	twoValued_ = false;   // m7l
 	PrepareTwoValued();
@@ -484,6 +502,8 @@ double LiquidModel::MaxStep(double segment) const
 	double dt = std::numeric_limits<double>::infinity();
 	double base = bodies.empty() ? MaxSpeed() : std::max(MaxSpeed(), BodySpeed());
 	if (!sheets.empty()) for (const LiquidSheet& sh : sheets) base = std::max(base, sh.SpeedBound());   // m7d
+	for (const LiquidSource& s : setup_.sources)   // M9: a source's speed from its first step
+		if (s.kind == LiquidSource::Kind::Source) base = std::max(base, s.speed*(s.Drops() ? 1.0 : s.MaxFactor()));
 	const double speed = base + gn*segment;
 	if (speed > 0) dt = std::min(dt, options_.cfl*g.h/speed);
 	if (gn > 0 && depth_ > 0) dt = std::min(dt, options_.waveCfl*g.h/std::sqrt(gn*depth_));
@@ -768,6 +788,8 @@ bool LiquidModel::Step(double dt, StepStats& stats, std::string& error)
 		u.u[c.axis][c.face] = c.velocity;
 		valid[c.axis][c.face] = 1;
 	}
+	// M9: a source's velocity inside it, so the level set leaves it at that velocity.
+	if (!setup_.sources.empty()) ImposeSources(u, &valid, time_, dt, false);
 	// Two extrapolations of the step-start velocity: for the interface
 	// (level set, particles) linear in the first `linearExtrapolationLayers`
 	// layers, which makes the surface velocity second-order accurate; for
@@ -937,6 +959,8 @@ bool LiquidModel::Step(double dt, StepStats& stats, std::string& error)
 		stats.sheetCellsKept += BlockSheetLeaks(g, others, fraction, phiStart, phi, pool);
 	}
 	if (coupledSheets && stageHook) stageHook("held");   // m7l diagnostic: after the guards that hold cells
+	// M9: the sources refill their regions and the drains empty theirs; the target volume follows.
+	if (!setup_.sources.empty()) ApplySources(time_, dt);
 	// m7c: the curvature of the new interface for the surface-tension jump.
 	if (setup_.surfaceTension > 0) Curvature(g, phi, kappa_, pool);
 	if (coupledSheets) OpenUnwetted();   // m7g
@@ -1080,6 +1104,7 @@ bool LiquidModel::Step(double dt, StepStats& stats, std::string& error)
 	// (replaced by extrapolation before the next step transports them); the
 	// first stage's keeps every updated face for the second stage.
 	PressureOptions po = WithJump(options_.momentumStages <= 1 ? FinalPressure() : options_.pressure, dt, 1.0);
+	if (!stepDrops_.empty()) ImposeSources(s1, nullptr, time_, dt, true);   // M9: the step's new drops
 	if (coupledSheets) {
 		if (!viscousFirst && !predictSheets(s1)) return false;
 		if (!ProjectCoupled(s1, po, w1star, v1star, impulse1, sheetImp1, stats.pressure, error)) return false;
@@ -1136,6 +1161,7 @@ bool LiquidModel::Step(double dt, StepStats& stats, std::string& error)
 			if (!viscousStep(s2, w2star, weno ? 0.5 : 1.0, weno ? &half : nullptr, weno && hasBodies ? &impulse1 : nullptr,
 				coupledSheets ? &v2star : nullptr)) return false;
 		} else addGravity(s2, weno ? 0.5 : 1.0);
+		if (!stepDrops_.empty()) ImposeSources(s2, nullptr, time_, dt, true);   // M9
 		t0 = Now();
 		stats.momentum += t0 - t1;
 		// The step's pressure impulse is q1/2 + q2 (Heun) or q2 (midpoint);
@@ -1268,6 +1294,325 @@ bool LiquidModel::Step(double dt, StepStats& stats, std::string& error)
 	time_ += dt;
 	stats.project += Now() - t1;
 	return true;
+}
+
+// ------------------------------------------------------------------ sources and drains (M9)
+
+namespace {
+std::uint64_t SourceMix(std::uint64_t x)
+{
+	x += 0x9E3779B97F4A7C15ull;
+	x = (x ^ (x >> 30))*0xBF58476D1CE4E5B9ull;
+	x = (x ^ (x >> 27))*0x94D049BB133111EBull;
+	return x ^ (x >> 31);
+}
+// A number in [0, 1) that is a function of its four arguments only (splitmix64 chained; no state).
+double SourceUnit(std::uint64_t a, std::uint64_t b, std::uint64_t c, std::uint64_t d)
+{
+	std::uint64_t x = SourceMix(a);
+	x = SourceMix(x ^ b);
+	x = SourceMix(x ^ c);
+	x = SourceMix(x ^ d);
+	return double(x >> 11)*(1.0/9007199254740992.0);
+}
+constexpr double SourcePi = 3.14159265358979323846;
+}
+
+double LiquidSource::Distance(const V3& x) const
+{
+	const V3 d{{x[0] - center[0], x[1] - center[1], x[2] - center[2]}};
+	if (type == Type::Sphere) return std::sqrt(d[0]*d[0] + d[1]*d[1] + d[2]*d[2]) - radius;
+	if (type == Type::Cylinder) {
+		const double along = d[0]*axis[0] + d[1]*axis[1] + d[2]*axis[2];
+		const V3 r{{d[0] - along*axis[0], d[1] - along*axis[1], d[2] - along*axis[2]}};
+		const double qr = std::sqrt(r[0]*r[0] + r[1]*r[1] + r[2]*r[2]) - radius, qa = std::fabs(along) - 0.5*height;
+		return std::sqrt(std::max(qr, 0.0)*std::max(qr, 0.0) + std::max(qa, 0.0)*std::max(qa, 0.0)) + std::min(std::max(qr, qa), 0.0);
+	}
+	double outside = 0, inside = -1e300;
+	for (int a = 0; a < 3; ++a) {
+		const double p = R[std::size_t(a)]*d[0] + R[std::size_t(3 + a)]*d[1] + R[std::size_t(6 + a)]*d[2];   // R^T d
+		const double q = std::fabs(p) - half[std::size_t(a)];
+		outside += std::max(q, 0.0)*std::max(q, 0.0);
+		inside = std::max(inside, q);
+	}
+	return std::sqrt(outside) + std::min(inside, 0.0);
+}
+
+double LiquidSource::Factor(double t) const
+{
+	if (schedule.size() < 2) return 1;
+	const std::size_t n = schedule.size()/2;
+	if (t <= schedule[0]) return schedule[1];
+	if (t >= schedule[2*(n - 1)]) return schedule[2*(n - 1) + 1];
+	for (std::size_t k = 0; k + 1 < n; ++k) {
+		const double ta = schedule[2*k], tb = schedule[2*k + 2];
+		if (t < tb) return schedule[2*k + 1] + (schedule[2*k + 3] - schedule[2*k + 1])*(t - ta)/(tb - ta);
+	}
+	return schedule[2*(n - 1) + 1];
+}
+
+double LiquidSource::MaxFactor() const
+{
+	if (schedule.size() < 2) return 1;
+	double m = 0;
+	for (std::size_t k = 1; k < schedule.size(); k += 2) m = std::max(m, schedule[k]);
+	return m;
+}
+
+bool LiquidSource::Active(double t0, double dt) const
+{
+	const double tm = t0 + 0.5*dt;
+	if (!(tm >= start && tm < end)) return false;
+	return kind == Kind::Drain || speed*Factor(tm) > 0;
+}
+
+double LiquidSource::ExitArea() const
+{
+	if (type == Type::Sphere) return SourcePi*radius*radius;
+	if (type == Type::Cylinder) {
+		const double c = std::min(1.0, std::fabs(direction[0]*axis[0] + direction[1]*axis[1] + direction[2]*axis[2]));
+		return SourcePi*radius*radius*c + 2*radius*height*std::sqrt(std::max(0.0, 1 - c*c));
+	}
+	double area = 0;
+	for (int a = 0; a < 3; ++a) {
+		const double along = std::fabs(direction[0]*R[std::size_t(a)] + direction[1]*R[std::size_t(3 + a)] + direction[2]*R[std::size_t(6 + a)]);
+		area += 4*half[std::size_t((a + 1) % 3)]*half[std::size_t((a + 2) % 3)]*along;
+	}
+	return area;
+}
+
+double LiquidSource::Support() const
+{
+	if (type == Type::Sphere) return radius;
+	if (type == Type::Cylinder) {
+		const double c = std::min(1.0, std::fabs(direction[0]*axis[0] + direction[1]*axis[1] + direction[2]*axis[2]));
+		return 0.5*height*c + radius*std::sqrt(std::max(0.0, 1 - c*c));
+	}
+	double e = 0;
+	for (int a = 0; a < 3; ++a)
+		e += std::fabs(direction[0]*R[std::size_t(a)] + direction[1]*R[std::size_t(3 + a)] + direction[2]*R[std::size_t(6 + a)])*half[std::size_t(a)];
+	return e;
+}
+
+double LiquidSource::RegionVolume() const
+{
+	if (type == Type::Sphere) return 4.0/3.0*SourcePi*radius*radius*radius;
+	if (type == Type::Cylinder) return SourcePi*radius*radius*height;
+	return 8*half[0]*half[1]*half[2];
+}
+
+void LiquidSource::Bounds(V3& lo, V3& hi) const
+{
+	for (int w = 0; w < 3; ++w) {
+		double e = radius;
+		if (type == Type::Box) e = std::fabs(R[std::size_t(3*w)])*half[0] + std::fabs(R[std::size_t(3*w + 1)])*half[1] + std::fabs(R[std::size_t(3*w + 2)])*half[2];
+		else if (type == Type::Cylinder)
+			e = std::fabs(axis[std::size_t(w)])*0.5*height + radius*std::sqrt(std::max(0.0, 1 - axis[std::size_t(w)]*axis[std::size_t(w)]));
+		lo[std::size_t(w)] = center[std::size_t(w)] - e;
+		hi[std::size_t(w)] = center[std::size_t(w)] + e;
+	}
+}
+
+void LiquidSource::DropsIn(std::size_t index, double t0, double t1, std::vector<std::pair<V3, double>>& out) const
+{
+	out.clear();
+	if (!Drops() || !(dropPeriod > 0) || type != Type::Box) return;
+	const double hi = std::min(t1, end);
+	const double wx = 2*half[0]/dropsX, wz = 2*half[2]/dropsZ;
+	for (int k = 0; k < dropsZ; ++k) for (int i = 0; i < dropsX; ++i) {
+		const std::uint64_t col = std::uint64_t(i) + std::uint64_t(dropsX)*std::uint64_t(k);
+		const double base = start + SourceUnit(index, col, 0x5EEDull, 0)*dropPeriod;
+		if (!(base < hi)) continue;
+		double m = std::max(0.0, std::ceil((t0 - base)/dropPeriod));
+		for (;; m += 1) {
+			const double ts = base + m*dropPeriod;
+			if (ts < t0) continue;
+			if (!(ts < hi)) break;
+			const std::uint64_t mi = static_cast<std::uint64_t>(m);
+			// The schedule's factor is the chance that a drop is released (rain that strengthens or eases).
+			if (!(SourceUnit(index, col, mi, 4) < Factor(ts))) continue;
+			const V3 l{{-half[0] + (i + 0.5)*wx + (SourceUnit(index, col, mi, 1) - 0.5)*std::max(0.0, wx - 2*dropRadius),
+				(SourceUnit(index, col, mi, 3) - 0.5)*std::max(0.0, 2*half[1] - 2*dropRadius),
+				-half[2] + (k + 0.5)*wz + (SourceUnit(index, col, mi, 2) - 0.5)*std::max(0.0, wz - 2*dropRadius)}};
+			V3 x;
+			for (int w = 0; w < 3; ++w)
+				x[std::size_t(w)] = center[std::size_t(w)] + R[std::size_t(3*w)]*l[0] + R[std::size_t(3*w + 1)]*l[1] + R[std::size_t(3*w + 2)]*l[2];
+			out.emplace_back(x, ts);
+		}
+	}
+}
+
+double LiquidSource::Nominal(std::size_t index, double t) const
+{
+	if (kind != Kind::Source) return 0;
+	const double b = std::min(t, end);
+	if (!(b > start)) return 0;
+	if (Drops()) {
+		std::vector<std::pair<V3, double>> drops;
+		DropsIn(index, start, b, drops);
+		return double(drops.size())*4.0/3.0*SourcePi*dropRadius*dropRadius*dropRadius;
+	}
+	// The integral of the piecewise-linear factor over [start, b] (held outside the table).
+	double integral = 0;
+	if (schedule.size() < 2) integral = b - start;
+	else {
+		const std::size_t n = schedule.size()/2;
+		auto piece = [&](double ta, double tb) {   // trapezoid on [ta, tb] clipped to [start, b]: exact for the linear pieces
+			const double a0 = std::max(ta, start), b0 = std::min(tb, b);
+			if (b0 > a0) integral += 0.5*(Factor(a0) + Factor(b0))*(b0 - a0);
+		};
+		piece(-1e300, schedule[0]);
+		for (std::size_t k = 0; k + 1 < n; ++k) piece(schedule[2*k], schedule[2*k + 2]);
+		piece(schedule[2*(n - 1)], 1e300);
+	}
+	return ExitArea()*speed*integral;
+}
+
+void LiquidModel::ApplySources(double t0, double dt)
+{
+	stepDrops_.clear();
+	const Grid& g = setup_.grid;
+	const double band = 4*g.h;
+	double before = -1;
+	for (std::size_t i = 0; i < setup_.sources.size(); ++i) {
+		const LiquidSource& s = setup_.sources[i];
+		std::vector<std::pair<V3, double>> drops;
+		V3 lo, hi;
+		if (s.kind == LiquidSource::Kind::Source && s.Drops()) {
+			s.DropsIn(i, t0, t0 + dt, drops);
+			if (drops.empty()) continue;
+			lo = hi = drops[0].first;
+			for (const auto& d : drops) for (int a = 0; a < 3; ++a) {
+				lo[std::size_t(a)] = std::min(lo[std::size_t(a)], d.first[std::size_t(a)] - s.dropRadius);
+				hi[std::size_t(a)] = std::max(hi[std::size_t(a)], d.first[std::size_t(a)] + s.dropRadius);
+			}
+		} else {
+			if (!s.Active(t0, dt)) { sourceActive[i] = 0; continue; }
+			s.Bounds(lo, hi);
+		}
+		auto dist = [&](const V3& x) {
+			if (drops.empty()) return s.Distance(x);
+			double d = 1e300;
+			for (const auto& p : drops) {
+				const double dx = x[0] - p.first[0], dy = x[1] - p.first[1], dz = x[2] - p.first[2];
+				d = std::min(d, std::sqrt(dx*dx + dy*dy + dz*dz) - s.dropRadius);
+			}
+			return d;
+		};
+		int c0[3], c1[3];
+		for (int a = 0; a < 3; ++a) {
+			c0[a] = std::max(0, int(std::floor((lo[std::size_t(a)] - band - g.origin[std::size_t(a)])/g.h)));
+			c1[a] = std::min(g.n[a] - 1, int(std::floor((hi[std::size_t(a)] + band - g.origin[std::size_t(a)])/g.h)));
+		}
+		if (c0[0] > c1[0] || c0[1] > c1[1] || c0[2] > c1[2]) continue;
+		if (before < 0) before = Volume();
+		const bool source = s.kind == LiquidSource::Kind::Source;
+		// A continuous source leaves the level set beyond its exit plane alone (the jet that left it): its
+		// distance there would widen the accelerating, thinning jet back to the region's width each step
+		// and so pump liquid through the exit (measured: 22% above the nominal flux at a 2.7-cell nozzle).
+		const double exit = drops.empty() && source ? s.Support() : 1e300;
+		for (int k = c0[2]; k <= c1[2]; ++k) for (int j = c0[1]; j <= c1[1]; ++j) for (int ii = c0[0]; ii <= c1[0]; ++ii) {
+			const std::size_t c = g.C(ii, j, k);
+			const V3 x = g.CellCentre(ii, j, k);
+			const double d = dist(x);
+			if (source && d > 0 && (x[0] - s.center[0])*s.direction[0] + (x[1] - s.center[1])*s.direction[1] + (x[2] - s.center[2])*s.direction[2] > exit)
+				continue;
+			phi[c] = source ? std::min(phi[c], d) : std::max(phi[c], -d);
+		}
+		if (options_.particles) {
+			// Marker particles of the other side inside the region would undo the change.
+			auto& ps = particles.Particles();
+			ps.erase(std::remove_if(ps.begin(), ps.end(), [&](const MarkerParticles::Particle& p) {
+				if ((source && p.sign < 0) || (!source && p.sign > 0)) return false;
+				for (int a = 0; a < 3; ++a) if (p.x[std::size_t(a)] < lo[std::size_t(a)] || p.x[std::size_t(a)] > hi[std::size_t(a)]) return false;
+				return dist(p.x) < 0;
+			}), ps.end());
+		}
+		const double after = Volume(), delta = after - before;
+		before = after;
+		// The target gains the nominal volume (see LiquidModel.h sourceVolume): the measured refill
+		// also replaces what the transport eroded inside the region, which the correction restores anyway.
+		double accounted = delta;
+		if (source && !drops.empty()) accounted = double(drops.size())*4.0/3.0*SourcePi*s.dropRadius*s.dropRadius*s.dropRadius;
+		else if (source && sourceActive[i] != 0) accounted = s.Nominal(i, t0 + dt) - s.Nominal(i, t0);
+		if (source && drops.empty()) sourceActive[i] = 1;
+		targetVolume_ += accounted;
+		sourceVolume[i] += source ? accounted : -accounted;
+		sourceMeasured[i] += source ? delta : -delta;
+		for (const auto& d : drops) stepDrops_.push_back({i, d.first, d.second});
+	}
+}
+
+std::vector<double> LiquidModel::SourceState() const
+{
+	std::vector<double> out = sourceVolume;
+	out.insert(out.end(), sourceMeasured.begin(), sourceMeasured.end());
+	out.insert(out.end(), sourceActive.begin(), sourceActive.end());
+	return out;
+}
+
+bool LiquidModel::SetSourceState(const std::vector<double>& state)
+{
+	const std::size_t n = setup_.sources.size();
+	if (state.size() != 3*n) return false;
+	sourceVolume.assign(state.begin(), state.begin() + std::ptrdiff_t(n));
+	sourceMeasured.assign(state.begin() + std::ptrdiff_t(n), state.begin() + std::ptrdiff_t(2*n));
+	sourceActive.assign(state.begin() + std::ptrdiff_t(2*n), state.end());
+	return true;
+}
+
+void LiquidModel::ImposeSources(MacField& f, FaceMask* known, double t0, double dt, bool drops) const
+{
+	// `drops`: the step's new drops (before its projections); else the continuous sources (at the step's start:
+	// held through the projections too, the nozzle's liquid was measured to hold back the stretching jet below it).
+
+	const Grid& g = setup_.grid;
+	for (std::size_t i = 0; i < setup_.sources.size(); ++i) {
+		const LiquidSource& s = setup_.sources[i];
+		if (s.kind != LiquidSource::Kind::Source) continue;
+		std::vector<V3> centres;
+		V3 lo, hi, vel;
+		if (s.Drops() != drops) continue;
+		if (s.Drops()) {
+			for (const StepDrop& d : stepDrops_) if (d.source == i) centres.push_back(d.centre);
+			if (centres.empty()) continue;
+			lo = hi = centres[0];
+			for (const V3& c : centres) for (int a = 0; a < 3; ++a) {
+				lo[std::size_t(a)] = std::min(lo[std::size_t(a)], c[std::size_t(a)] - s.dropRadius);
+				hi[std::size_t(a)] = std::max(hi[std::size_t(a)], c[std::size_t(a)] + s.dropRadius);
+			}
+			for (int a = 0; a < 3; ++a) vel[std::size_t(a)] = s.speed*s.direction[std::size_t(a)];
+		} else {
+			if (!s.Active(t0, dt)) continue;
+			s.Bounds(lo, hi);
+			const double v = s.speed*s.Factor(t0 + 0.5*dt);
+			for (int a = 0; a < 3; ++a) vel[std::size_t(a)] = v*s.direction[std::size_t(a)];
+		}
+		auto inside = [&](const V3& x) {
+			if (centres.empty()) return s.Distance(x) < 0;
+			for (const V3& c : centres) {
+				const double dx = x[0] - c[0], dy = x[1] - c[1], dz = x[2] - c[2];
+				if (dx*dx + dy*dy + dz*dz < s.dropRadius*s.dropRadius) return true;
+			}
+			return false;
+		};
+		for (int a = 0; a < 3; ++a) {
+			if (g.n[a] == 1) continue;
+			const auto d = g.FaceDims(a);
+			int f0[3], f1[3];
+			for (int b = 0; b < 3; ++b) {
+				const double shift = b == a ? 0.0 : 0.5;   // face centres: integer along a, half-integer across
+				f0[b] = std::max(0, int(std::floor((lo[std::size_t(b)] - g.origin[std::size_t(b)])/g.h - shift)));
+				f1[b] = std::min(d[b] - 1, int(std::ceil((hi[std::size_t(b)] - g.origin[std::size_t(b)])/g.h - shift)));
+			}
+			for (int k = f0[2]; k <= f1[2]; ++k) for (int j = f0[1]; j <= f1[1]; ++j) for (int ii = f0[0]; ii <= f1[0]; ++ii) {
+				const std::size_t face = g.F(a, ii, j, k);
+				if (!(fraction[std::size_t(a)][face] > 0) || !inside(g.FaceCentre(a, ii, j, k))) continue;
+				f.u[std::size_t(a)][face] = vel[std::size_t(a)];
+				if (known) (*known)[std::size_t(a)][face] = 1;
+			}
+		}
+	}
 }
 
 // ------------------------------------------------------------------ bodies (m7b)
@@ -1532,6 +1877,7 @@ void LiquidModel::BuildBarrier()
 		i = j;
 	}
 	const std::size_t nb = second.cells.size();
+	second.IndexSlots(g.Cells());
 	second.valid.assign(nb, 0);
 	second.reach.assign(nb, 0.0);
 	second.start.assign(nb + 1, 0);
@@ -1559,9 +1905,11 @@ void LiquidModel::BuildBarrier()
 			for (int a = 0; a < 3; ++a) dd += (x[a] - p[a])*c.normal[a];
 			V3 foot;
 			for (int a = 0; a < 3; ++a) foot[a] = x[a] - dd*c.normal[a] + tgt*0.25*h*c.normal[a];
-			std::vector<std::pair<std::size_t, double>> w;
-			TrilinearWeights(g, foot, 1, w);
-			for (const auto& e : w) {
+			Weight w[8];
+			int nw = 0;
+			TrilinearWeights(g, foot, 1, w, nw);
+			for (int q = 0; q < nw; ++q) {
+				const Weight& e = w[q];
 				const V3 y = g.CellCentre(int(e.first % std::size_t(g.n[0])), int((e.first/std::size_t(g.n[0])) % std::size_t(g.n[1])),
 					int(e.first/(std::size_t(g.n[0])*std::size_t(g.n[1]))));
 				double dy = 0;
@@ -1677,8 +2025,9 @@ void LiquidModel::CountSheetCrossings(const std::vector<double>& phiStart, const
 	}
 }
 
-long long LiquidModel::SheetBarrierHoles() const
+long long LiquidModel::SheetBarrierHoles(long long* unjudged) const
 {
+	if (unjudged) *unjudged = 0;
 	const Grid& g = setup_.grid;
 	std::array<std::vector<std::uint8_t>,3> closed;
 	for (const SheetCrossing& c : sheetFaces_) {
@@ -1707,23 +2056,67 @@ long long LiquidModel::SheetBarrierHoles() const
 		// fill may also pass through those cells' face neighbours (unlabelled): a gap in the closed
 		// faces lies between such cells.  Reaching a back cell without crossing a closed face is a
 		// path of open faces through the sheet.
+		// M9: a face's two cells take sides only when the segment between their centres crosses the
+		// sheet once (counted against the crossed triangle's one-ring): where a sagging sheet's lowest
+		// point lies within a cell of a lattice line, a segment crosses it twice, both cells are on the
+		// same side and the crossed triangle's normal named one of them wrongly (monsoon's 862 "holes":
+		// no path through the sheet, the check misjudging such faces; the faces stay closed).  Rim
+		// triangles' faces crossed once mark a cell they contradict as both (they label no cell).
+		std::vector<std::vector<std::uint32_t>> around(sh.Vertices());
+		for (std::size_t t = 0; 3*t + 2 < sh.triangles.size(); ++t)
+			for (int a = 0; a < 3; ++a) around[sh.triangles[3*t + std::size_t(a)]].push_back(std::uint32_t(t));
+		auto hits = [&](const V3& p, const V3& q, std::uint32_t t) {
+			const std::uint32_t* v = &sh.triangles[3*std::size_t(t)];
+			const double* A = &sh.x[3*std::size_t(v[0])];
+			const double* B = &sh.x[3*std::size_t(v[1])];
+			const double* C = &sh.x[3*std::size_t(v[2])];
+			const double e1[3] = {B[0] - A[0], B[1] - A[1], B[2] - A[2]}, e2[3] = {C[0] - A[0], C[1] - A[1], C[2] - A[2]};
+			const double d[3] = {q[0] - p[0], q[1] - p[1], q[2] - p[2]};
+			const double hv[3] = {d[1]*e2[2] - d[2]*e2[1], d[2]*e2[0] - d[0]*e2[2], d[0]*e2[1] - d[1]*e2[0]};
+			const double det = e1[0]*hv[0] + e1[1]*hv[1] + e1[2]*hv[2];
+			if (!(std::fabs(det) > 0)) return false;
+			const double f = 1/det, sv[3] = {p[0] - A[0], p[1] - A[1], p[2] - A[2]};
+			const double u = f*(sv[0]*hv[0] + sv[1]*hv[1] + sv[2]*hv[2]);
+			if (u < 0 || u > 1) return false;
+			const double qv[3] = {sv[1]*e1[2] - sv[2]*e1[1], sv[2]*e1[0] - sv[0]*e1[2], sv[0]*e1[1] - sv[1]*e1[0]};
+			const double w = f*(d[0]*qv[0] + d[1]*qv[1] + d[2]*qv[2]);
+			if (w < 0 || u + w > 1) return false;
+			const double tt = f*(e2[0]*qv[0] + e2[1]*qv[1] + e2[2]*qv[2]);
+			return tt >= 0 && tt <= 1;
+		};
 		std::map<std::size_t, int> side;   // 1 front, -1 back, 0 both, 2 a neighbour (no side)
+		std::vector<std::pair<std::size_t, int>> rimSides;
 		for (const SheetCrossing& c : sheetFaces_) {
 			if (c.sheet != s) continue;
 			const std::uint32_t* v = &sh.triangles[3*std::size_t(c.triangle)];
-			if (rim[v[0]] || rim[v[1]] || rim[v[2]]) continue;
+			const bool rimTriangle = rim[v[0]] || rim[v[1]] || rim[v[2]];
 			const auto d = g.FaceDims(c.axis);
 			int idx[3] = {int(c.face % std::size_t(d[0])), int((c.face/std::size_t(d[0])) % std::size_t(d[1])),
 				int(c.face/(std::size_t(d[0])*std::size_t(d[1])))};
 			const std::size_t R = g.C(idx[0], idx[1], idx[2]);
+			const V3 xR = g.CellCentre(idx[0], idx[1], idx[2]);
 			--idx[c.axis];
 			const std::size_t L = g.C(idx[0], idx[1], idx[2]);
+			const V3 xL = g.CellCentre(idx[0], idx[1], idx[2]);
+			// The segment's crossings with the crossed triangle's one-ring (triangles that close no face skipped).
+			std::vector<std::uint32_t> ring;
+			for (int m = 0; m < 3; ++m) ring.insert(ring.end(), around[v[m]].begin(), around[v[m]].end());
+			std::sort(ring.begin(), ring.end());
+			ring.erase(std::unique(ring.begin(), ring.end()), ring.end());
+			int crossings = 0;
+			for (std::uint32_t t : ring) if ((sh.open.empty() || !sh.open[t]) && hits(xL, xR, t)) ++crossings;
+			const bool single = c.crossed && crossings == 1;
+			if (!single && unjudged && !rimTriangle) ++*unjudged;
 			const int sR = c.normal[c.axis] > 0 ? 1 : -1;
-			for (const auto& cs : {std::make_pair(R, sR), std::make_pair(L, -sR)}) {
-				auto it = side.find(cs.first);
-				if (it == side.end() || it->second == 2) side[cs.first] = cs.second;
-				else if (it->second != cs.second) it->second = 0;
-			}
+			if (single && rimTriangle) { rimSides.emplace_back(R, sR); rimSides.emplace_back(L, -sR); }
+			if (rimTriangle) continue;
+			if (single)
+				for (const auto& cs : {std::make_pair(R, sR), std::make_pair(L, -sR)}) {
+					auto it = side.find(cs.first);
+					if (it == side.end() || it->second == 2) side[cs.first] = cs.second;
+					else if (it->second != cs.second) it->second = 0;
+				}
+			else for (std::size_t cell : {R, L}) side.emplace(cell, 2);
 			for (int q = 0; q < 12; ++q) {
 				int nb[3] = {idx[0], idx[1], idx[2]};
 				if (q >= 6) ++nb[c.axis];   // around the plus cell
@@ -1732,6 +2125,10 @@ long long LiquidModel::SheetBarrierHoles() const
 				for (int m = 0; m < 3; ++m) inside = inside && nb[m] >= 0 && nb[m] < g.n[m];
 				if (inside) side.emplace(g.C(nb[0], nb[1], nb[2]), 2);
 			}
+		}
+		for (const auto& cs : rimSides) {
+			auto it = side.find(cs.first);
+			if (it != side.end() && (it->second == 1 || it->second == -1) && it->second != cs.second) it->second = 0;
 		}
 		// Flood fill from the front cells through open faces, among those cells only.
 		std::vector<std::size_t> queue;
@@ -2159,8 +2556,10 @@ std::pair<std::size_t, std::size_t> LiquidModel::SweepSheetCells(const std::vect
 	}
 	std::size_t removed = 0;
 	if (options_.particles) {
-		std::vector<std::size_t> cells;
-		for (const SweptCell& c : swept) cells.push_back(c.cell);
+		// The cells whose particles go, as flags (a sorted list of them with duplicates was a few percent
+		// of a coupled step).
+		std::vector<std::uint8_t> drop(g.Cells(), 0);
+		for (const SweptCell& c : swept) drop[c.cell] = 1;
 		for (const std::vector<SheetCrossing>* list : {&facesBefore, static_cast<const std::vector<SheetCrossing>*>(&sheetFaces_)})
 			for (const SheetCrossing& c : *list) {
 				if (!sheets[c.sheet].Coupled()) continue;
@@ -2176,19 +2575,17 @@ std::pair<std::size_t, std::size_t> LiquidModel::SweepSheetCells(const std::vect
 					for (int a = -2; a <= 2; ++a) for (int b = -2; b <= 2; ++b) for (int e = -2; e <= 2; ++e) {
 						if (std::abs(a) + std::abs(b) + std::abs(e) > 2) continue;
 						const int q[3] = {idx[0] + a, idx[1] + b, idx[2] + e};
-						if (q[0] >= 0 && q[0] < g.n[0] && q[1] >= 0 && q[1] < g.n[1] && q[2] >= 0 && q[2] < g.n[2]) cells.push_back(g.C(q[0], q[1], q[2]));
+						if (q[0] >= 0 && q[0] < g.n[0] && q[1] >= 0 && q[1] < g.n[1] && q[2] >= 0 && q[2] < g.n[2]) drop[g.C(q[0], q[1], q[2])] = 1;
 					}
 				}
 			}
-		std::sort(cells.begin(), cells.end());
-		cells.erase(std::unique(cells.begin(), cells.end()), cells.end());
 		auto& ps = particles.Particles();
 		std::size_t out = 0;
 		for (std::size_t i = 0; i < ps.size(); ++i) {
 			int idx[3];
 			for (int a = 0; a < 3; ++a)
 				idx[a] = std::min(g.n[a] - 1, std::max(0, int(std::floor((ps[i].x[std::size_t(a)] - g.origin[std::size_t(a)])/g.h))));
-			if (!std::binary_search(cells.begin(), cells.end(), g.C(idx[0], idx[1], idx[2]))) ps[out++] = ps[i];
+			if (!drop[g.C(idx[0], idx[1], idx[2])]) ps[out++] = ps[i];
 		}
 		removed = ps.size() - out;
 		ps.resize(out);

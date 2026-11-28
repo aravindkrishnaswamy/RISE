@@ -1,51 +1,21 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  GradedIndexMedium.h - the interior-segment basic-radiance factor
-//    for a medium whose `ior` varies with WORLD POSITION (DL-09).
+//  GradedIndexMedium.h - Interior-segment basic-radiance factor for
+//  media whose IOR varies with world position (DL-09; docs/DEBT_LEDGER.md).
 //
-//  Derivation, factor tables and scope:
-//    docs/DEBT_LEDGER.md.
+//  Basic radiance L/n^2 is continuous across interfaces (RadianceEtaScale)
+//  and along straight segments inside a graded medium:
+//    Radiance walk (camera-rooted):   (n_start / n_end)^2
+//    Importance walk (light-rooted):  (n_end / n_start)^2
+//    Connection (eye <-> light):      (n_eye / n_light)^2
+//  Unlike interfaces, straight segments have no refraction Jacobian, so
+//  importance walks apply (n_end / n_start)^2 explicitly.
 //
-//  THE MODEL.  RISE traces straight segments.  Basic radiance L/n^2 is
-//  continuous across every interface (debt 30, `RadianceEtaScale`) AND
-//  along every straight segment inside a graded medium.  A walk therefore
-//  pays, per segment inside a graded medium, in the walk's own order:
-//
-//      RADIANCE walk (camera-rooted):      (n_start / n_end)^2
-//      IMPORTANCE walk (light-rooted):     (n_end / n_start)^2
-//      connection eye vertex <-> light:    (n_eye / n_light)^2
-//
-//  All three are the same per-segment factor (n_cameraside/n_lightside)^2
-//  written in each walk's own direction.  An importance walk needs it
-//  EXPLICITLY here, unlike at an interface: at an interface the refraction
-//  map's Jacobian supplies the n^2 through the light walk's sample density,
-//  and a straight graded segment has no direction map to supply it.
-//
-//  THE MECHANISM.  The IOR stack's TOP entry is the walk's tracked index.
-//  Every time a walk reaches a new vertex while its top medium is graded,
-//  `Advance` multiplies (top/n(x))^2 (radiance) or (n(x)/top)^2
-//  (importance) and re-records top <- n(x).  Consequences:
-//
-//    * `RadianceEtaScale` at the object's EXIT hit reads the updated top,
-//      i.e. the fresh exit-point index: the "exit-read switch" of the
-//      DL-09 row is not a separate change here and CANNOT be applied
-//      without the interior factor, or vice versa (the two failed rounds).
-//    * Factors TELESCOPE.  A vertex the update does not visit (a medium
-//      scatter vertex, a site out of scope) breaks no later factor: the
-//      next Advance pays (top/n_next)^2 from whatever the stack holds.
-//      Only a gather AT such a vertex would see a stale top -- and every
-//      gather here uses the same stack top as its starting index, so even
-//      that telescopes to the right total (derivation doc §4).
-//    * Constant-index media: `GetGradedIORField()` is null, `Advance`
-//      returns before evaluating anything, and nothing is multiplied --
-//      renders are bit-identical.
-//
-//  WHERE n IS DEFINED.  Only for an `ior` painter that is a world-position
-//  field (`IScalarPainter::IsWorldPositionField`, e.g. a scalar
-//  `scalar_painter { expression ... P ... }`).  UV/normal/signal-driven
-//  forms have no value at an interior point; such a medium keeps the
-//  pre-DL-09 accounting (entry and exit factors only), which nets
-//  correctly on every completed through-trip.
+//  The IOR stack top tracks the walk's index; `Advance` multiplies the
+//  segment factor and updates top <- n(p). Factors telescope across
+//  unvisited vertices, and exit hits read the updated top (exit-read and
+//  interior factor are coupled). Applies only to `IScalarPainter`s with
+//  `IsWorldPositionField()`; constant-index media are no-ops.
 //
 //  License Information: Please see the attached LICENSE.TXT file
 //
@@ -64,21 +34,9 @@
 
 namespace RISE
 {
-	//! DL-09 COST GATE: how many live `IScalarPainter`s in the process are
-	//! world-position fields (`IsWorldPositionField()`).  Only such a
-	//! painter can make a medium graded, so while this is zero every
-	//! GradedIndexMedium query returns "not graded" after ONE relaxed atomic
-	//! load -- no `topObject()` dereference, no virtual `GetMaterial()` /
-	//! `GetGradedIORField()` / `IsWorldPositionField()` chain -- on every
-	//! vertex of every walk.  Same RAII pattern and thread-safety argument
-	//! as `SurfaceCurvatureDemand` (SurfaceCurvature.h): mutated only at
-	//! painter construction/destruction, loaded relaxed by render threads;
-	//! a stale read at a scene boundary costs one vertex's worth of lookup,
-	//! never correctness (the gated lookup it skips would answer "not
-	//! graded" for every medium anyway when the count is truly zero).  A
-	//! registered painter ANYWHERE in the process -- bound to an `ior` or
-	//! not -- opens the gate for every scene in it; that is a cost, not a
-	//! correctness risk.
+	//! Process-wide atomic gate counting live world-position `IScalarPainter`s.
+	//! When zero, GradedIndexMedium short-circuits after one relaxed atomic
+	//! load. Same RAII/thread-safety pattern as `SurfaceCurvatureDemand`.
 	namespace GradedIndexDemand
 	{
 		inline std::atomic<int>& Counter()
@@ -165,37 +123,11 @@ namespace RISE
 			return n > Scalar( 0 ) && IsFiniteDouble( n );
 		}
 
-		//! Advance a walk to world point `p` (the END of the segment the walk
-		//! just traced).  Returns true when the walk's innermost medium is a
-		//! graded field, in which case `scale` is the segment's factor and the
-		//! stack's top now holds n(p); returns false (scale 1, stack
-		//! untouched) otherwise -- including a non-positive or non-finite
-		//! painter value, which a scene can author and which must degrade to
-		//! "no factor", never to an infinite or zero throughput.
-		//! DL-335: re-record every graded medium BELOW the stack's top at
-		//! `p`, with NO factor.  While a nested object is innermost, an
-		//! enclosing graded medium's tracked index would otherwise stay at
-		//! the nested object's ENTRY point, so its EXIT refracted (Snell,
-		//! Fresnel, TIR) into n(entry) instead of n(exit) -- and the eye walk
-		//! (which enters where the light walk exits) and the light walk used
-		//! different indices at the same interface: a non-reciprocal model
-		//! that VCM's merges (the only strategy built on a light walk through
-		//! a delta object) read 0.50x of PT's eye walk through a nested glass
-		//! ball (GradedIndexInteriorFactorTest row Q).
-		//!
-		//! WHY NO FACTOR IS OWED.  The re-recorded value is read next either
-		//! by the exit crossing (a radiance walk's RadianceEtaScale, or an
-		//! importance walk's refraction Jacobian through its Snell indices)
-		//! or, once it is the top again, by the next Advance -- both are
-		//! RELATIVE to the stored value, so the entry factor
-		//! (n_entry/n_nested)^2 times the exit factor (n_nested/n_exit)^2
-		//! supplies exactly the straight-graded-segment factor the moved
-		//! value would otherwise owe.  The product telescopes either way.
-		//! A walk that prices NO interfaces (ShadowSegmentTrack) must not
-		//! call this: its nested through-trip telescopes only on the
-		//! unchanged entry value.  Invariant: every key below the top
-		//! is a real scene object (FieldOf dereferences it); opaque keys
-		//! such as CompositeSPF's never reach a walk stack.
+		//! Re-record every enclosing graded medium below the stack's top at `p`
+		//! with no factor, so a nested object's exit uses n(exit) reciprocally
+		//! (the entry/exit interface factors telescope the skipped segment).
+		//! Callers that price no interfaces (`ShadowSegmentTrack`) must skip
+		//! this. Invariant: every key below the top is a real `IObject*`.
 		inline void RecordEnclosingAt( IORStack& stack, const Point3& p )
 		{
 			const std::size_t depth = stack.Depth();
@@ -214,6 +146,10 @@ namespace RISE
 			}
 		}
 
+		//! Advance a walk to world point `p`. When the innermost medium is
+		//! graded and both indices are finite/positive, updates top <- n(p),
+		//! writes the segment factor to `scale`, and returns true; otherwise
+		//! returns false with `scale = 1` and stack untouched.
 		inline bool Advance( IORStack& stack, const Point3& p, const TransportMode mode, Scalar& scale,
 			const bool bRecordEnclosing = true )
 		{
@@ -256,17 +192,10 @@ namespace RISE
 			}
 		}
 
-		//! A stack REBUILT mid-segment (HWSS's per-lane containment replay
-		//! seeds each lane at the incoming segment's midpoint, which records
-		//! n(midpoint)) adopts the index the walk's OWN stack tracks (n at
-		//! the segment's start if the walk has not Advanced to the hit yet,
-		//! n(hit) if it has and already paid the factor), so the delegated
-		//! walk's next Advance telescopes exactly as the walk's own stack
-		//! would -- never from the midpoint.  Only when both
-		//! stacks' innermost medium is the same graded object: a graded
-		//! field is wavelength-independent, so the hero's tracked value is
-		//! every lane's.  No-op otherwise (a constant or dispersive index
-		//! keeps the lane's own value).
+		//! Sync a mid-segment rebuilt stack (e.g. HWSS per-lane replay) to the
+		//! walk's tracked top index when both share the same innermost graded
+		//! object (wavelength-independent), so the next `Advance` telescopes
+		//! from the walk's reference point rather than the rebuild midpoint.
 		inline void AdoptTrackedTop( IORStack& rebuilt, const IORStack& walk )
 		{
 			if( TopField( rebuilt ) && rebuilt.opticalTopObject() == walk.opticalTopObject() &&
@@ -334,36 +263,12 @@ namespace RISE
 			return ConnectionScale( pEyeMedium, nEye, pEyeMedium, EvalAt( *pField, lightPoint ) );
 		}
 
-		//! DL-292: the graded-index factor of a straight NEE SHADOW segment
-		//! that a hit-by-hit shadow walk (RayCaster::WalkShadowSegment)
-		//! follows across boundaries -- the `transparent_shadows` Fresnel
-		//! pass-through of a clear dielectric and DL-05's delta pass-through
-		//! of a thin weave's gap.
-		//!
-		//! WHY A TRACK, NOT A FLAG.  `ConnectionScaleToPoint` prices the
-		//! segment as one graded piece, which is right exactly when the light
-		//! lies in the SAME medium region as the shading point.  Pre-DL-292
-		//! the NEE arms decided that from the shadow TRANSMITTANCE (`!= 1`
-		//! meant "crossed a surface"), which is wrong both ways: a weave's
-		//! gap returns `g != 1` with NO boundary crossing (the light is still
-		//! in the medium -- the factor was dropped on a delta light's ONLY
-		//! estimator), a NESTED object's through-trip leaves the light in the
-		//! medium too, and a real exit prices the graded part up to the
-		//! boundary, which a skipped factor leaves unpriced.  The track keys
-		//! on the boundary crossings themselves: it copies the shading
-		//! point's walk stack and mirrors the walk's own entry/exit
-		//! decisions on it, calling `Advance` at every crossing point and at
-		//! the light, so each straight piece inside a graded medium pays
-		//! `(n_start/n_end)^2` and a nested constant object's through-trip
-		//! telescopes exactly (its entry leaves the enclosing graded entry
-		//! holding n(P1), which the Advance to the light reads).
-		//!
-		//! INTERFACES are NOT priced: the transparent-shadow approximation
-		//! drops the per-interface (eta_before/eta_after)^2 along with the
-		//! refraction Jacobian it pairs with (straight propagation), for
-		//! constant media exactly as before.  The track only adds what the
-		//! straight-segment model owes INSIDE graded media, so a scene with
-		//! no graded medium on the shadow ray reads exactly 1.
+		//! Tracks straight-segment graded-index factors along a hit-by-hit NEE
+		//! shadow walk (`RayCaster::WalkShadowSegment`) across transparent or
+		//! pass-through boundaries. Mirrors entry/exit stack transitions and
+		//! calls `Advance(..., bRecordEnclosing=false)` at each crossing and
+		//! at the light; interfaces themselves are not priced (matching the
+		//! transparent-shadow straight-propagation approximation).
 		class ShadowSegmentTrack
 		{
 		public:

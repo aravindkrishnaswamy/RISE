@@ -5,7 +5,8 @@
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: March 4, 2005
 //  Tabs: 4
-//  Comments: 
+//  Comments: Component-wise math on 3-channel color triplets (types
+//    supporting operator[0..2] and 3-scalar construction, e.g. RISEPel).
 //
 //  License Information: Please see the attached LICENSE.TXT file
 //
@@ -20,7 +21,7 @@ namespace RISE
 {
 	struct ColorMath
 	{
-		// Invert
+		// Component-wise reciprocal (1 / a[i]); caller must ensure non-zero channels.
 		template< class T >
 		static inline T invert( const T& a )
 		{
@@ -55,7 +56,7 @@ namespace RISE
 			return T( ::pow(b[0],e), ::pow(b[1],e), ::pow(b[2],e) );
 		}
 
-		// Clamps
+		// Clamps channels in-place to [l, h]; returns true if any channel changed.
 		template< class T >
 		static inline bool Clamp( T& ret, const Scalar& l, const Scalar& h )
 		{
@@ -69,7 +70,8 @@ namespace RISE
 			return retval;
 		}
 
-		// Scale
+		// Clamps negatives to 0, then uniformly scales by 1/max if max > 1
+		// to fit into [0, 1] while preserving chromaticity/hue.
 		template< class T >
 		static inline void Scale( T& c )
 		{
@@ -93,7 +95,7 @@ namespace RISE
 			}
 		}
 
-		// Ensures all values are positive
+		// Clamps negative channels to 0 (historical spelling "EnsurePositve" preserved).
 		template< class T >
 		static inline void EnsurePositve( T& c )
 		{

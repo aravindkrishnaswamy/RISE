@@ -4,7 +4,7 @@ Start with [README.md](README.md) for the repo map, [AGENTS.md](AGENTS.md) for t
 
 ## Quickstart
 
-- Linux/macOS main build: `make -C build/make/rise -j8 all` (`LTO=full|thin|off` on macOS; default `LTO=full` — see [docs/BUILD_FLAGS.md](docs/BUILD_FLAGS.md))
+- Linux/macOS main build: `make -C build/make/rise -j8 all` (`LTO=thin|full|off` on macOS; default `LTO=thin`, `make clean` when switching — see [docs/BUILD_FLAGS.md](docs/BUILD_FLAGS.md))
 - Linux/macOS single test: `make -C build/make/rise build-test/<TestName>` (note: `make all` does not relink tests; rebuild the test target after library edits)
 - Linux/macOS tests: `make -C build/make/rise -j8 tests` then `./run_all_tests.sh` (`--tier all|fast|extended` [default `all`], `--filter "<glob>"`, `--timeout <sec>`, `--jobs <n>` [default: one test per core; tests marked `exclusive` in `tests/test_schedule.tsv` run alone])
 - Stash-based red-proof helper: `tools/red_prove.sh [--args "<test-args>"] <TestName> <marker> <src-file>...`
@@ -60,10 +60,10 @@ Never suppress warnings with pragmas or `-Wno-*` flags — fix the root cause. B
 ## Current Load-Bearing Invariants
 
 - **Floating-point & LTO flags ([docs/BUILD_FLAGS.md](docs/BUILD_FLAGS.md)):**
-  - Both `make` (`Config.OSX`) and all Xcode configurations (`Development`, `Deployment`, `Default`, `Opto`) pass `-ffast-math -fno-finite-math-only` globally, with strict-FP32 TUs (`src/Library/Utilities/Osl*.cpp`, simulation/fire/radiometric strict sources) compiled with `-fno-fast-math -ffp-contract=off`.
+  - Both `make` (`Config.OSX`) and all Xcode configurations (`Development`, `Deployment`, `Default`, `Opto`) pass `-ffast-math -fno-finite-math-only` globally, with strict-FP32 TUs (`src/Library/Utilities/Osl*.cpp`, simulation/fire/fire-adjacent/HyLIoS/radiometric strict sources; the make and Xcode per-file lists must stay equal) compiled with `-fno-fast-math -ffp-contract=off`.
   - Because `-fno-finite-math-only` is active, `std::isfinite` / `std::isnan` work on every platform; `RISE::IsFiniteDouble` ([src/Library/Utilities/FiniteMath.h](src/Library/Utilities/FiniteMath.h)) is retained for uniformity and `-Ofast` resistance.
   - Keep `SAFE_INV` / `±FLT_MAX` finite sentinels in BVH/ray slab tests (do **not** replace with `infinity()`, which yields `0 * inf = NaN` on axis-aligned slab faces and silently accepts missed slabs).
-  - `make` defaults to `LTO=full` (`LTO=thin` is opt-in); Xcode `Deployment` uses `YES_THIN` while `Opto` (release DMG) uses full `LLVM_LTO = YES`. Verify FP- and LTO-sensitive changes against `Opto`.
+  - `make` defaults to `LTO=thin` since fire solver version 4 (`LTO=full|off` opt-in; `make clean` when switching, make does not track the mode); simulation and fire bytes are the same in every LTO mode, the one LTO-dependent test being `FireSimulationSolverTest` (pinned for thin; [docs/BUILD_FLAGS.md](docs/BUILD_FLAGS.md) §8). Xcode `Deployment` uses `YES_THIN` while `Opto` (release DMG) uses full `LLVM_LTO = YES`. Verify FP- and LTO-sensitive changes against `Opto`.
   - `SourceHygieneTest` bans NaN/Inf control-flow sentinels in `tests/*.cpp` (opt out only with `// HYGIENE-OK: <reason>`).
 
 - **Color space, spectral uplift, and `IScalarPainter` ([docs/COLOR_SPACE_MIGRATION.md](docs/COLOR_SPACE_MIGRATION.md), [docs/SPECTRAL_ILLUMINANT_CONVENTION.md](docs/SPECTRAL_ILLUMINANT_CONVENTION.md), [docs/ISCALARPAINTER_REFACTOR.md](docs/ISCALARPAINTER_REFACTOR.md)):**
@@ -100,7 +100,7 @@ Never suppress warnings with pragmas or `-Wno-*` flags — fix the root cause. B
   - Blender add-on bridge is at **C ABI v23** (`src/Blender/native/rise_blender_bridge.h`), compiling 42 Cycles shader node types natively via `expression_painter` / `mix_material` / `ReliefModifier` / `ModifierStack` / `BlendedModifier`.
 
 - **Simulation subsystem ([docs/SIMULATION_SOLVER_CONTRACT.md](docs/SIMULATION_SOLVER_CONTRACT.md), [docs/SIMULATION_GUI_STATUS.md](docs/SIMULATION_GUI_STATUS.md), [docs/FIRE_SMOKE_STATUS.md](docs/FIRE_SMOKE_STATUS.md)):**
-  - Four builtin solvers behind the frozen v1 solver contract: `fire.methane` (v3; Metal + experimental CPU backend), `cloth.shell` (m3a.8), `rigid.bodies` (m6.2), and `liquid.mac` (m7m.1, including two-way cloth/sheet coupling, two-valued sheet-cut level set, and sheet viscosity).
+  - Four builtin solvers behind the frozen v1 solver contract: `fire.methane` (version 4; Metal + experimental CPU backend), `cloth.shell` (m3a.8), `rigid.bodies` (m6.2), and `liquid.mac` (m7m.1, including two-way cloth/sheet coupling, two-valued sheet-cut level set, and sheet viscosity).
   - Scene chunks (`cloth_simulation`, `rigid_simulation`, `liquid_simulation`, `fire_simulation`, `simulation_group`, `simulation_cache`, `simulated_mesh_geometry`, `simulated_points_geometry`) bake through `rise-sim` into versioned CBOR caches (defaulting to the per-user cache folder) and play back portably across platforms.
 
 - **Thread priority ([docs/PERFORMANCE.md](docs/PERFORMANCE.md)):**

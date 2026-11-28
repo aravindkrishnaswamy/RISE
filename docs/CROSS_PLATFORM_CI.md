@@ -57,7 +57,8 @@ The sources the Windows library project and the Android source list must contain
 
 ## Expected problems (from reading the code, not from a compile)
 
-Nothing is certain. The simulation sources are already written with `_WIN32` / `__APPLE__` / Android
+Written before the Windows build was made clean (see Results); kept as the list of MSVC hazards to check in new
+code. Nothing is certain. The simulation sources are already written with `_WIN32` / `__APPLE__` / Android
 guards (durable file writes, process spawning, memory sizing, host name, pid, environment variables),
 so no missing-include or unguarded-POSIX error was found by reading. The places most likely to fail:
 
@@ -99,5 +100,11 @@ Files other agents were editing when this was written (not touched): `src/Librar
   CMake `rise_all_tests` targets (`build/cmake/rise-tests`). Earlier CI failures in `GeometricUtilities.cpp`,
   `ManifoldSolver.h` (GDI `RGB` macro clash), `Win32Console.h`, `FireCase.cpp`, `FireSimulationRecords.cpp`,
   `LiquidSheets.cpp`, `AliasTable.h`, `KeyframableHelper.cpp`, and `Library.vcxproj` are all resolved.
+- **After `b6663f1af` (branch `simulation-liquid`, merged 2026-11-27):** liquid inflow sources and drains, rigid
+  analytic bodies with a mesh coupling surface, and fire solver version 4 (strict fire-adjacent sources, a macOS
+  make/Xcode flag change only) were added on macOS and **not compiled on Windows**. They were read against
+  `b6663f1af`'s fixes (no `near`/`far`/`small`/`large` identifiers, no `__attribute__`, no new standard facility
+  without its header; the two new tests got explicit standard includes). The test glob picks up the two new tests,
+  `LiquidSourceTest` and `ClothRigidPrimitiveTest` (505 CMake targets, not yet built on Windows).
 - **Remaining platform gaps:** The Windows solution does not yet have a `rise-sim` project and the Windows
   Qt6 GUI does not yet mirror macOS `SimulationsPanel` (see [SIMULATION_GUI_STATUS.md](SIMULATION_GUI_STATUS.md)).

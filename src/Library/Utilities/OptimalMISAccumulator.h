@@ -1,54 +1,15 @@
 //////////////////////////////////////////////////////////////////////
 //
 //  OptimalMISAccumulator.h - Tiled second-moment accumulator for
-//  optimal MIS weights in path tracing direct illumination.
+//    optimal MIS direct-illumination weights (Kondapaneni et al.,
+//    SIGGRAPH 2019).
 //
-//  ALGORITHM:
-//  During training iterations, for each NEE or BSDF-sampled emitter
-//  hit, the accumulator records (f/p_i)^2 — the squared single-
-//  technique estimator value — into the tile containing the current
-//  pixel, where i is the technique that generated the sample
-//  direction.  After training, Solve() computes per-tile optimal
-//  alpha:
-//
-//    alpha = M_nee / (M_nee + M_bsdf)
-//
-//  where M_i = E_{x~p_i}[(f/p_i)^2] = mean of f^2/p_i^2 over
-//  samples drawn by technique i.  This equals the second moment of
-//  technique i's single-technique estimator.  The OTHER technique's
-//  moment goes in the numerator because the optimal coefficient is
-//  1/M_i, so lower M means more weight.  This alpha is then used by
-//  OptimalMIS2Weight() from MISWeights.h:
-//
-//    w_bsdf(x) = alpha * p_bsdf / (alpha * p_bsdf + (1-alpha) * p_nee)
-//    w_nee(x)  = (1-alpha) * p_nee / ((1-alpha) * p_nee + alpha * p_bsdf)
-//
-//  CORRECT MOMENT ESTIMATION:
-//  Each technique must estimate its OWN second moment from its OWN
-//  samples.  If technique i draws direction x ~ p_i, then:
-//
-//    M_i = E_{x~p_i}[(f(x)/p_i(x))^2]
-//        = integral f^2/p_i dx
-//
-//  and (f(x)/p_i(x))^2 = f^2/p_i^2 is an unbiased single-sample
-//  estimator.  We do NOT need the other technique's PDF during
-//  accumulation.  Mixing samples from different proposals without
-//  IS correction would produce biased moment estimates.
-//
-//  SPATIAL BINNING:
-//  Using per-pixel statistics would require too many samples for
-//  convergence.  Instead, statistics are accumulated per tile
-//  (default 16x16 pixels), providing spatial adaptivity while
-//  maintaining adequate sample counts.
-//
-//  THREAD SAFETY:
-//  Multiple threads may accumulate concurrently.  Per-tile counters
-//  use std::atomic for lock-free thread safety.
-//
-//  REFERENCE:
-//  Kondapaneni, I., Vevoda, P., Grittmann, P., Skalicky, T.,
-//  Vorba, J., Krivanek, J. "Optimal Multiple Importance Sampling."
-//  ACM Trans. Graph. (Proc. SIGGRAPH) 38(4), 2019.
+//  Per tile (default 16x16 px), each technique estimates its own second
+//  moment M_i = E_{x~p_i}[(f/p_i)^2] from its own samples only.  Solve()
+//  computes alpha = M_nee / (M_nee + M_bsdf) for OptimalMIS2Weight() in
+//  MISWeights.h (lower M_i -> higher weight; BSDF gets alpha, NEE gets
+//  1 - alpha).  Per-tile counters use std::atomic for lock-free
+//  concurrent accumulation.
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: April 9, 2026
@@ -162,37 +123,17 @@ namespace RISE
 			/// Resets all accumulated statistics.
 			void Reset();
 
-			/// Increments the sample count for the specified technique.
-			///
-			/// Must be called once per sample attempt (every NEE shadow
-			/// ray, every BSDF scatter), regardless of whether the sample
-			/// contributed non-zero radiance.  This ensures the second
-			/// moment M_i = E_{x~p_i}[(f/p_i)^2] is averaged over ALL
-			/// samples, not just hits.
-			///
-			/// \param px           Pixel x coordinate
-			/// \param py           Pixel y coordinate
-			/// \param technique    Which technique generated this sample
+			/// Increments sample count for the technique.  Must be called once per
+			/// sample attempt (hits AND misses) so M_i averages over all samples.
 			void AccumulateCount(
 				unsigned int px,
 				unsigned int py,
 				SamplingTechnique technique
 				);
 
-			/// Accumulates the second-moment contribution for a successful
-			/// sample (f > 0).
-			///
-			/// Called during training for every emitter hit where the
-			/// sampling PDF is available.  Does NOT increment the sample
-			/// count — call AccumulateCount() separately for every sample
-			/// attempt (including misses).
-			///
-			/// \param px           Pixel x coordinate
-			/// \param py           Pixel y coordinate
-			/// \param f2           Squared integrand magnitude (luminance^2
-			///                     of the full direct-light contribution)
-			/// \param samplingPdf  PDF of the technique that drew this direction
-			/// \param technique    Which technique generated this sample
+			/// Accumulates (f/p_i)^2 for a hit (f > 0), where f2 is squared
+			/// direct-light luminance and samplingPdf is the generating technique's
+			/// PDF.  Does NOT increment the sample count (call AccumulateCount).
 			void Accumulate(
 				unsigned int px,
 				unsigned int py,
@@ -201,22 +142,8 @@ namespace RISE
 				SamplingTechnique technique
 				);
 
-			/// Reads the RAW training state of the tile containing the
-			/// given pixel, before Solve() collapses it into one alpha.
-			///
-			/// `Solve()`'s output is a ratio, so it cannot distinguish a
-			/// moment of the right SHAPE from one scaled by a constant --
-			/// which is precisely what a mis-formed `bsdfTimesCos` (the
-			/// DL-72 failure family) produces.  Tests that know a
-			/// site's closed-form per-sample contribution assert against
-			/// these sums directly (`OptimalMISTrainingSitesTest`).
-			///
-			/// \param px        Pixel x coordinate
-			/// \param py        Pixel y coordinate
-			/// \param sumNee    [out] sum of (f/p_nee)^2 over NEE hits
-			/// \param sumBsdf   [out] sum of (f/p_bsdf)^2 over BSDF hits
-			/// \param countNee_  [out] NEE sample ATTEMPTS (hits + misses)
-			/// \param countBsdf_ [out] BSDF sample ATTEMPTS (hits + misses)
+			/// Reads raw per-tile training sums (f/p_i)^2 and attempt counts
+			/// (hits + misses) prior to Solve(), for direct test verification.
 			void GetTileTraining(
 				unsigned int px,
 				unsigned int py,
@@ -230,15 +157,8 @@ namespace RISE
 			/// Must be called after all training iterations are complete.
 			void Solve();
 
-			/// Returns the solved alpha for the tile containing the given pixel.
-			/// Valid only after Solve() has been called.
-			///
-			/// Alpha is the weight for the BSDF technique in the optimal
-			/// MIS formula.  Use (1 - alpha) for the NEE technique weight.
-			///
-			/// \param px  Pixel x coordinate
-			/// \param py  Pixel y coordinate
-			/// \return Optimal alpha in [alphaClampMin, alphaClampMax]
+			/// Returns solved BSDF alpha in [alphaClampMin, alphaClampMax] for
+			/// the pixel's tile (valid after Solve(); NEE weight is 1 - alpha).
 			Scalar GetAlpha(
 				unsigned int px,
 				unsigned int py

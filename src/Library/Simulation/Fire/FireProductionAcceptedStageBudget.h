@@ -1,3 +1,18 @@
+//////////////////////////////////////////////////////////////////////
+//
+//  FireProductionAcceptedStageBudget.h - Observation-only conservative
+//  mass/species/enthalpy stage budget reducer and contiguous ledger.
+//
+//  Rows 0..8 are Z tracer, seven species (including carbon), and
+//  sensible enthalpy; row 9 sums species 1..7 (never tracer/enthalpy).
+//  Rates interpret accepted binary32 low + alpha*delta operands in
+//  long double; closure residuals retain solver rounding.
+//
+//  Tabs: 4
+//
+//  License Information: Please see the attached LICENSE.TXT file
+//
+//////////////////////////////////////////////////////////////////////
 #ifndef RISE_TEST_FIRE_PRODUCTION_ACCEPTED_STAGE_BUDGET_H
 #define RISE_TEST_FIRE_PRODUCTION_ACCEPTED_STAGE_BUDGET_H
 
@@ -11,11 +26,9 @@
 #include <string>
 #include <vector>
 
-// Observation only. Rows 0..8 are Z tracer, seven species (including carbon),
-// and sensible enthalpy. The tracer is NOT added to total species mass.
-// Rates are the real-arithmetic interpretation of the accepted binary32
-// low + alpha*delta operands; the residual retains solver rounding.
 namespace FireProductionAcceptedStageBudget {
+// Volume-integrated inventory, source, 6-side boundary fluxes, bottom burner/non-burner
+// split, and closure residual (ending - beginning - source + outflow - inflow).
 struct Row {
     long double beginning=0, ending=0, source=0, closure=0, interstepChange=0;
     std::array<long double,6> inflow{}, outflow{};
@@ -45,6 +58,8 @@ inline void Add(Row& to,const Row& from,long double scale) {
     for(unsigned region=0;region<2;++region){to.bottomInflow[region]+=scale*from.bottomInflow[region];to.bottomOutflow[region]+=scale*from.bottomOutflow[region];}
 }
 
+// Verifies accepted owner payload bindings and reduces per-field inventories,
+// source ledger, and face fluxes (recomputing row-9 bulk mass direction per face).
 template<class Request,class Owner>
 bool Reduce(const Request& request,const Owner& owner,std::uint64_t index,
     const std::vector<unsigned char>& footprint,Step& output,std::string& error) {
@@ -197,6 +212,7 @@ struct Ledger {
         ++count;endTime=step.beginTime+step.dt;error.clear();return true;
     }
 };
+// Self-test exercising asymmetric fluxes, counterdiffusion, sign/side swaps, truncation refusal, and Ledger::Commit.
 inline bool Fixture() {
     struct Shape {std::size_t nx=2,ny=3,nz=4;double cellWidthM=0.5;};
     struct Source {

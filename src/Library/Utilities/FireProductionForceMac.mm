@@ -2,6 +2,14 @@
 //
 //  FireProductionForceMac.mm - Metal frozen-force comparison wrapper
 //
+//  Apple Metal compute implementation of the staggered MAC nonpressure
+//  momentum force kernels (face/cell velocity, Vreman/WALE/hyper-Vreman
+//  stress tensor, viscous & relative-buoyancy face rates, phase-source
+//  momentum rate, outward-rounded viscous stability Lambda reduction,
+//  and explicit viscous substepping + gravity advance). Compiled with
+//  MTLMathModeSafe + precise functions + fp contract(off) for CPU parity
+//  with FireProductionForce.cpp. Non-Apple builds link the unsupported stub.
+//
 //  License Information: Please see the attached LICENSE.TXT file
 //
 //////////////////////////////////////////////////////////////////////
@@ -30,6 +38,8 @@ namespace RISE
 {
 	namespace
 	{
+		// --- Transfer audit counters, packed-face parameters, and gravity helper ---
+
 		enum ResidentForceHostAccessKind
 		{
 			ResidentForceScalarAccess,
@@ -134,6 +144,10 @@ namespace RISE
 			return result;
 		}
 
+		// --- Embedded Metal shading source (hashed verbatim by KernelSourceSHA256) ---
+		// Packed MAC faces [x,y,z] use faceOffset[axis] + local index; cells use
+		// (z*ny+y)*nx+x. Kernels enforce #pragma clang fp contract(off) for strict
+		// parity with FireProductionForce.cpp and support opt-in compact/WALE/hyper-Vreman.
 		const char* ForceSource()
 		{
 			return R"METAL(
@@ -504,6 +518,8 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 )METAL";
 		}
 
+		// --- Cached Metal force pipeline context and diagnostic trace builder ---
+
 		std::atomic<std::uint64_t> ForceContextConstructionAttempts{0u};
 
 		struct ForceContext
@@ -674,6 +690,11 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 		}
 	}
 
+	// --- Standalone frozen-force comparison entry point ---
+
+	// Uploads beginning cell/face fields, dispatches setup_face_velocity ->
+	// build_cell_velocity -> build_stress -> build_face_force in one command,
+	// and publishes cell viscosities plus staggered face force rates/increments.
 	bool BuildFireProductionFrozenForceFieldsMetal(
 		const FireProductionFrozenForceRequest& request,
 		FireProductionFrozenForceResult& result,
@@ -865,6 +886,10 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 		}
 	}
 
+	// --- Resident and comparator nonpressure momentum RHS evaluators ---
+
+	// Encodes the 5-kernel stage RHS (buoyancy + Vreman stress + phase source)
+	// directly onto caller-owned Private buffers with dt=1.0f (pure rates).
 	bool EvaluateFireProductionNonpressureMomentumRHSMetalResident(
 		const FireProductionMetalNonpressureMomentumRHSResidentInput& input,
 		FireProductionMetalNonpressureMomentumRHSResidentResult& result,
@@ -1301,6 +1326,12 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 		return EvaluateNonpressureMomentumMetalComparator(request,result,diagnostics,error,&trace);
 	}
 
+	// --- Resident explicit viscous substepping + gravity (+ optional P2 projection) ---
+
+	// Two-command resident advance: (1) upload + preflight Vreman mu & outward
+	// max(mu)*max(1/rho)/dx^2 Lambda reduction, (2) host substep schedule selection
+	// (1..8 substeps), (3) Private viscous substep loop + gravity (+ optional
+	// Private handoff to ProjectFireProductionMetalResident or terminal staging).
 	bool AdvanceFireProductionFrozenForceMetalImpl(
 		const FireProductionFrozenForceRequest& request,
 		bool captureIntermediateStates,

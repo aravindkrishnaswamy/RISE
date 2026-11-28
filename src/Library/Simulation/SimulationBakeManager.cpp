@@ -1,3 +1,17 @@
+//////////////////////////////////////////////////////////////////////
+//
+//  SimulationBakeManager.cpp - Out-of-process simulation bake job
+//  scheduler, worker monitor, live-worker adoption, and event dispatch.
+//
+//  Enforces upstream DAG ordering, single-GPU exclusivity, CPU slot
+//  limits, and a host physical-memory budget across rise-sim workers.
+//
+//  Tabs: 4
+//
+//  License Information: Please see the attached LICENSE.TXT file
+//
+//////////////////////////////////////////////////////////////////////
+
 #include "pch.h"
 #include "SimulationBakeManager.h"
 #include "SimulationCache.h"
@@ -139,6 +153,8 @@ bool BakeJobTerminal(BakeJobState state)
 		state == BakeJobState::Cancelled;
 }
 
+// Per-job manager record: public BakeJob state plus process identity,
+// ETA baseline observations, and upstream dependency metadata.
 struct SimulationBakeManager::Entry {
 	BakeJob job;
 	std::uint64_t startStamp = 0;     // ProcessStartStamp of job.pid
@@ -199,6 +215,8 @@ void SimulationBakeManager::SetWorkerOverride(const std::string& path)
 	workerOverride_ = path;
 }
 
+// Locates the rise-sim worker binary across explicit override, RISE_SIM_WORKER,
+// sibling executable/bundle paths, and PATH.
 bool SimulationBakeManager::LocateWorker(const std::string& override, fs::path& found, std::vector<fs::path>* searched)
 {
 #ifdef _WIN32
@@ -390,6 +408,8 @@ void SimulationBakeManager::EnsureMonitor_(Lock&)
 	if (!monitor_.joinable()) monitor_ = std::thread([this] { MonitorLoop_(); });
 }
 
+// Background monitor loop: runs Tick_ under mutex_ and dispatches accumulated
+// BakeEvents unlocked so listeners can safely query or unsubscribe.
 void SimulationBakeManager::MonitorLoop_()
 {
 	Lock lock(mutex_);
@@ -419,6 +439,7 @@ void SimulationBakeManager::PollNow()
 
 // ------------------------------------------------------------------ progress
 
+// Reconciles a live worker's status sidecar into Entry::job and computes linear ETA.
 void SimulationBakeManager::ReadProgress_(Entry& e, std::vector<BakeEvent>& events)
 {
 	WorkerStatus s;
@@ -453,6 +474,8 @@ void SimulationBakeManager::ReadProgress_(Entry& e, std::vector<BakeEvent>& even
 	if (changed) Update_(e, events, frames);
 }
 
+// Transitions an exited worker to Finished/Stopped/Failed from exit code or
+// final status sidecar, checks cache resumability, and removes any stop file.
 void SimulationBakeManager::Finalize_(Entry& e, bool haveExit, int exitCode, std::vector<BakeEvent>& events)
 {
 	WorkerStatus s;
@@ -502,6 +525,7 @@ void SimulationBakeManager::Finalize_(Entry& e, bool haveExit, int exitCode, std
 
 // ------------------------------------------------------------------ scheduling
 
+// Spawns a detached rise-sim worker for a queued bake/resume job and opens its log.
 bool SimulationBakeManager::StartJob_(Entry& e, std::string& error)
 {
 	std::vector<std::string> argv;
@@ -600,6 +624,8 @@ unsigned SimulationBakeManager::VerifyCaches()
 	return marked;
 }
 
+// Single scheduler pass: checks for externally deleted caches, reaps/polls live
+// workers, and launches queued jobs once upstream, GPU/CPU slot, and memory gates clear.
 void SimulationBakeManager::Tick_(Lock&, std::vector<BakeEvent>& events)
 {
 	// 0. Caches deleted behind our back (a stat per finished job, once a second).
@@ -701,6 +727,7 @@ void SimulationBakeManager::Tick_(Lock&, std::vector<BakeEvent>& events)
 
 // ------------------------------------------------------------------ adoption
 
+// Adopts external live workers or partial/interrupted caches found on disk for a scene.
 bool SimulationBakeManager::AttachLocked_(const BakeSceneSnapshot& scene, std::vector<BakeEvent>& events)
 {
 	const std::string key = SceneKey(scene.scene);
@@ -782,6 +809,8 @@ bool SimulationBakeManager::Attach(const BakeSceneSnapshot& scene, std::string&)
 
 // ------------------------------------------------------------------ requests
 
+// Queues requested simulations plus transitive out-of-date upstreams (folding
+// group members into their group job) and enforces unsaved-scene key rules.
 bool SimulationBakeManager::RequestBake(const BakeSceneSnapshot& scene, const BakeRequest& request,
 	std::vector<std::uint64_t>& jobs, std::string& error)
 {
@@ -912,6 +941,7 @@ bool SimulationBakeManager::Resume(const BakeSceneSnapshot& scene, const std::st
 	return true;
 }
 
+// Cancels a queued job or stops/kills a running worker via stop file + SIGINT (or hard kill).
 bool SimulationBakeManager::StopLocked_(Entry& e, bool kill, std::vector<BakeEvent>& events, std::string& error)
 {
 	if (e.job.state == BakeJobState::Queued) {

@@ -1,26 +1,11 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  BVH.h - Templated SAH-binned BVH2 / BVH4 SIMD accelerator with
-//    opt-in parallel construction and in-place refit.
+//  BVH.h - Templated SAH-binned BVH2 / 4-wide BVH4 SIMD accelerator
+//    with opt-in bit-identical parallel build and in-place refit.
 //
-//    - SAH binned builder, recursive; single-threaded by default.  An
-//      opt-in parallel build (BuildOptions::parallel: a changing-topology
-//      simulated mesh rebuilds every frame) splits the top levels serially,
-//      builds the subtrees on the global thread pool and splices them in
-//      the serial build's node order, so the tree is bit-identical to the
-//      serial one.
-//    - Collapses BVH2 to 4-wide BVH4 with SIMD child-AABB testing.
-//    - Single-ray stack traversal, fixed depth 64; supports in-place
-//      refit for deforming geometry.
-//    - Float-stored AABBs in nodes (conservative pad from double).
-//    - Double-precision ray-triangle intersection at leaves
-//      (delegated to TreeElementProcessor::RayElementIntersection).
-//    - SBVH spatial splits were evaluated and excised (see
-//      docs/BVH_RETROSPECTIVE.md).
-//
-//  Header-only template, mirroring the existing Octree<T>/BSPTreeSAH<T>
-//  pattern.  Element type T is specialized via TreeElementProcessor<T>
-//  in TriangleMeshGeometry{,Indexed}Specializations.h.
+//  Float-stored AABBs (conservatively padded outward by 1 ULP from
+//  double) drive traversal; leaves intersect in double precision via
+//  TreeElementProcessor<Element>.
 //
 //  Author: Aravind Krishnaswamy
 //  Tabs: 4
@@ -49,11 +34,7 @@
 #include <cstddef>
 #include <cfloat>
 
-// Phase 3 SIMD selection.  Apple Silicon and arm64 Android (Galaxy Fold)
-// route to NEON 128-bit; x86_64 with AVX2 routes to SSE2/SSE4.1 intrinsics
-// (AVX2 not actually needed for 4-wide single-precision — SSE2 is enough,
-// but we use AVX2 detection as the gate because that's what the rest of
-// RISE assumes for "modern x86").  Anything else falls back to scalar.
+// SIMD selection: NEON on ARM, SSE2/SSE4.1 on x86_64, else scalar fallback.
 #if defined(__ARM_NEON) || defined(__ARM_NEON__)
 #  include <arm_neon.h>
 #  define RISE_BVH_HAVE_NEON 1
@@ -67,69 +48,35 @@
 
 namespace RISE
 {
-	//////////////////////////////////////////////////////////////////////
-	//
-	// BVH<Element> — top-down SAH binned BVH2 over `Element` primitives.
-	//
-	// Storage:
-	//   - `nodes` is the tree, packed depth-first.  Internal nodes carry
-	//     a pair of float AABBs (their two children) + the index of
-	//     `leftChild`; right child is always at leftChild+1.
-	//   - Leaves store [primStart, primStart + primCount) into `prims`.
-	//   - `prims` is the reordered primitive array (no duplication;
-	//     SBVH spatial splits would change this in a future phase).
-	//
-	// Float vs double:
-	//   - Internal traversal does float ray-vs-AABB tests.  AABBs are
-	//     conservatively rounded outward by 1 ULP at construction so
-	//     tests can never reject a valid hit purely due to fp32 loss.
-	//   - Leaf intersection runs in `Scalar` (double) via the
-	//     TreeElementProcessor — no precision loss for the geometry
-	//     reported back to the caller.
-	//
-	//////////////////////////////////////////////////////////////////////
+	//! Top-down SAH-binned BVH2 collapsed into 4-wide SoA BVH4.
+	//! Internal traversal tests 1-ULP outward-padded float AABBs; leaf intersection
+	//! runs in double precision via TreeElementProcessor<Element>.
 	template< class Element >
 	class BVH : public Implementation::Reference
 	{
 	public:
-		// Public node layout — flat, no virtuals, dense packing.
+		// 32-byte flat BVH2 node: right child is always at firstPrimOrLeft + 1.
 		struct Node
 		{
-			float    bboxMin[3];     // AABB lower bound (conservative float)
-			float    bboxMax[3];     // AABB upper bound
-			uint32_t firstPrimOrLeft;// leaf: primitive start index;
-			                         // internal: left-child node index
+			float    bboxMin[3];     // conservative float lower bound
+			float    bboxMax[3];     // conservative float upper bound
+			uint32_t firstPrimOrLeft;// leaf: prims[] start; internal: left-child index
 			uint16_t primCount;      // 0 = internal, >0 = leaf
 			uint8_t  splitAxis;      // 0/1/2 for x/y/z (internal only)
-			uint8_t  pad;            // align to 32 B (room for refit cost later)
+			uint8_t  pad;            // align to 32 B
 		};
 
-		// Phase 2 float-filter data per leaf primitive.  Stored as
-		// (P0, e1, e2) — what Möller-Trumbore needs.  36 bytes/triangle,
-		// adjacent to `prims`, indexed identically (so prims[i] and
-		// fastFilter[i] describe the same primitive after build-time
-		// reordering).  Empty iff the element processor doesn't supply
-		// `GetFloatTriangleVertices` (i.e. non-triangle primitives).
+		// Conservative float Möller-Trumbore pre-filter data (36 B/tri, parallel to prims[]).
 		struct TriangleFilterData
 		{
-			float p0[3];   // first vertex (in float)
-			float e1[3];   // edge1 = v1 - v0
-			float e2[3];   // edge2 = v2 - v0
+			float p0[3];   // first vertex
+			float e1[3];   // v1 - v0
+			float e2[3];   // v2 - v0
 		};
 
-		// Phase 3 wide-BVH node layout (BVH4 SoA).  Up to 4 children per
-		// internal node, child AABBs stored in struct-of-arrays so a single
-		// SIMD load fetches all 4 mins (or maxes) on each axis for a
-		// 4-wide ray-vs-AABB test.
-		//
-		// Encoding:
-		//   - children[i]:
-		//       primCount[i] > 0  → leaf, value is firstPrim into prims[]
-		//       primCount[i] == 0 → internal, value is BVH4 node index
-		//                           (or -1 for unused slot when numChildren < 4)
-		//   - numChildren in 0..4.  Unused bbox slots are initialised to
-		//     (+INF, -INF) so the ray-vs-AABB test always rejects them
-		//     without needing a length check.
+		// 4-wide SoA BVH4 node: primCount[i] > 0 => leaf (children[i] = firstPrim),
+		// primCount[i] == 0 => internal (children[i] = nodes4 index, or -1 if unused).
+		// Unused slots store (+FLT_MAX, -FLT_MAX) and are masked by numChildren.
 		struct alignas(16) BVH4Node
 		{
 			float    bboxMinX[4];
@@ -148,32 +95,24 @@ namespace RISE
 	protected:
 		std::vector<Node>                    nodes;
 		std::vector<Element>                 prims;
-		std::vector<TriangleFilterData>      fastFilter;  // Phase 2; empty = filter off
+		std::vector<TriangleFilterData>      fastFilter;  // empty = float pre-filter off
 		bool                                 hasFastFilter;
-		std::vector<BVH4Node>                nodes4;      // Phase 3; empty = BVH4 off
+		std::vector<BVH4Node>                nodes4;      // empty = BVH4 off
 		bool                                 useBVH4;
 		BoundingBox                          overallBox;
 		const TreeElementProcessor<Element>& ep;
 		AccelerationConfig                   cfg;
 
-		// Tier C3 (2026-04-27): SAH cost recorded once at build, used as
-		// the denominator in `SAHDegradationRatio()`.  Refit() preserves
-		// topology but bboxes can grow as keyframed vertices move; if
-		// they grow far enough that traversal expected-cost more than
-		// doubles, refit is no longer adequate and the caller should
-		// rebuild from polygon data.  See Refit() warning + caller
-		// rebuild fallback in TriangleMeshGeometryIndexed::UpdateVertices.
+		// Build-time SAH cost baseline for SAHDegradationRatio() (>2x signals rebuild).
 		Scalar                               originalSAH = 0;
 
 		virtual ~BVH() {}
 
 	public:
-		//! Optional build behaviour (M7 prerequisites).  The defaults are
-		//! the original builder: serial, with the Info log lines.
 		struct BuildOptions
 		{
-			bool parallel = false;	//!< build subtrees on GlobalThreadPool(); same tree as serial
-			bool quiet = false;		//!< no Info log lines (a per-frame rebuild)
+			bool parallel = false;	//!< build subtrees on GlobalThreadPool(); bit-identical to serial
+			bool quiet = false;		//!< suppress Info log lines (e.g. per-frame rebuild)
 		};
 
 		BVH( const TreeElementProcessor<Element>& ep_,
@@ -190,14 +129,11 @@ namespace RISE
 			Rebuild( inputPrims, options );
 		}
 
-		//! Full rebuild over a new primitive list, reusing this tree's
-		//! storage (the per-frame rebuild of a changing-topology mesh).
-		//! The result equals a freshly constructed BVH over the same list.
+		//! Full rebuild over a new primitive list, reusing existing vector storage.
 		void Rebuild( const std::vector<Element>& inputPrims, const BuildOptions& options )
 		{
 			hasFastFilter = false;
 			useBVH4 = false;
-			// No stale bounds from a previous build: an empty tree bounds a point.
 			if( inputPrims.empty() ) overallBox = BoundingBox( Point3( 0, 0, 0 ), Point3( 0, 0, 0 ) );
 			Build( inputPrims, options );
 			BuildFastFilter( !options.quiet );
@@ -215,25 +151,11 @@ namespace RISE
 			  ep( ep_ ),
 			  cfg( cfg_ )
 		{
-			// Plain SAH binned BVH2 builder.  An SBVH spatial-split
-			// alternative was investigated in Tier 1 §1 and excised in
-			// Tier B (2026-04-27) — see docs/BVH_RETROSPECTIVE.md.
-			// Decision: with closest-hit-native intersection and BVH4
-			// collapse already in place, plain SAH extracts most of
-			// the locatable benefit on this codebase's geometry;
-			// spatial splits added build/memory cost with no
-			// statistically significant rasterize win at any
-			// duplication budget tested (0.05 / 0.10 / 0.30) on the
-			// 7.2M-tri xyzdragon stress mesh.
 			Build( inputPrims );
 
 			BuildFastFilter();
 			BuildBVH4();
 
-			// Tier C3: snapshot the SAH cost of the freshly-built tree.
-			// Refit-driven keyframe animation can grow per-node bboxes
-			// arbitrarily; SAHDegradationRatio() compares against this
-			// to detect "refit no longer adequate" cases.
 			originalSAH = ComputeSAH();
 		}
 
@@ -244,22 +166,8 @@ namespace RISE
 		bool   BVH4Enabled() const { return useBVH4; }
 		const BoundingBox& GetBBox() const { return overallBox; }
 
-		//////////////////////////////////////////////////////////////////
-		//  SAHDegradationRatio (Tier C3 — refit safeguard).
-		//
-		//  Returns currentSAH / originalSAH.  The original SAH was
-		//  captured at construction (a freshly-built balanced tree);
-		//  Refit() preserves topology but per-node bboxes can grow as
-		//  keyframed vertices move.  If they grow far enough that the
-		//  ratio exceeds ~2.0, ray-traversal expected cost has more
-		//  than doubled vs the original tree — the refit-only path is
-		//  no longer adequate, and the caller should rebuild from
-		//  polygon data instead.
-		//
-		//  Returns 1.0 if originalSAH is unset (e.g. mesh deserialized
-		//  from a v3 cache that pre-dates Tier C3 — they get the safe
-		//  default rather than a spurious "rebuild now" signal).
-		//////////////////////////////////////////////////////////////////
+		//! Ratio currentSAH / originalSAH (1.0 if baseline unset); > ~2.0 signals
+		//! that in-place refit has degraded traversal and caller should rebuild.
 		Scalar SAHDegradationRatio() const
 		{
 			if( originalSAH <= 0 ) return 1.0;
@@ -268,26 +176,8 @@ namespace RISE
 			return cur / originalSAH;
 		}
 
-		//////////////////////////////////////////////////////////////////
-		//  Refit (Tier 1 §3 animation support).
-		//
-		//  Walk nodes[] in reverse index order (children-before-parents
-		//  by construction in BuildRecursive), recomputing
-		//  each node's AABB from either its referenced prims (leaves) or
-		//  its child AABBs (internal nodes).  After the BVH2 nodes are
-		//  refit, re-derive the float-filter triangle data and the BVH4
-		//  collapse from scratch so traversal sees the new geometry.
-		//
-		//  Topology (which nodes are children of which) is preserved.
-		//  Caller is responsible for ensuring vertex updates don't
-		//  change connectivity — that's the case for keyframed painter
-		//  notifications on DisplacedGeometry whose detail is fixed.
-		//
-		//  Returns refit duration in milliseconds for the caller's bench
-		//  reporting.  `logSummary` false (Simulation M3b's per-frame
-		//  mesh install, which rebuilds past the 2x guard itself) drops
-		//  the summary, float-filter and SAH-degradation lines.
-		//////////////////////////////////////////////////////////////////
+		//! In-place AABB refit preserving topology (reverse-index bottom-up pass),
+		//! then rebuilds float filter and BVH4 collapse. Returns duration in ms.
 		unsigned int Refit( const bool logSummary = true )
 		{
 			const auto tStart = std::chrono::steady_clock::now();
@@ -302,12 +192,10 @@ namespace RISE
 				Point3( RISE_INFINITY, RISE_INFINITY, RISE_INFINITY ),
 				Point3(-RISE_INFINITY,-RISE_INFINITY,-RISE_INFINITY ) );
 
-			// Highest index first — children always have larger index
-			// than parents in our build order.
+			// Reverse index order: children always have larger indices than parents.
 			for( int32_t i = (int32_t)nodes.size() - 1; i >= 0; --i ) {
 				Node& n = nodes[ (size_t)i ];
 				if( n.primCount > 0 ) {
-					// Leaf: AABB = union of referenced prim bboxes.
 					BoundingBox b(
 						Point3( RISE_INFINITY, RISE_INFINITY, RISE_INFINITY ),
 						Point3(-RISE_INFINITY,-RISE_INFINITY,-RISE_INFINITY ) );
@@ -319,8 +207,6 @@ namespace RISE
 					}
 					SetNodeBox( n, b );
 				} else {
-					// Internal: AABB = union of child AABBs.  Read from
-					// already-refit children (they have larger indices).
 					const Node& l = nodes[ n.firstPrimOrLeft     ];
 					const Node& r = nodes[ n.firstPrimOrLeft + 1 ];
 					n.bboxMin[0] = std::fmin( l.bboxMin[0], r.bboxMin[0] );
@@ -332,7 +218,6 @@ namespace RISE
 				}
 			}
 
-			// Update overallBox from root.
 			newOverall.ll.x = nodes[0].bboxMin[0];
 			newOverall.ll.y = nodes[0].bboxMin[1];
 			newOverall.ll.z = nodes[0].bboxMin[2];
@@ -341,23 +226,12 @@ namespace RISE
 			newOverall.ur.z = nodes[0].bboxMax[2];
 			overallBox = newOverall;
 
-			// Re-derive filter triangle data + BVH4 collapse from the
-			// refit BVH2.  These walks are O(N) and parallel-friendly —
-			// dominated by per-prim float-vertex extraction (filter)
-			// and a single tree walk (collapse).
 			BuildFastFilter( logSummary );
 			BuildBVH4();
 
 			const auto tEnd = std::chrono::steady_clock::now();
 			const unsigned int ms = (unsigned int)ElapsedMilliseconds(tStart, tEnd);
 
-			// Tier C3: SAH-degradation log.  We don't *force* a rebuild
-			// from inside Refit (BVH doesn't own the input prim list,
-			// only the caller does) — instead we emit a warning at
-			// 2.0× and let the caller decide based on
-			// SAHDegradationRatio().
-			// A quiet caller (logSummary false) reads SAHDegradationRatio()
-			// itself and rebuilds.
 			if( !logSummary ) return ms;
 			const Scalar ratio = SAHDegradationRatio();
 			if( ratio > 2.0 ) {
@@ -376,31 +250,8 @@ namespace RISE
 			return ms;
 		}
 
-		//////////////////////////////////////////////////////////////////
-		//  Serialization (Tier 1 §2 — `.risemesh` v3 BVH cache).
-		//
-		//  Writes the BVH2 representation only (nodes + DFS prim-index
-		//  ordering).  BVH4 collapse and float-filter precompute are
-		//  derived at load time from the BVH2 + the input prims, so the
-		//  on-disk format stays compatible across Phase 3+ traversal
-		//  changes.  See docs/BVH_RETROSPECTIVE.md §4.5 (deferred
-		//  but partially-realised here for the Tier 1 scope).
-		//
-		//  Format:
-		//    "BVH2"           4 bytes magic
-		//    uint32 version   = 1
-		//    uint32 numNodes
-		//    Node[numNodes]   raw bytes (POD, 32 bytes each)
-		//    uint32 numPrims
-		//    uint32[numPrims] DFS-ordered indices into the caller's
-		//                     original primitive list
-		//    Scalar overallBox.ll[3], overallBox.ur[3]
-		//
-		//  primIdxFn maps each `prims[i]` back to its index in the
-		//  caller's authoritative ordering (since BVH<Element>::prims
-		//  is reordered by the SAH partition).  For
-		//  TriangleMeshGeometryIndexed, `prims[i] - &ptr_polygons[0]`.
-		//////////////////////////////////////////////////////////////////
+		//! Serializes BVH2 ("BVH2", v1, nodes, DFS prim indices via primIdxFn, overallBox).
+		//! BVH4 and float-filter tables are re-derived on Deserialize().
 		template< class IndexOf >
 		void Serialize( IWriteBuffer& buffer, const IndexOf& primIdxFn ) const
 		{
@@ -423,13 +274,7 @@ namespace RISE
 			buffer.setDouble( overallBox.ur.z );
 		}
 
-		// Deserialize: returns true on success, false if magic mismatches
-		// or version is unsupported.  `primAt(i)` should return the
-		// caller's primitive at index i.  After a successful load,
-		// the BVH4 collapse + filter precompute are re-run via the
-		// post-build hooks (BuildBVH4 + BuildFastFilter), so a v3
-		// `.risemesh` benefits from any improvement in those layers
-		// without re-baking.
+		//! Deserializes BVH2 and rebuilds float filter + BVH4 collapse; returns false on bad header/index.
 		template< class PrimAtFn >
 		bool Deserialize( IReadBuffer& buffer, uint32_t numInputPrims, const PrimAtFn& primAt )
 		{
@@ -467,18 +312,12 @@ namespace RISE
 			overallBox.ur.y = buffer.getDouble();
 			overallBox.ur.z = buffer.getDouble();
 
-			// Run post-build hooks (filter precompute + BVH4 collapse).
 			BuildFastFilter();
 			BuildBVH4();
 			return true;
 		}
 
-		//////////////////////////////////////////////////////////////////
-		//  BuildFastFilter: precompute float Möller-Trumbore edges for
-		//  every leaf primitive that the element processor can supply
-		//  vertices for.  Called once at construction after the main
-		//  build (so prims[] is in its final reordered layout).
-		//////////////////////////////////////////////////////////////////
+		//! Precomputes float Möller-Trumbore edges for all prims[] if ep supplies float vertices.
 		void BuildFastFilter( const bool logSummary = true )
 		{
 			if( prims.empty() ) {
@@ -486,8 +325,6 @@ namespace RISE
 				return;
 			}
 
-			// Probe the first prim — if processor doesn't supply float
-			// vertices, the whole filter is disabled.
 			float v0[3], v1[3], v2[3];
 			if( !ep.GetFloatTriangleVertices( prims[0], v0, v1, v2 ) ) {
 				hasFastFilter = false;
@@ -497,9 +334,6 @@ namespace RISE
 			fastFilter.resize( prims.size() );
 			for( size_t i = 0; i < prims.size(); ++i ) {
 				if( !ep.GetFloatTriangleVertices( prims[i], v0, v1, v2 ) ) {
-					// Heterogeneous primitive set (some triangle-like,
-					// some not) — disable filter wholesale rather than
-					// per-prim, simpler to reason about.
 					fastFilter.clear();
 					hasFastFilter = false;
 					return;
@@ -517,23 +351,9 @@ namespace RISE
 				(unsigned)( fastFilter.size() * sizeof( TriangleFilterData ) ) );
 		}
 
-		//////////////////////////////////////////////////////////////////
-		//  BuildBVH4: collapse the BVH2 into a BVH4 by absorbing each
-		//  internal child's two children into the parent slot.  Result:
-		//  every BVH4 internal node has 2..4 children.  Empty child slots
-		//  have bbox initialized to (+INF, -INF) so the ray-vs-AABB test
-		//  always rejects without a length check.
-		//
-		//////////////////////////////////////////////////////////////////
+		//! Collapses BVH2 into 4-wide BVH4 (clearing nodes4 first so Refit() stays safe).
 		void BuildBVH4()
 		{
-			// Refit-safe: BuildBVH4 is called on every Refit() (after the
-			// BVH2 nodes are updated in place), so we MUST start from an
-			// empty nodes4.  Without this clear, push_back below appends
-			// the new collapse to the trailing edge of the previous tree;
-			// nodes4[0] then still points at the stale pre-refit root and
-			// traversal silently intersects against old vertex bounds.
-			// (Caught by adversarial review, 2026-04-27.)
 			nodes4.clear();
 
 			if( nodes.empty() ) {
@@ -541,13 +361,10 @@ namespace RISE
 				return;
 			}
 
-			// Reserve generously — collapse roughly halves node count.
 			nodes4.reserve( nodes.size() / 2 + 1 );
 			nodes4.push_back( BVH4Node{} );
 			InitEmptyBVH4Node( nodes4[0] );
 
-			// If root is a leaf, BVH4 just has one leaf-only node.  We
-			// represent it as a BVH4 node with one child = leaf.
 			const Node& rootBVH2 = nodes[0];
 			if( rootBVH2.primCount > 0 ) {
 				FillBVH4ChildAsLeaf( nodes4[0], 0, rootBVH2 );
@@ -605,25 +422,19 @@ namespace RISE
 			dst.primCount[i] = src.primCount;
 		}
 
-		// Recursive collapse.  Caller has already allocated nodes4[bvh4Idx]
-		// and initialized it via InitEmptyBVH4Node.  This populates that
-		// node's children from the BVH2 subtree rooted at bvh2NodeIdx.
+		// Recursive collapse into pre-allocated nodes4[bvh4Idx]. Uses index-based
+		// access throughout because recursive push_back may reallocate nodes4.
 		void CollapseRecursive( uint32_t bvh4Idx, uint32_t bvh2NodeIdx )
 		{
 			const Node& n = nodes[bvh2NodeIdx];
-			// Caller is responsible for ensuring n is internal.
 			const uint32_t lIdx = n.firstPrimOrLeft;
 			const uint32_t rIdx = lIdx + 1;
 			const Node& l = nodes[lIdx];
 			const Node& r = nodes[rIdx];
 
-			// Decide candidates: try to absorb internal children's children.
-			// Each candidate is either a BVH2 leaf (becomes a BVH4 leaf-child)
-			// or a BVH2 internal (becomes a BVH4 internal-child via recursion).
 			uint32_t candidateNodeIdx[4];
 			int      numCandidates = 0;
 
-			// Process L
 			if( l.primCount > 0 ) {
 				candidateNodeIdx[numCandidates++] = lIdx;
 			} else {
@@ -632,7 +443,6 @@ namespace RISE
 				candidateNodeIdx[numCandidates++] = llIdx;
 				candidateNodeIdx[numCandidates++] = lrIdx;
 			}
-			// Process R
 			if( r.primCount > 0 ) {
 				candidateNodeIdx[numCandidates++] = rIdx;
 			} else {
@@ -642,14 +452,6 @@ namespace RISE
 				candidateNodeIdx[numCandidates++] = rrIdx;
 			}
 
-			// IMPORTANT: nodes4 grows via push_back inside this loop body
-			// (when an internal child is encountered).  Each push_back may
-			// reallocate the underlying buffer and invalidate any reference
-			// previously taken into nodes4.  We use index-based access
-			// (nodes4[bvh4Idx].field) throughout — never a long-lived
-			// `BVH4Node&` reference — so a stale-reference bug cannot
-			// hide.  Carry the splitAxis/numChildren state in locals,
-			// then write through nodes4[bvh4Idx] freshly on each line.
 			nodes4[bvh4Idx].numChildren = (uint8_t)numCandidates;
 			nodes4[bvh4Idx].splitAxis   = n.splitAxis;
 
@@ -657,13 +459,10 @@ namespace RISE
 				const uint32_t bvh2Cand = candidateNodeIdx[i];
 				const Node& cand = nodes[bvh2Cand];
 
-				// Capture bbox into locals before any push_back to avoid
-				// reading stale memory if the slot we'd write to is moved.
 				const float bxn = cand.bboxMin[0], byn = cand.bboxMin[1], bzn = cand.bboxMin[2];
 				const float bxp = cand.bboxMax[0], byp = cand.bboxMax[1], bzp = cand.bboxMax[2];
 
 				if( cand.primCount > 0 ) {
-					// Leaf child — no recursion, no further push_backs.
 					nodes4[bvh4Idx].bboxMinX[i] = bxn;
 					nodes4[bvh4Idx].bboxMinY[i] = byn;
 					nodes4[bvh4Idx].bboxMinZ[i] = bzn;
@@ -673,13 +472,11 @@ namespace RISE
 					nodes4[bvh4Idx].children[i]  = (int32_t)cand.firstPrimOrLeft;
 					nodes4[bvh4Idx].primCount[i] = cand.primCount;
 				} else {
-					// Internal child — allocate BVH4 slot first, then recurse.
 					const uint32_t childBVH4Idx = (uint32_t)nodes4.size();
-					nodes4.push_back( BVH4Node{} );           // may reallocate
+					nodes4.push_back( BVH4Node{} );
 					InitEmptyBVH4Node( nodes4.back() );
-					CollapseRecursive( childBVH4Idx, bvh2Cand );  // grows nodes4 further
+					CollapseRecursive( childBVH4Idx, bvh2Cand );
 
-					// All push_backs are done for this slot — write through index.
 					nodes4[bvh4Idx].bboxMinX[i] = bxn;
 					nodes4[bvh4Idx].bboxMinY[i] = byn;
 					nodes4[bvh4Idx].bboxMinZ[i] = bzn;
@@ -693,11 +490,8 @@ namespace RISE
 		}
 
 	public:
-		//////////////////////////////////////////////////////////////////
-		//  Phase 3 ray-vs-4-AABB SIMD kernel.  Returns hit-mask in low 4
-		//  bits; tEntry[0..3] is the entry-t for each child (sentinel
-		//  +INF for non-hit lanes so caller can sort without re-checking).
-		//////////////////////////////////////////////////////////////////
+		//! 4-wide SIMD ray-vs-AABB kernel: returns 4-bit hit mask and writes
+		//! entry-t per lane (FLT_MAX on miss).
 		static inline uint32_t RayBox4(
 			const float origin[3], const float invDir[3], float currentBest,
 			const BVH4Node& n, float tEntry[4] )
@@ -1133,18 +927,8 @@ namespace RISE
 			return true;
 		}
 
-		//////////////////////////////////////////////////////////////////
-		//  Parallel build (BuildOptions::parallel).  The serial build
-		//  allocates a node's two children together and then every node
-		//  of the left subtree before any of the right one, so the
-		//  descendants of any node occupy one contiguous run whose
-		//  internal layout depends only on that subtree.  The top levels
-		//  are split serially (SplitNode, exactly as BuildRecursive does)
-		//  until a range is small or deep enough; those ranges (disjoint
-		//  in `idx`) are built as independent local trees on the thread
-		//  pool; the local trees are then spliced in the serial order with
-		//  their child indices offset.  Same nodes, same prim order.
-		//////////////////////////////////////////////////////////////////
+		// Parallel build: splits top levels serially, builds disjoint subtrees on
+		// GlobalThreadPool(), and splices them in exact serial DFS node order.
 		static const size_t kParallelBuildMinimum = 65536;	// smaller lists build serially
 		static const uint32_t kParallelTaskMinimum = 16384;	// smallest subtree given its own task
 
@@ -1268,11 +1052,7 @@ namespace RISE
 			return n;
 		}
 
-		// Tier C3: SAH cost of the current tree, normalised by root-bbox
-		// surface area.  See SAHDegradationRatio() for rationale.
-		// Single O(N) walk; the typical caller invokes this after Refit
-		// where the AABB walk has already warmed the cache, so the
-		// amortised cost is small.  Empty tree returns 0.
+		// SAH cost of the current tree normalized by root surface area (0 if empty).
 		Scalar ComputeSAH() const
 		{
 			if( nodes.empty() ) return 0;
@@ -1309,34 +1089,8 @@ namespace RISE
 			return 2.0 * ( e.x * e.y + e.y * e.z + e.z * e.x );
 		}
 
-		// Conservative AABB store: round outward by 1 ULP in each
-		// component.  Guarantees the float box contains the true
-		// double box, so the float traversal can never reject a hit
-		// the double intersection would otherwise have caught.
-		//
-		// THIS IS TRUE FOR A FINITE, IN-RANGE double.  The cast to `float`
-		// happens FIRST, `nextafter` second -- for a `double` whose
-		// magnitude exceeds `FLT_MAX` (~3.4e38) by more than half a `float`
-		// ULP, the cast alone overflows to +-infinity (IEEE round-to-nearest;
-		// a `double` inside `(FLT_MAX, FLT_MAX*(1+2^-25))` -- within half a
-		// `float` ULP above the largest finite `float` -- instead rounds TO
-		// `FLT_MAX`, where `nextafter( FLT_MAX, FLT_MAX )` returns `FLT_MAX`
-		// itself -- the same clamped end state by a different route), and `nextafter( -infinity, -FLT_MAX )` (or
-		// the `+infinity`/`FLT_MAX` mirror) does not step 1 ULP OUTWARD from
-		// that -- it steps from an unbounded sentinel to the single nearest
-		// finite `float` in that direction, i.e. exactly `-FLT_MAX` (or
-		// `FLT_MAX`).  For `BoundingBox`'s default (unbounded) construction,
-		// whose `ll`/`ur` are +-`RISE_INFINITY` (== +-`DBL_MAX`, ~1.8e308 --
-		// see `InfinitePlaneGeometry::GenerateBoundingBox`), that is a huge
-		// INWARD snap in absolute terms (~1.8e308 collapsing to ~3.4e38),
-		// the opposite of "outward by 1 ULP".  It stays sound in practice
-		// only because no coordinate this renderer actually queries against
-		// a node box (`PointBoxDistanceF` / the ray slab test) ever
-		// approaches `FLT_MAX` in magnitude -- a box clamped to +-`FLT_MAX`
-		// still behaves as "unbounded enough" for every real scene
-		// coordinate, so the pruning guarantee below holds for the
-		// coordinates this engine handles, not as a fully general claim
-		// about arbitrary `double` inputs.
+		// Conservative float AABB store: rounds finite in-range doubles outward by
+		// 1 ULP via std::nextafter (overflowing/unbounded bounds clamp to +/-FLT_MAX).
 		static inline void SetNodeBox( Node& n, const BoundingBox& b )
 		{
 			n.bboxMin[0] = std::nextafter( (float)b.ll.x, -FLT_MAX );
@@ -1347,13 +1101,8 @@ namespace RISE
 			n.bboxMax[2] = std::nextafter( (float)b.ur.z,  FLT_MAX );
 		}
 
-		// Phase 2 float Möller-Trumbore filter.  Conservative — pads
-		// barycentric checks by EPS so near-edge hits pass through to
-		// the double-precision certifier rather than being silently
-		// rejected on float roundoff.  Returns true on potential hit
-		// with a float t estimate; double-precision certifier (the
-		// production RayElementIntersection) computes the authoritative
-		// hit info if the filter approves and t is competitive.
+		// Conservative float Möller-Trumbore pre-filter (EPS = 1e-5f): skips clear misses;
+		// passing candidates are certified in double precision by ep.RayElementIntersection.
 		static inline bool MollerTrumboreFloat(
 			const float origin[3],
 			const float dir[3],
@@ -1361,12 +1110,8 @@ namespace RISE
 			float       currentBest,
 			float&      tOut )
 		{
-			// Conservative epsilon: 1e-5 relative.  This covers most
-			// double→float vertex roundoff (~1 ULP at fp32) plus the
-			// barycentric arithmetic loss across cross-product chains.
 			constexpr float EPS = 1e-5f;
 
-			// pvec = dir × e2
 			const float pvec[3] = {
 				dir[1] * f.e2[2] - dir[2] * f.e2[1],
 				dir[2] * f.e2[0] - dir[0] * f.e2[2],
@@ -1375,14 +1120,10 @@ namespace RISE
 
 			const float det = f.e1[0] * pvec[0] + f.e1[1] * pvec[1] + f.e1[2] * pvec[2];
 
-			// Parallel-ray rejection.  Conservative threshold — but if a
-			// ray is THAT close to parallel, the double-precision path
-			// would also struggle and any "hit" would be an edge graze.
 			if( std::fabs( det ) < 1e-20f ) return false;
 
 			const float invDet = 1.0f / det;
 
-			// tvec = origin - p0
 			const float tvec[3] = {
 				origin[0] - f.p0[0],
 				origin[1] - f.p0[1],
@@ -1392,7 +1133,6 @@ namespace RISE
 			const float u = ( tvec[0] * pvec[0] + tvec[1] * pvec[1] + tvec[2] * pvec[2] ) * invDet;
 			if( u < -EPS || u > 1.0f + EPS ) return false;
 
-			// qvec = tvec × e1
 			const float qvec[3] = {
 				tvec[1] * f.e1[2] - tvec[2] * f.e1[1],
 				tvec[2] * f.e1[0] - tvec[0] * f.e1[2],
@@ -1403,9 +1143,6 @@ namespace RISE
 			if( v < -EPS || u + v > 1.0f + EPS ) return false;
 
 			const float t = ( f.e2[0] * qvec[0] + f.e2[1] * qvec[1] + f.e2[2] * qvec[2] ) * invDet;
-			// Reject negative-t (behind ray) and beyond-currentBest hits.
-			// Pad with same EPS so a triangle on the very edge of the
-			// "useful" range passes through to certify.
 			if( t < -EPS || t > currentBest + EPS ) return false;
 
 			tOut = t;
@@ -1521,23 +1258,8 @@ namespace RISE
 			}
 		}
 
-		// `epOverride`: nullptr (the default at every existing call site)
-		// uses the BVH's own bound `ep` — the same behaviour as before this
-		// parameter existed, for one extra pointer compare per leaf (see
-		// the end of this comment).  MEASURED 2026-09-07 on sponza_new
-		// 640x360x32 (8.3 shadow rays per camera sample, 61 M per frame),
-		// interleaved base/branch, two sessions of 3 and 4 pairs: 21.19 +-
-		// 0.35 s vs 21.48 +- 0.33 s, then 21.49 +- 0.41 s vs 21.36 +- 0.66 s
-		// -- ratios 1.014 and 0.994, both inside the +-2-3 % run-to-run
-		// spread, i.e. no measurable shadow-ray cost.  A non-null override
-		// lets a caller traverse this SAME already-built tree under a
-		// DIFFERENT TreeElementProcessor for one call, without building
-		// a second tree or duplicating this traversal — see
-		// ObjectManager::IntersectOcclusionRay, which reuses the shadow
-		// ray's BVH with a processor that drops the `DoesCastShadows()`
-		// filter.  Resolved once per leaf (outside the per-primitive
-		// loop), so the shadow-ray hot path pays one extra pointer
-		// compare per leaf, not per primitive.
+		// Optional epOverride lets callers (e.g. ObjectManager::IntersectOcclusionRay)
+		// reuse this BVH under a different TreeElementProcessor, resolved once per leaf.
 		inline bool Bvh4Leaf_IntersectionOnly(
 			const Ray& ray, Scalar dHowFar,
 			uint32_t firstPrim, uint32_t primCnt,
@@ -1573,14 +1295,7 @@ namespace RISE
 			float origin[3], dir[3], invDir[3];
 			PrepRayFloat( ri.ray, origin, dir, invDir );
 
-			// Bounded dynamic stack.  A fixed-size `stack[64]` was the
-			// original here, on the assumption that BVH4 collapse halves
-			// tree depth — but adversarial / clustered geometry with
-			// 100M+ tris can push past that, and BVH4 pushes up to 3
-			// deferred siblings per visit (so max-stack ≈ 3×depth).
-			// `thread_local` keeps allocations to one warm-up grow per
-			// worker thread, then steady-state zero heap traffic.
-			// (Caught by adversarial review, 2026-04-27.)
+			// thread_local dynamic stack avoids fixed-depth overflow on deep/clustered trees.
 			static thread_local std::vector<uint32_t> stack;
 			stack.clear();
 			stack.push_back( 0 );
@@ -1593,8 +1308,6 @@ namespace RISE
 				float tEntry[4];
 				const float currentBest = (float)ri.range;
 				const uint32_t rawMask = RayBox4( origin, invDir, currentBest, n, tEntry );
-				// Mask off unused child slots — sentinel bboxes
-				// (+INF, -INF) don't structurally fail the slab test.
 				const uint32_t validMask = ( 1u << n.numChildren ) - 1u;
 				const uint32_t mask      = rawMask & validMask;
 				if( mask == 0 ) continue;
@@ -1997,146 +1710,12 @@ namespace RISE
 			return false;
 		}
 
-		//! BOUNDED-RADIUS CLOSEST POINT over the primitives in this tree --
-		//! the acceleration half of `IGeometry::DistanceToSurface` for the
-		//! indexed-mesh family (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §5.2).
-		//!
-		//! `primDist( prims[i], p )` must return the EXACT unsigned distance
-		//! from `p` to that primitive.  This method adds no approximation of
-		//! its own: it only decides WHICH primitives are asked, and the
-		//! answer it returns is `min` over the ones it asked.
-		//!
-		//! WHY IT IS IDENTICAL TO BRUTE FORCE, and not merely close.  A node
-		//! is skipped only when the distance from `p` to that node's AABB is
-		//! `>= best`, and every primitive the node owns lies INSIDE that AABB,
-		//! so each of them is at least that far -- none of them could have
-		//! lowered `best`.  TWO roundings feed that box-to-point distance,
-		//! and only one of them is a hazard.  The box itself is `float`,
-		//! conservatively rounded OUTWARD by 1 ulp at build for a finite,
-		//! in-range `double` bound (`SetNodeBox`; see its own comment for
-		//! the one case -- an unbounded/overflowing bound, e.g. an infinite
-		//! plane's default `BoundingBox` -- where the cast overflows to
-		//! infinity first and the "outward by 1 ulp" framing does not
-		//! literally hold, though it stays sound for every coordinate this
-		//! engine actually queries), which can only make the box-to-point
-		//! distance SMALLER than the true one -- can only make the pruning
-		//! admit a node it could have skipped.  Sound in that direction, and
-		//! it is the only one this box ever moves in.  The QUERY POINT `p`, separately,
-		//! stays in full `Scalar` precision end to end (`PointBoxDistanceF`'s
-		//! own doc comment has the fixed history: it used to be cast down to
-		//! `float` first, which rounds to NEAREST and can move the reported
-		//! distance in EITHER direction -- including OVER-stating it enough
-		//! to wrongly prune a node whose primitive answers within `best`,
-		//! the unsound direction).  With `p` never rounded, the only
-		//! remaining approximation is the box's outward pad, which is sound.
-		//! A tie (two primitives at bit-equal distance) is the sole freedom:
-		//! brute force and this traversal may attribute the minimum to
-		//! different primitives, but the VALUE they report is the same
-		//! number.
-		//!
-		//! ORDERING.  Children are visited nearest-AABB-first (the two-child
-		//! sort below), which is what makes `best` fall quickly and the
-		//! pruning bite; a stack entry also carries the box distance it was
-		//! pushed with and is re-tested against the CURRENT `best` on pop,
-		//! since `best` may have improved after it was queued.
-		//!
-		//! THIS USES THE BVH2 `nodes` ARRAY, NOT `nodes4`.  The BVH4 SoA
-		//! exists to test four ray-vs-AABB slabs in one SIMD batch; a point
-		//! query has no ray, no slab test, and no direction to sort by --
-		//! its win is a sorted nearest-first descent, which a binary node
-		//! gives directly (sort 2) and a 4-wide node would need a partial
-		//! sort of 4 to reproduce.  `nodes` is always populated when
-		//! `nodes4` is, since the wide layout is derived from it.
-		//!
-		//! Thread-safe: `const`, reads only immutable post-build state, and
-		//! the scratch stack is `thread_local` exactly as the ray traversals'
-		//! stacks are.
-		//!
-		//! NOT RE-ENTRANT WITHIN ONE INSTANTIATION, and that is worth knowing
-		//! before writing a `primDist` that calls back into this method.  The
-		//! stack is one `thread_local` per instantiation and is `clear()`ed on
-		//! entry, so a nested call on the SAME `(Element, PrimDistFn)` pair
-		//! would wipe the outer traversal's stack.  The two shipped consumers
-		//! nest -- `ObjectManager::NearestOtherSurface` walks the TLAS and its
-		//! `primDist` reaches `TriangleMeshGeometryIndexed::DistanceToSurface`,
-		//! which walks a mesh tree -- and are safe because those are different
-		//! `Element` types AND different lambda types, hence different
-		//! instantiations with different stacks.  A future consumer that made
-		//! them the same would need a local stack instead.
-		//!
-		//! ALSO NOT RE-ENTRANT-SAFE against a `primDist` that REALIZES
-		//! deferred geometry.  `DisplacedGeometry::Realize()` is reachable
-		//! from the leaf loop (`TriangleMeshGeometryIndexed::DistanceToSurface`
-		//! forwards to a realized mesh's traversal, and `ObjectManager`'s own
-		//! `primDist` can hit a `DisplacedGeometry` object directly), and it
-		//! must never itself evaluate a painter whose expression calls
-		//! `proximity()` -- that would re-enter `NearestOtherSurface` while
-		//! the outer query is still walking the TLAS, i.e. while `pBVH` may be
-		//! mid-read and the `thread_local` stack above is still live for this
-		//! same instantiation.  Unreachable today for two independent
-		//! reasons: `ObjectManager::RealizeAllObjects()` bakes every deferred
-		//! geometry BEFORE any query is issued (`CreateBVH`/`EnsureBoxSnapshot`
-		//! both call it first), so a query-time `Realize()` call is always a
-		//! no-op early return; and `DisplacedGeometry::Realize()` carries its
-		//! own DEBUG-build assert against being invoked after the render
-		//! freeze, which would catch a future caller that skipped the bake.
-		//!
-		//! `useElementBoxTest` (default FALSE) adds a per-element point-to-box
-		//! lower-bound test at the leaf, ahead of `primDist`, skipping any
-		//! element whose box is already `>= best`.  It costs one
-		//! `ep.GetElementBoundingBox(prims[i])` call per leaf element visited --
-		//! for `TriangleMeshGeometryIndexed`'s `PointerTriangle` elements that
-		//! is three vertex reads and an `Include`; for `ObjectManager`'s
-		//! `IObjectPriv*` elements it is `Object::getBoundingBox()`, which
-		//! RE-TRANSFORMS all 8 local-box corners through the object's full
-		//! world matrix on every call (Object.cpp) -- not cached.
-		//!
-		//! `ObjectManager::NearestOtherSurface`'s TLAS walk passes TRUE, on
-		//! the reasoning that a TLAS leaf's `primDist` may recurse into a
-		//! whole mesh's own inner BVH walk, so skipping that walk for an
-		//! out-of-range object is worth one box-corner transform.  MEASURED
-		//! on Sponza (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §8.3): the pre-test
-		//! roughly HALVES the candidates evaluated per query (11.08 -> 5.62),
-		//! exactly as intended, but that reduction was **not** clearly a
-		//! wall-clock win on that scene (1.067x before the pre-test, 1.094x
-		//! after, both comfortably inside the ≤1.25x gate) -- `getBoundingBox`'s
-		//! own re-transform cost appears to be competing with the mesh
-		//! recursion it exists to skip, rather than clearly beating it.  Kept
-		//! because both measurements pass with headroom and the candidate-count
-		//! reduction is a real, useful metric in its own right, not because a
-		//! wall-clock improvement was demonstrated.
-		//!
-		//! The mesh's own traversal (`TriangleMeshGeometryIndexed::DistanceToSurface`)
-		//! never passes TRUE, on the UNTESTED reasoning that a single triangle's
-		//! `primDist` is already cheap, so the extra box test would be pure
-		//! overhead -- this has not been exercised with a timing run; treat it
-		//! as reasoning, not measurement, until someone records a real number.
-		//!
-		//! The box test is done ENTIRELY in `Scalar` against the
-		//! element's own (un-rounded, un-compacted-to-float) box -- see
-		//! `PointBoxDistance` below -- so it introduces no cross-precision
-		//! rounding hazard of its own (contrast `PointBoxDistanceF`'s node-box
-		//! test, whose float compaction is exactly what makes it conservative
-		//! at the node level; an element's box here is asked fresh every call
-		//! and is never stored, so there is nothing to round outward for).
-		//! \return TRUE and writes `outDist` when some primitive is strictly
-		//!         within `maxDist`, FALSE otherwise (`outDist` untouched).
-		//!
-		//! `outNodesVisited`/`outCandidatesVisited` (both default null, DL-33):
-		//! optional diagnostic counters, incremented rather than assigned so a
-		//! caller can accumulate over several calls.  A "node visited" is one
-		//! `Entry` popped off the stack and NOT immediately skipped by the
-		//! stale-`best` re-check (i.e. one that actually inspects its
-		//! primitives or pushes its children); a "candidate visited" is one
-		//! call to `primDist` -- after `useElementBoxTest`'s pre-test, when
-		//! enabled, has already skipped an out-of-range element -- matching
-		//! the "distance calls" this class's own doc comments and
-		//! docs/CROSS_OBJECT_PROXIMITY_DESIGN.md's §8.3 measurements
-		//! (11.08 / 5.617 candidates per query) already mean by that phrase.
-		//! Null costs one predicted-not-taken pointer compare per node/
-		//! candidate -- the same discipline as `ProximityDemand`'s relaxed
-		//! atomic checks elsewhere in this codebase -- and every existing
-		//! caller passes null implicitly via the default.
+		//! Bounded-radius closest-point query over BVH2 `nodes` (nearest-AABB-first).
+		//! Keeps query `p` in full Scalar precision against outward-padded float node
+		//! boxes so pruning is conservative (exact wrt brute force). Not re-entrant
+		//! within the same (Element, PrimDistFn) instantiation due to thread_local stack;
+		//! `useElementBoxTest` pre-filters leaf elements in Scalar. Optional diagnostic
+		//! counters are incremented (not reset).
 		template< class PrimDistFn >
 		bool ClosestPointDistance(
 			const Point3& p,
@@ -2154,8 +1733,6 @@ namespace RISE
 			bool   found = false;
 
 			struct Entry { uint32_t node; Scalar dist; };
-			// Bounded dynamic stack, thread_local for one warm-up grow per
-			// worker -- the same discipline the ray traversals above use.
 			static thread_local std::vector<Entry> stack;
 			stack.clear();
 
@@ -2166,7 +1743,6 @@ namespace RISE
 			while( !stack.empty() ) {
 				const Entry e = stack.back();
 				stack.pop_back();
-				// `best` may have dropped since this entry was queued.
 				if( !( e.dist < best ) ) continue;
 				if( outNodesVisited ) ++( *outNodesVisited );
 
@@ -2185,9 +1761,6 @@ namespace RISE
 						if( d < best ) {
 							best  = d;
 							found = true;
-							// Nothing can beat an exact zero (a distance is
-							// never negative), so the rest of the tree
-							// cannot change the answer.
 							if( best <= Scalar( 0 ) ) {
 								outDist = Scalar( 0 );
 								return true;
@@ -2199,9 +1772,7 @@ namespace RISE
 					const uint32_t rightIdx = leftIdx + 1;
 					const Scalar dL = PointBoxDistanceF( p, nodes[leftIdx].bboxMin,  nodes[leftIdx].bboxMax );
 					const Scalar dR = PointBoxDistanceF( p, nodes[rightIdx].bboxMin, nodes[rightIdx].bboxMax );
-					// FARTHER child pushed first so the NEARER one pops
-					// first and lowers `best` before the far one is even
-					// re-tested.
+					// Push farther child first so nearer pops first and tightens `best`.
 					if( dL <= dR ) {
 						if( dR < best ) stack.push_back( Entry{ rightIdx, dR } );
 						if( dL < best ) stack.push_back( Entry{ leftIdx,  dL } );
@@ -2217,82 +1788,9 @@ namespace RISE
 			return true;
 		}
 
-		//! Visits every primitive whose LEAF node's box contains `p`, for a
-		//! CONTAINMENT query rather than a nearest-point one --
-		//! `ObjectManager::DeepestOtherContainment`'s TLAS-backed counterpart
-		//! to `ClosestPointDistance` above (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md
-		//! §5.6 item 1).  A running MAXIMUM (the deepest containment) has no
-		//! "subtree already worse than best" prune to offer -- unlike a
-		//! nearest-point search, EVERY node whose box contains `p` might hold
-		//! the deepest one -- so this descends the whole containing spine,
-		//! trading `ClosestPointDistance`'s early pruning for the plain
-		//! guarantee that a node box NOT containing `p` cannot contain a
-		//! primitive that contains `p` either (a primitive's true extent is
-		//! always inside its node's box).  Node boxes are the same
-		//! outward-padded `float` AABBs `ClosestPointDistance` tests, so the
-		//! prune is exactly as safe: it can only ADMIT a node it need not
-		//! have (the padding), never wrongly reject one.
-		//!
-		//! `visit(prims[i], p)` is called for every leaf element whose
-		//! containing node (and, if `useElementBoxTest`, whose own box) holds
-		//! `p` -- it is the caller's job to test the ELEMENT itself (this is
-		//! a box-level admission, not a proof of containment) and to
-		//! accumulate whatever running value it wants; there is no return
-		//! value and no early-out, matching `DeepestOtherContainment`'s "keep
-		//! going, there is no prune" shape.
-		//!
-		//! `useElementBoxTest` (default FALSE) mirrors `ClosestPointDistance`'s
-		//! knob: an element whose own (tighter) box does not contain `p` is
-		//! skipped before `visit` is called, at the cost of one
-		//! `ep.GetElementBoundingBox()` per leaf element visited.
-		//! `ObjectManager::DeepestOtherContainment` passes TRUE for the same
-		//! reason `NearestOtherSurface` passes it to `ClosestPointDistance`:
-		//! a leaf holds up to 4 objects behind one shared node box, and an
-		//! object's own box is usually far tighter.
-		//!
-		//! NaN-safe the same way the flat AABB scan in `ObjectManager` is
-		//! (see its own comment): a NaN bound makes both the "before lo" and
-		//! "after hi" tests false on that axis, so the axis reads as
-		//! "contained" rather than "excluded" -- the safe direction, since it
-		//! can only ADMIT a candidate that then answers or refuses on its own
-		//! merits, never silently drop one.
-		//!
-		//! `outNodesVisited`/`outCandidatesVisited` (both default null, DL-33):
-		//! the same diagnostic counters `ClosestPointDistance` takes, in the
-		//! same units, so the two traversals' cost SHAPES can be compared
-		//! query-for-query -- see docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §10's
-		//! "not yet measured" residual this exists to close.  A "node
-		//! visited" is one entry popped off the stack (there is no stale-
-		//! `best` re-check here, unlike `ClosestPointDistance` -- a running
-		//! MAXIMUM has nothing to re-test a popped entry against); a
-		//! "candidate visited" is one call to `visit`, after the
-		//! `useElementBoxTest` pre-test (when enabled) has already skipped an
-		//! element whose own box excludes `p`.  Null costs one predicted-
-		//! not-taken pointer compare per node/candidate, and every existing
-		//! caller passes null implicitly via the default.
-		//!
-		//! DL-162 design note (farthest-corner upper-bound prune, DECLINED ON MEASUREMENT):
-		//! `DeepestOtherContainment` tracks a running MAXIMUM depth. A theoretically
-		//! sound prune exists: a node's FARTHEST-corner Euclidean distance from the query
-		//! point `p` is a valid, zero-precomputation upper bound on any depth an element
-		//! confined to that box could possibly report (a `SignedDistanceLower` answer never
-		//! overstates true depth, and the depth of a point inside a solid confined to an
-		//! AABB cannot exceed the AABB's farthest corner from `p`). Any node whose farthest-
-		//! corner distance is <= the running best could therefore be pruned, mirroring
-		//! `ClosestPointDistance`'s nearest-corner prune for a running minimum.
-		//!
-		//! Why declined on measurement:
-		//! 1. Identical-size overlap: `tests/InteriorCandidateWalkCostTest.cpp` fixtures (b)/(c)
-		//!    show that for same-sized overlapping candidates, all nodes yield near-identical
-		//!    farthest-corner bounds, giving zero pruning separation in the worst-case regime.
-		//! 2. Production scenes: On the showcase scene calling `interior()` (`tidal_stones.RISEscene`,
-		//!    fixture (f)), `ForEachContainingPoint` already visits 0.49x candidates and 0.66x nodes
-		//!    at 0.57x the time of `ClosestPointDistance` (43% faster). No shipped scene exhibits
-		//!    a performance deficit.
-		//! 3. Per `performance-work-with-baselines.md`, speculative optimization without a
-		//!    measured production regression is rejected. If a future heterogeneous-size heavy-overlap
-		//!    scene ever demonstrates a bottleneck, implement as a new `BVH::DeepestContainingPoint`
-		//!    rather than modifying `ForEachContainingPoint`'s clean visitor contract.
+		//! Visits every leaf element whose containing BVH2 node (and element box if
+		//! `useElementBoxTest`) contains `p`. Conservative & NaN-safe over-admission;
+		//! not re-entrant within one instantiation.
 		template< class VisitFn >
 		void ForEachContainingPoint(
 			const Point3& p,
@@ -2303,11 +1801,6 @@ namespace RISE
 		{
 			if( nodes.empty() || prims.empty() ) return;
 
-			// Bounded dynamic stack, thread_local for one warm-up grow per
-			// worker -- same discipline as `ClosestPointDistance`'s stack.
-			// A DIFFERENT instantiation (this method's own), so it cannot
-			// alias that one's `Entry`-typed stack even for the same
-			// `Element`.
 			static thread_local std::vector<uint32_t> stack;
 			stack.clear();
 
@@ -2343,13 +1836,7 @@ namespace RISE
 			}
 		}
 
-		//! DL-408: visit every element whose box lies within `radius` of
-		//! `p` (node boxes by the conservative `PointBoxDistanceF`, element
-		//! boxes by `PointBoxDistance` when `useElementBoxTest`).  The
-		//! radius-widened sibling of `ForEachContainingPoint`: a contact
-		//! launch needs the bodies whose SURFACE may lie at the launch point,
-		//! including a zero-thickness box (a flat floor) the launch point
-		//! sits a hair outside of.
+		//! Visits every leaf element whose box lies within `radius` of `p`.
 		template< class VisitFn >
 		void ForEachNearPoint(
 			const Point3& p,
@@ -2389,34 +1876,8 @@ namespace RISE
 		}
 
 	protected:
-		//! Distance from a point to an axis-aligned box, 0 when inside.  The
-		//! bounds are the node's conservative `float` AABB, rounded OUTWARD
-		//! by 1 ulp at build time for a finite, in-range `double` bound
-		//! (`std::nextafter` in `SetNodeBox`; see its own comment for the
-		//! unbounded/overflowing-bound exception and why it stays sound
-		//! anyway); `p` is the query point kept in full `Scalar` precision -- NOT cast
-		//! down to `float` -- and `lo`/`hi` are WIDENED from `float` to
-		//! `Scalar`, which is always exact (every `float` value is exactly
-		//! representable in `Scalar`/`double`).  So of the two roundings a
-		//! caller could introduce here, only one is live, and it is the safe
-		//! one: the box's outward pad can only UNDER-state this distance,
-		//! which can only make the pruning ADMIT a node it could have
-		//! skipped -- never the reverse.
-		//!
-		//! THIS USED TO ALSO CAST `p` DOWN TO `float` before calling in
-		//! (`ClosestPointDistance` built a `const float pf[3]` once at the
-		//! top and passed that to every call here), which introduced a
-		//! SECOND rounding this function's contract did not account for --
-		//! and one that rounds to NEAREST, not outward, so it can move the
-		//! reported box distance in EITHER direction.  Measured: at
-		//! `|coord| ~= 1024` the nearest-rounding error is up to
-		//! `0.25 * ulp_f(|coord|) ~= 2.92e-5` in the OVER-stating direction,
-		//! which is the UNSOUND one for this function's contract -- it can
-		//! make the pruning SKIP a node whose primitive is nearer than
-		//! `best`, silently under-painting a seam the exact algorithm would
-		//! have found.  Fixed by keeping `p` in `Scalar` all the way from
-		//! `ClosestPointDistance`'s parameter to here; there is no longer a
-		//! `pf[3]` anywhere in this class.
+		//! Conservative point-to-node-AABB distance (0 if inside): keeps `p` in Scalar
+		//! and widens outward-padded float bounds to Scalar so distance is never overstated.
 		static Scalar PointBoxDistanceF( const Point3& p, const float lo[3], const float hi[3] )
 		{
 			Scalar sum = Scalar( 0 );
@@ -2431,20 +1892,7 @@ namespace RISE
 			return std::sqrt( sum );
 		}
 
-		//! Distance from a point to an axis-aligned box, 0 when inside --
-		//! the ELEMENT-level counterpart of `PointBoxDistanceF` above, used
-		//! by `ClosestPointDistance`'s `useElementBoxTest` pre-test.  Unlike
-		//! the node box (a `float` array compacted once at build time and
-		//! rounded outward by 1 ulp to stay conservative under that
-		//! compaction -- for a finite, in-range bound; see `SetNodeBox`'s
-		//! own comment for the unbounded/overflowing-bound exception),
-		//! an element's box here comes fresh from
-		//! `ep.GetElementBoundingBox()` on every call and is never stored,
-		//! so there is no compaction step to compensate for: doing the
-		//! whole computation in `Scalar`, on the `Scalar` box the processor
-		//! handed back and the `Scalar` point `ClosestPointDistance` was
-		//! itself given, needs no cast of either operand and so has no
-		//! rounding hazard of its own to analyse.
+		//! Exact Scalar point-to-AABB distance for element-level pre-tests.
 		static Scalar PointBoxDistance( const Point3& p, const Point3& lo, const Point3& hi )
 		{
 			const Scalar dx = ( p.x < lo.x ) ? ( lo.x - p.x ) : ( ( p.x > hi.x ) ? ( p.x - hi.x ) : Scalar( 0 ) );
@@ -2453,13 +1901,7 @@ namespace RISE
 			return std::sqrt( dx*dx + dy*dy + dz*dz );
 		}
 
-		//! Point-in-box test against the node's conservative, outward-padded
-		//! float AABB -- ForEachContainingPoint's node-level admission test.
-		//! Equivalent to PointBoxDistanceF(p, lo, hi) == 0 but without the
-		//! sqrt, and NaN-safe the same way: a NaN bound makes both per-axis
-		//! comparisons false, so that axis reads as "inside" rather than
-		//! "outside" -- the safe over-admission direction (see
-		//! ForEachContainingPoint's own comment).
+		//! Conservative, NaN-safe (over-admitting) point-in-float-AABB test.
 		static bool PointInBoxF( const Point3& p, const float lo[3], const float hi[3] )
 		{
 			const Scalar pc[3] = { p.x, p.y, p.z };
@@ -2471,10 +1913,7 @@ namespace RISE
 			return true;
 		}
 
-		//! Point-in-box test against an ELEMENT's own (un-padded, un-cached)
-		//! Scalar box -- ForEachContainingPoint's useElementBoxTest pre-test,
-		//! the containment counterpart of PointBoxDistance above.  Same
-		//! NaN-safety note applies.
+		//! Exact, NaN-safe Scalar point-in-AABB test for element pre-tests.
 		static bool PointInBox( const Point3& p, const Point3& lo, const Point3& hi )
 		{
 			if( p.x < lo.x || p.x > hi.x ) return false;

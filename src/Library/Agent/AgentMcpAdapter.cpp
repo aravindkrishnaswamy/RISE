@@ -730,7 +730,8 @@ namespace RISE
 						"refused, with no override parameter -- only the USER selects those (in the "
 						"GUI, or by authoring the chunk into the scene file). The frozen legacy rasterizers "
 						"`pixelpel_rasterizer` and `pixelintegratingspectral_rasterizer` are refused "
-						"too (material alpha works under PT and VCM). A scene that ALREADY contains a blocked rasterizer stays fully "
+						"too (material alpha works under PT and VCM), and so is the HyLIoS measurement tool "
+						"`hyperspectral_radiometric_rasterizer` (user-selected only). A scene that ALREADY contains a blocked rasterizer stays fully "
 						"editable, including that chunk's own parameters." );
 					tools.push_back( MakeTool( "insert_chunk", desc, ObjectProp( "", props, required ) ) );
 				}

@@ -1,0 +1,587 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#                                                                                                           #
+#   File:           tide.RISEscene                                                                          #
+#   Idea:           A child's tower of painted wooden blocks stands on the dry sand of a glass aquarium; a  #
+#                   dam of green water behind it is released with a toy boat riding on top.  The wave       #
+#                   lifts the blocks off each other, the tower comes apart and the blocks and the boat      #
+#                   float, roll and knock together while the water sloshes back and forth.  Backlit         #
+#                   through the glass, with a softbox above throwing caustics on the sand.                  #
+#   Simulations:    rigid.bodies `blocks` (six stacked blocks - boxes, a cylinder, a sphere - and the boat: #
+#                   body-body contact, stacking, the tank as planes) and liquid.mac `water` (level set) in  #
+#                   one simulation_group `tank`: the liquid owns the exchange and solves the bodies' six    #
+#                   degrees of freedom in its pressure solve (two-way: buoyancy, drag, the wave's push and  #
+#                   the bodies' wakes), rigid.bodies owns every contact.                                    #
+#   Frame:          y up, metres; the tank's inside is the liquid domain, x -0.4..0.4, z -0.2..0.2, 0.7 m    #
+#                   tall; a sand beach slopes up to the far wall and takes the wave's run-up, and the tank  #
+#                   is open: a drain along the rim (the top 2 cm) removes the thin film that the final grid #
+#                   still sends up the far corner, so nothing collects on the domain's ceiling.             #
+#   Time:           4 s at 30 fps (121 frames).                                                             #
+#   Proof/final:    a value followed by `# proof <value>` is the final setting; scripts/                    #
+#                   simulation_showcase.sh proof substitutes the proof value.                               #
+#   Bake/render:    scripts/simulation_showcase.sh proof|final tide   (docs/SIMULATION_SHOWCASE.md)          #
+#   showcase:       hero 10 frames 0 20 40 110                                                                #
+#                                                                                                           #
+#############################################################################################################
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultPathTracing
+}
+
+uniformcolor_painter
+{
+	name			pnt_env
+	color			0.30 0.33 0.36
+}
+
+pathtracing_pel_rasterizer
+{
+	samples			512		# proof 64
+	oidn_denoise	TRUE
+	radiance_map	pnt_env
+	radiance_scale	0.08
+	radiance_background	FALSE
+}
+
+file_rasterizeroutput
+{
+	pattern			rendered/showcase/tide/final/tide		# proof rendered/showcase/tide/proof/tide
+	multiple		TRUE
+	type			PNG
+	bpp				8
+	color_space		sRGB
+	display_transform	aces
+}
+
+film
+{
+	width			1920		# proof 640
+	height			1080		# proof 360
+}
+
+animation_options
+{
+	time_start		0
+	time_end		4
+	num_frames		121
+}
+
+pinhole_camera
+{
+	location		0.08 0.40 1.50
+	lookat			0.0 0.33 0.0
+	up				0 1 0
+	fov				38.0
+}
+
+#############################################################################################################
+# Simulations
+
+rigid_simulation
+{
+	name			blocks
+	frames			121
+	substeps		16
+	body			plank box 0.15 0.04 0.06 density 650 at 0.1 0.02 0 friction 0.5 restitution 0.25
+	body			cube box 0.07 0.07 0.07 density 650 at 0.07 0.075 0 friction 0.5 restitution 0.25
+	body			pillar cylinder 0.03 0.07 density 650 at 0.14 0.075 0 orientation 0.70711 0.70711 0 0 friction 0.5 restitution 0.25
+	body			lintel box 0.14 0.03 0.05 density 650 at 0.1 0.125 0 friction 0.5 restitution 0.25
+	body			tower box 0.045 0.09 0.045 density 650 at 0.1 0.185 0 orientation 0.9659 0 0.2588 0 friction 0.5 restitution 0.25
+	body			dome sphere 0.03 density 650 at 0.1 0.26 0 friction 0.5 restitution 0.25
+	body			boat box 0.15 0.036 0.06 density 560 at -0.29 0.193 0.03 orientation 0.9848 0 0.1736 0 friction 0.5 restitution 0.25
+	plane			0 0 0 0 1 0 restitution 0.1 friction 0.6
+	plane			0.2 0 0 -0.515 0.857 0 restitution 0.1 friction 0.6
+	plane			-0.4 0 0 1 0 0 restitution 0.2 friction 0.4
+	plane			0.4 0 0 -1 0 0 restitution 0.2 friction 0.4
+	plane			0 0 -0.2 0 0 1 restitution 0.2 friction 0.4
+	plane			0 0 0.2 0 0 -1 restitution 0.2 friction 0.4
+}
+
+liquid_simulation
+{
+	name			water
+	frames			121
+	domain_min		-0.4 0 -0.2
+	domain_size		0.8 0.7 0.4
+	resolution		128		# proof 64
+	threads			8
+	liquid			box -0.4 0 -0.2 -0.16 0.18 0.2
+	liquid			fill 0.025
+	solid			plane 0.2 0 0 -0.515 0.857 0
+	drain			rim box 0 0.69 0 0.8 0.02 0.4
+	body			plank box 0.15 0.04 0.06 motion port at 0.1 0.02 0
+	body			cube box 0.07 0.07 0.07 motion port at 0.07 0.075 0
+	body			pillar cylinder 0.03 0.07 motion port at 0.14 0.075 0 orientation 0.70711 0.70711 0 0
+	body			lintel box 0.14 0.03 0.05 motion port at 0.1 0.125 0
+	body			tower box 0.045 0.09 0.045 motion port at 0.1 0.185 0 orientation 0.9659 0 0.2588 0
+	body			dome sphere 0.03 motion port at 0.1 0.26 0
+	body			boat box 0.15 0.036 0.06 motion port at -0.29 0.193 0.03 orientation 0.9848 0 0.1736 0
+}
+
+simulation_group
+{
+	name			tank
+	members			water
+	members			blocks
+	connect			blocks.body_state -> water.body_state
+	connect			blocks.body_mass_properties -> water.body_mass_properties
+	connect			blocks.body_contact -> water.body_contact
+	connect			water.body_load -> blocks.body_load
+	policy			staggered
+	order			gauss-seidel
+	member_order	water blocks
+	owned			water blocks
+}
+
+#############################################################################################################
+# Materials
+
+dielectric_material
+{
+	name				mat_water
+	tau					0.06 0.42 0.33
+	ior					1.333
+	scattering			1000000
+	henyey-greenstein	FALSE
+}
+
+dielectric_material
+{
+	name				mat_glass
+	tau					0.6 0.8 0.72
+	ior					1.52
+	scattering			1000000
+	henyey-greenstein	FALSE
+}
+
+uniformcolor_painter
+{
+	name			pnt_sand
+	color			0.72 0.66 0.55
+}
+
+lambertian_material
+{
+	name			mat_sand
+	reflectance		pnt_sand
+}
+
+uniformcolor_painter
+{
+	name			pnt_red
+	color			0.6 0.07 0.04
+}
+
+lambertian_material
+{
+	name			mat_red_base
+	reflectance		pnt_red
+}
+
+coated_material
+{
+	name			mat_red
+	base			mat_red_base
+	coat_ior		1.5
+	coat_roughness	0.15
+}
+
+uniformcolor_painter
+{
+	name			pnt_blue
+	color			0.04 0.14 0.42
+}
+
+lambertian_material
+{
+	name			mat_blue_base
+	reflectance		pnt_blue
+}
+
+coated_material
+{
+	name			mat_blue
+	base			mat_blue_base
+	coat_ior		1.5
+	coat_roughness	0.15
+}
+
+uniformcolor_painter
+{
+	name			pnt_natural
+	color			0.72 0.56 0.36
+}
+
+lambertian_material
+{
+	name			mat_natural_base
+	reflectance		pnt_natural
+}
+
+coated_material
+{
+	name			mat_natural
+	base			mat_natural_base
+	coat_ior		1.5
+	coat_roughness	0.15
+}
+
+uniformcolor_painter
+{
+	name			pnt_backdrop
+	color			1.0 0.97 0.92
+}
+
+lambertian_luminaire_material
+{
+	name			mat_backdrop
+	exitance		pnt_backdrop
+	material		none
+	scale			0.8
+}
+
+uniformcolor_painter
+{
+	name			pnt_table
+	color			0.12 0.10 0.09
+}
+
+orennayar_material
+{
+	name			mat_table
+	reflectance		pnt_table
+	roughness		0.7
+}
+
+#############################################################################################################
+# The water and the blocks
+
+simulated_mesh_geometry
+{
+	name			geo_water
+	source			water.surface
+}
+
+standard_object
+{
+	name			water_object
+	geometry		geo_water
+	material		mat_water
+}
+
+box_geometry
+{
+	name			geo_plank
+	width			0.15
+	height			0.04
+	depth			0.06
+}
+
+standard_object
+{
+	name			plank
+	geometry		geo_plank
+	material		mat_natural
+	position		0.1 0.02 0
+	transform_source	blocks.bodies[plank]
+}
+
+box_geometry
+{
+	name			geo_cube
+	width			0.07
+	height			0.07
+	depth			0.07
+}
+
+standard_object
+{
+	name			cube
+	geometry		geo_cube
+	material		mat_red
+	position		0.07 0.075 0
+	transform_source	blocks.bodies[cube]
+}
+
+# The body's cylinder axis is its z; so is the geometry's, so the body's orientation turns both.
+cylinder_geometry
+{
+	name			geo_pillar
+	axis			z
+	radius			0.03
+	height			0.07
+}
+
+standard_object
+{
+	name			pillar
+	geometry		geo_pillar
+	material		mat_natural
+	position		0.14 0.075 0
+	transform_source	blocks.bodies[pillar]
+}
+
+box_geometry
+{
+	name			geo_lintel
+	width			0.14
+	height			0.03
+	depth			0.05
+}
+
+standard_object
+{
+	name			lintel
+	geometry		geo_lintel
+	material		mat_red
+	position		0.1 0.125 0
+	transform_source	blocks.bodies[lintel]
+}
+
+box_geometry
+{
+	name			geo_tower
+	width			0.045
+	height			0.09
+	depth			0.045
+}
+
+standard_object
+{
+	name			tower
+	geometry		geo_tower
+	material		mat_natural
+	position		0.1 0.185 0
+	transform_source	blocks.bodies[tower]
+}
+
+sphere_geometry
+{
+	name			geo_dome
+	radius			0.03
+}
+
+standard_object
+{
+	name			dome
+	geometry		geo_dome
+	material		mat_blue
+	position		0.1 0.26 0
+	transform_source	blocks.bodies[dome]
+}
+
+box_geometry
+{
+	name			geo_boat
+	width			0.15
+	height			0.036
+	depth			0.06
+}
+
+standard_object
+{
+	name			boat
+	geometry		geo_boat
+	material		mat_blue
+	position		-0.29 0.193 0.03
+	transform_source	blocks.bodies[boat]
+}
+
+#############################################################################################################
+# The tank: sand floor at the domain floor, 6 mm glass panes just outside the domain walls.
+
+clippedplane_geometry
+{
+	name			geo_sand
+	pta				-0.4 -0.0005 -0.2
+	ptb				 0.4 -0.0005 -0.2
+	ptc				 0.4 -0.0005  0.2
+	ptd				-0.4 -0.0005  0.2
+}
+
+standard_object
+{
+	name			sand
+	geometry		geo_sand
+	material		mat_sand
+}
+
+# The beach: a sand slope from x = 0.2 up to 0.12 m at the far wall (the liquid's `solid plane` and a rigid plane);
+# it takes the wave's run-up, which on a vertical wall climbed to the domain's ceiling at 128 cells.
+clippedplane_geometry
+{
+	name			geo_beach
+	pta				0.2 0.0005 0.2
+	ptb				0.4 0.1205 0.2
+	ptc				0.4 0.1205 -0.2
+	ptd				0.2 0.0005 -0.2
+}
+
+clippedplane_geometry
+{
+	name			geo_beach_front
+	pta				0.2 0.0 0.1995
+	ptb				0.4 0.0 0.1995
+	ptc				0.4 0.12 0.1995
+	ptd				0.4 0.12 0.1995
+	doublesided		TRUE
+}
+
+clippedplane_geometry
+{
+	name			geo_beach_back
+	pta				0.2 0.0 -0.1995
+	ptb				0.4 0.0 -0.1995
+	ptc				0.4 0.12 -0.1995
+	ptd				0.4 0.12 -0.1995
+	doublesided		TRUE
+}
+
+standard_object
+{
+	name			beach
+	geometry		geo_beach
+	material		mat_sand
+}
+
+standard_object
+{
+	name			beach_front
+	geometry		geo_beach_front
+	material		mat_sand
+}
+
+standard_object
+{
+	name			beach_back
+	geometry		geo_beach_back
+	material		mat_sand
+}
+
+box_geometry
+{
+	name			geo_pane_long
+	width			0.824
+	height			0.71
+	depth			0.006
+}
+
+box_geometry
+{
+	name			geo_pane_short
+	width			0.006
+	height			0.71
+	depth			0.4
+}
+
+box_geometry
+{
+	name			geo_pane_floor
+	width			0.824
+	height			0.012
+	depth			0.424
+}
+
+standard_object
+{
+	name			pane_front
+	geometry		geo_pane_long
+	material		mat_glass
+	position		0 0.349 0.2055
+}
+
+standard_object
+{
+	name			pane_back
+	geometry		geo_pane_long
+	material		mat_glass
+	position		0 0.349 -0.2055
+}
+
+standard_object
+{
+	name			pane_left
+	geometry		geo_pane_short
+	material		mat_glass
+	position		-0.4055 0.349 0
+}
+
+standard_object
+{
+	name			pane_right
+	geometry		geo_pane_short
+	material		mat_glass
+	position		0.4055 0.349 0
+}
+
+standard_object
+{
+	name			pane_floor
+	geometry		geo_pane_floor
+	material		mat_glass
+	position		0 -0.0065 0
+}
+
+clippedplane_geometry
+{
+	name			geo_table
+	pta				-3 -0.0126 -3
+	ptb				 3 -0.0126 -3
+	ptc				 3 -0.0126  3
+	ptd				-3 -0.0126  3
+}
+
+standard_object
+{
+	name			table
+	geometry		geo_table
+	material		mat_table
+}
+
+#############################################################################################################
+# Light: a warm backdrop panel behind the tank (the backlight), a softbox above front-left (caustics on the
+# sand), a dark wall around the panel.
+
+clippedplane_geometry
+{
+	name			geo_backdrop
+	pta				-1.1 -0.0126 -0.62
+	ptb				 1.1 -0.0126 -0.62
+	ptc				 1.1  1.6    -0.62
+	ptd				-1.1  1.6    -0.62
+}
+
+standard_object
+{
+	name			backdrop
+	geometry		geo_backdrop
+	material		mat_backdrop
+}
+
+clippedplane_geometry
+{
+	name			geo_wall
+	pta				-4 -0.0126 -0.64
+	ptb				 4 -0.0126 -0.64
+	ptc				 4  3      -0.64
+	ptd				-4  3      -0.64
+}
+
+standard_object
+{
+	name			wall
+	geometry		geo_wall
+	material		mat_table
+}
+
+rect_light
+{
+	name			softbox
+	center			-0.25 1.3 0.35
+	size			0.3 0.3
+	facing			0.25 -1 -0.3
+	color			1.0 0.95 0.88
+	exitance		90
+}

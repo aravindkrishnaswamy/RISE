@@ -3,9 +3,14 @@
 //  HyperspectralRadiometricRasterizer.cpp - Raw radiometric fixed-
 //    wavelength hyperspectral rasterizer (P6b).
 //
+//  Outputs per-band spectral radiance density (W m^-2 sr^-1 nm^-1)
+//  EXRs, optional derived observables via composite trapezoidal
+//  quadrature, resumable checkpoints, and an atomic JSON manifest.
+//
 //  Strict-FP TU: compiled without -ffast-math to preserve exact
 //  IEEE-754 binary64 radiometric accounting.
 //
+//  Tabs: 4
 //  License Information: Please see the attached LICENSE.TXT file
 //
 //////////////////////////////////////////////////////////////////////
@@ -165,6 +170,8 @@ std::string ObservableUnits( const std::string& canonicalObs )
 	return "W m^-2 sr^-1 nm^-1";
 }
 
+// Evaluates a sorted (wavelength_nm, weight) sensor response curve with
+// endpoint clamping and linear interpolation between adjacent samples.
 double EvalSensorResponse(
 	const std::vector<std::pair<double, double>>& curve,
 	const double nm
@@ -183,6 +190,8 @@ double EvalSensorResponse(
 	return ( 1.0 - t ) * prev->second + t * it->second;
 }
 
+// Atomically writes a single-channel FP32 OpenEXR for a derived radiometric
+// observable, refusing negative, non-finite, or positive-underflowing values.
 bool WriteDerivedObservableEXR(
 	const std::string& path,
 	const std::uint32_t width,
@@ -582,6 +591,8 @@ HyperspectralRadiometricRasterizer::~HyperspectralRadiometricRasterizer()
 	safe_release( pCaster );
 }
 
+// Resolves either an explicit strictly increasing wavelength list or a uniform
+// [lambdaBegin, lambdaEnd] sweep (stepped by lambdaStep, capped at 4096 nodes).
 bool HyperspectralRadiometricRasterizer::ResolveWavelengths(
 	std::vector<double>& outWavelengths,
 	std::string& outError
@@ -626,6 +637,9 @@ bool HyperspectralRadiometricRasterizer::ResolveWavelengths(
 	return !outWavelengths.empty();
 }
 
+// Preflight gate: enforces config ABI, refuses bias controls (clamping,
+// filter_glossy, OIDN, toneMap, negative-lobe filters), and checks sensor curve,
+// HyLIoS band/delta-light constraints, and strict physical spectral sources.
 bool HyperspectralRadiometricRasterizer::ValidateSceneAndConfig(
 	const IScene& pScene,
 	std::vector<double>& outWavelengths,
@@ -855,6 +869,9 @@ unsigned int HyperspectralRadiometricRasterizer::PredictTimeToRasterizeScene(
 	return 0;
 }
 
+// Runs the full hyperspectral sweep: restores or creates per-band RadiometricFilm,
+// integrates monochromatic paths with deterministic Owen-scrambled Sobol seeds,
+// persists checkpoints/EXRs, computes optional quadrature observables, and writes manifest.
 void HyperspectralRadiometricRasterizer::RasterizeScene(
 	const IScene& pScene,
 	const Rect*,

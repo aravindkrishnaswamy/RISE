@@ -2,6 +2,11 @@
 //
 //  FireSequence.cpp - Canonical Phase-C fire sequence contract
 //
+//  Implements canonical fire-sequence CBOR64 manifest validation,
+//  deterministic OpenVDB UUID canonicalization, scene-to-simulation
+//  time mapping, OpenVDB dense/native frame extraction, and
+//  transactional frame preparation with render leases.
+//
 //  License Information: Please see the attached LICENSE.TXT file
 //
 //////////////////////////////////////////////////////////////////////
@@ -38,6 +43,9 @@ namespace RISE
 		{
 			using RISECBOR64::Value;
 
+			// ------------------------------------------------------------------
+			// CBOR schema helpers and embedded aerosol/chem record validators
+			// ------------------------------------------------------------------
 			bool Fail( std::string& error, const std::string& message )
 			{
 				error = message;
@@ -89,6 +97,8 @@ namespace RISE
 			template<std::size_t N>
 			bool ReadFloatArray( const Value* value, std::array<double,N>& output );
 
+			// Validates the embedded fire-aerosol-thermochemistry-v1 record against
+			// the sequence's fuel record (C(gr) solid phase, matching T_ref and domain).
 			bool ValidateAerosolThermochemistryRecord(
 				const RISECBOR64::Bytes& bytes,
 				const FireSimulationMethaneRecord& fuel,
@@ -134,6 +144,8 @@ namespace RISE
 				minimumK=limits[0]; maximumK=limits[1]; return true;
 			}
 
+			// Accepts either fire-chem-none-v1 (no chem channels) or the approved
+			// synthetic non-predictive CH/C2/CO2 band fixture within [380, 780] nm.
 			bool ValidateChemRecord( const RISECBOR64::Bytes& bytes, bool& hasChem,
 				std::array<std::array<double,2>,3>& intervalsNM, std::string& error )
 			{
@@ -249,6 +261,10 @@ namespace RISE
 			}
 		#endif
 
+			// ------------------------------------------------------------------
+			// Path safety, channel domain checks, and OpenVDB grid extraction
+			// ------------------------------------------------------------------
+			// Rejects absolute, rooted, non-UTF8-NFC, or "." / ".." traversal paths.
 			bool SafeRelativePath( const std::string& text )
 			{
 				if( text.empty() || !RISECBOR64::IsUTF8NFC(text) ) return false;
@@ -289,6 +305,8 @@ namespace RISE
 			}
 
 #if defined(RISE_ENABLE_OPENVDB)
+			// Verifies the OpenVDB grid's index-to-world transform is bit-identical
+			// to the manifest's axis-aligned origin and voxel spacing.
 			bool ValidateTransform( const openvdb::GridBase& grid,
 				const FireSequenceChannelDescriptor& descriptor, std::string& error )
 			{
@@ -436,6 +454,11 @@ namespace RISE
 #endif
 		}
 
+		// ==================================================================
+		// Deterministic OpenVDB archive UUID canonicalization
+		// ==================================================================
+		// Zeros the 36-byte ASCII UUID at VDB header offset 21, hashes the file
+		// with SHA-256, and writes back an uppercase UUID derived from the digest.
 		bool CanonicalizeOpenVDBFileIdentity( const std::string& path, std::string& error )
 		{
 			std::ifstream input(path,std::ios::binary);
@@ -473,6 +496,9 @@ namespace RISE
 				"fire sequence producer failed to publish its content-derived OpenVDB identity");
 		}
 
+		// ==================================================================
+		// FireSequenceManifest: envelope validation, time map, and VDB load
+		// ==================================================================
 		bool FireSequenceManifest::LoadCanonicalEnvelope(
 			const RISECBOR64::Bytes& envelope, const std::string& manifestDirectory,
 			std::string& error )
@@ -486,6 +512,10 @@ namespace RISE
 			return LoadEnvelope(envelope,std::string(),true,error);
 		}
 
+		// Decodes and cryptographically verifies {payload, sequence_id}, producer
+		// qualification/evidence/reason-code rules, all embedded records, case-record
+		// binding, channel lattice/velocity-halo alignment, and (unless frameTemplate)
+		// contiguous frame descriptors. Resets *this on entry.
 		bool FireSequenceManifest::LoadEnvelope(
 			const RISECBOR64::Bytes& envelope, const std::string& manifestDirectory,
 			const bool frameTemplate, std::string& error )
@@ -934,6 +964,9 @@ namespace RISE
 			return true;
 		}
 
+		// Maps sceneTime via t_sim = t0 + alpha*(t_scene - t_scene_0). Under
+		// end_policy "error" rejects outside half-open [t0, end); under "hold"
+		// clamps to [t0, end] and sets mapped.held.
 		bool FireSequenceManifest::MapSceneTime( const double sceneTime,
 			FireSequenceMappedTime& mapped, std::string& error ) const
 		{
@@ -990,6 +1023,9 @@ namespace RISE
 			return ReadVDBPath(path,sha256,0,nullptr,&grid,error);
 		}
 
+		// Verifies whole-file SHA-256 under a 1 GiB budget, decodes OpenVDB grids,
+		// checks exact channel set/transforms/value constraints, and populates
+		// dense renderer buffers and/or a sorted native Simulation::GridFrame.
 		bool FireSequenceManifest::ReadVDBPath( const std::string& file, const std::string& sha256,
 			const std::int64_t frameIndex, FireSequencePreparedFrame* dense, Simulation::GridFrame* native,
 			std::string& error ) const
@@ -1076,6 +1112,9 @@ namespace RISE
 #endif
 		}
 
+		// ==================================================================
+		// FireSequencePreparationController: leases and transactional swap
+		// ==================================================================
 		FireSequencePreparationController::RenderLease::RenderLease(
 			FireSequencePreparationController& owner ) : owner_(&owner)
 		{
@@ -1156,6 +1195,10 @@ namespace RISE
 			return true;
 		}
 
+		// Computes the canonical SHA-256 prepared-input identity (including native
+		// cache generation if attached), short-circuits if already installed,
+		// loads the frame outside the lock, and swaps atomically with optional
+		// rollback while incrementing frame/majorant/emission-CDF generations.
 		bool FireSequencePreparationController::PrepareMediaForRender(
 			const FireSequenceRenderTimeSupport& support, const bool effectiveVelocityBlur,
 			std::string& error, std::function<void()>* rollback )

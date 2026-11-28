@@ -1,3 +1,15 @@
+//////////////////////////////////////////////////////////////////////
+//
+//  SimulationGrid.cpp - Canonical binary codec for sparse "grid.v1" volumes
+//
+//  Wire layout: "RISEGRID" | u32 version(1) | u32 channels | (name, units,
+//               u8 comps(1|3), extent, f64[16] indexToWorld, f32[] bg,
+//               u32 blocks | (extent, u8 const, bitmask, f32[] values)*)*
+//  Tabs: 4
+//  License Information: Please see the attached LICENSE.TXT file
+//
+//////////////////////////////////////////////////////////////////////
+
 #include "pch.h"
 #include "SimulationGrid.h"
 #include "../Utilities/RISECBOR64.h"
@@ -100,6 +112,8 @@ void AddProduct(Magnitude& sum,const Dyadic& a,const Dyadic& b,const Dyadic& c)
 	}
 }
 
+// Exact affine invertibility check: finite row-major 4x4 with bottom row [0,0,0,1]
+// and nonzero 3x3 determinant evaluated exactly in dyadic arithmetic.
 bool ValidTransform(const std::array<double,16>& m)
 {
 	for (double value:m) if (!std::isfinite(value)) return false;
@@ -118,6 +132,7 @@ struct Box {
 	std::array<std::int64_t,3> low{}, high{}; // high exclusive
 };
 
+// Converts (origin, dims) into half-open [low, high) voxel bounds within int32 range.
 Box Bounds(const Origin& origin,const Dims& dims)
 {
 	Box bounds;
@@ -132,6 +147,7 @@ Box Bounds(const Origin& origin,const Dims& dims)
 
 std::size_t Cells(const Dims& dims) { return Product(Product(dims[0],dims[1]),dims[2]); }
 
+// Validates channel metadata/transform and reserves the dense voxel + mask footprint in `remaining`.
 void CheckChannel(const GridChannel& c,Budget& remaining)
 {
 	CheckText(c.name,remaining);
@@ -227,6 +243,7 @@ public:
 	}
 };
 
+// Verifies strictly sorted block origins, domain containment, zeroed mask padding bits, and non-overlap.
 void CheckBlocks(const GridChannel& c,Budget scratch)
 {
 	Require(c.blocks.size() <= (std::numeric_limits<std::uint32_t>::max)(), "too many grid blocks");
@@ -241,6 +258,7 @@ void CheckBlocks(const GridChannel& c,Budget scratch)
 	OverlapCheck().Run(c,scratch);
 }
 
+// Two-pass little-endian writer (null `data` measures wire length before allocation).
 struct Sink {
 	Bytes* data;
 	std::size_t count=0;
@@ -323,6 +341,7 @@ struct Source {
 	}
 };
 
+// Decodes "grid.v1" with pre-allocation bounds on channel/block counts and full validation.
 void ReadFrame(Source& src,Budget budget,GridFrame& frame)
 {
 	Require(std::memcmp(src.Read(8),Magic,8)==0 && src.Word(4)==1,"unsupported grid payload");
@@ -368,6 +387,9 @@ void ReadFrame(Source& src,Budget budget,GridFrame& frame)
 }
 }
 
+// ------------------------------------------------------------------ public API
+
+// Encodes canonically into a temporary buffer and swaps `out` only on success.
 bool RISE::Simulation::EncodeGrid(const GridFrame& frame,std::size_t budget,Bytes& out,std::string& error)
 {
 	try {
@@ -395,6 +417,7 @@ bool RISE::Simulation::EncodeGrid(const GridFrame& frame,std::size_t budget,Byte
 	} catch (const std::exception& e) { error=e.what(); return false; }
 }
 
+// Decodes and validates a "grid.v1" payload, leaving `out` untouched on failure.
 bool RISE::Simulation::DecodeGrid(const Bytes& bytes,std::size_t budget,GridFrame& out,std::string& error)
 {
 	try {

@@ -1064,8 +1064,11 @@ int main( int argc, char** argv )
 		package.CanonicalEnvelope()==repeated.CanonicalEnvelope()&&
 		package.TablePackageId()==repeated.TablePackageId(),
 		"production table compiler is byte deterministic");
+	// Re-pinned at fire solver version 4 (docs/FIRE_SMOKE_STATUS.md, "Fire solver version 4"): the table
+	// compiler is strict IEEE code, so this digest is the same under full, thin and no LTO (the
+	// previous pin 3e8f4650...ce55 was a product of fast-math code inlined under full LTO).
 	const std::string expectedTablePackageId=
-		"3e8f46503657cf137bb5e812a9090ae1bf09792c7f2e7b1222eb9e3b2b70ce55";
+		"e7912153c727b93f2e10e5f9cc41efb97b5ec944dc7cbd99d260f3ceb7bfeeed";
 	if( package.TablePackageId()!=expectedTablePackageId )
 		std::cerr << "Observed table package ID: " << package.TablePackageId() << '\n';
 	Check(package.TablePackageId()==expectedTablePackageId,

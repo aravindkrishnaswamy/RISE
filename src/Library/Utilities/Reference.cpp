@@ -1,12 +1,12 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  Reference.cpp - Implements the removeref function
-//                
+//  Reference.cpp - Thread-safe intrusive reference counting base
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: November 21, 2002
 //  Tabs: 4
-//  Comments: 
+//  Comments: Starts at refcount 1; addref/release/refcount synchronize on
+//    `mutex`. addref() ignores already-zero objects to prevent resurrection.
 //
 //  License Information: Please see the attached LICENSE.TXT file
 //
@@ -37,6 +37,9 @@ void Reference::addref() const
 	}
 }
 
+// Decrements refcount under mutex, releases the lock BEFORE logging and
+// `delete this` (avoiding destroying a locked mutex), and returns true
+// while references remain (false once destroyed or already zero).
 bool Reference::release() const
 {
 	bool destroy;

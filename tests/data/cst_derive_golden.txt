@@ -71,6 +71,12 @@ scenes/FeatureBased/Textures/tidal_stones.RISEscene  c673fd8d8484dbfb938d82bc466
 scenes/FeatureBased/Textures/weathered_workbench.RISEscene  769c2c370cd236f5a55aa5bd6ca5c10c3c90cb5dcbf48946909297a3bdfaecec  16433  70
 scenes/FeatureBased/VCM/vcm_sdf_luminaire_jellyfish.RISEscene  e33d3e32343b8faba3088a95157b9165568a5119fa21a2e9527e961dbd926c78  36422  208
 scenes/FeatureBased/VCM/vcm_veach_egg_displaced.RISEscene  cb4666ed4425190ef16e498194e0961867fb8ae9d82d8b5fc5a45243df61f8b6  2747  47
+scenes/Showcase/Simulation/conjurer.RISEscene  bc408b2668add199db1e45e3df0ad2e4fada5bdfd6260bbce5a156e5d9463dfe  3763  56
+scenes/Showcase/Simulation/hearth.RISEscene  a516f40e95e6cc0b5292636038fcc171cc58c3b6bb67941951750bd6ff85e52f  4056  60
+scenes/Showcase/Simulation/honey.RISEscene  db02f9d65a28b28157ebfde675cd03545457bd2194140b71eb137dc954156401  5178  67
+scenes/Showcase/Simulation/monsoon.RISEscene  d1c9c78db9892e89f3568c1101babace78f8724f316c270948335597205a55e3  4517  63
+scenes/Showcase/Simulation/tide.RISEscene  1d891b1de4749964aed54425d39f1250f7ed672e315cc426000185c80998529c  6309  82
+scenes/Showcase/Simulation/unveiling.RISEscene  2e3ff046b2f7aa4eb93657b702b6f6764cca3dbcbc013d4dda71e8ed4b33aabd  4318  65
 scenes/Templates/empty_starter.RISEscene  a92ee613195f49419b7d754b75d828ffe5eb9dd43cce0340db3cda3200d8e090  335  18
 scenes/Tests/Animation/animation_exposure.RISEscene  502e100d6fd2840bc6abdffe66049f1d7556058d71c0d3f16a9a3f8b56706380  1206  27
 scenes/Tests/Animation/animation_temporal_scanning.RISEscene  568e94f35371bf3e75d4bd5c360b9c64ae7309e83fc05e2ace5f4f1ffb14ea65  1156  27
@@ -396,6 +402,7 @@ scenes/Tests/Simulation/liquid_cloth_wave.RISEscene  1cc4a4182a281069925df624391
 scenes/Tests/Simulation/liquid_dam_break.RISEscene  cc52a0ede6e7a8bc4e7bb1bca483d589a55db18142343a42e2a7c6a624f2fc0f  1754  33
 scenes/Tests/Simulation/liquid_honey_cloth.RISEscene  a9c233948704946adc26f673b5a4054b7082277d109b7637f305533c8aa0a6e4  2329  39
 scenes/Tests/Simulation/liquid_honey_water.RISEscene  9dbe671a4b0b1f99e6b24d4224fa85a16d2f1bf594d03bcb9d19856cf983875f  1992  35
+scenes/Tests/Simulation/liquid_inflow.RISEscene  af9cf79e9d0456e6d08c79e5be141c07a1e871ffa6b6d07dcac447f9318704e8  1733  33
 scenes/Tests/Simulation/liquid_rigid_bodies.RISEscene  69d83fbd5b0fb4a43a72406076379b84a62020fe65e248810f63d300e37385d5  2870  47
 scenes/Tests/Simulation/plume_banner_from_cache.RISEscene  7590a52506a385da4a962877949a9ba1bcf4dd5b1bff728c33ba8ece68527890  1005  24
 scenes/Tests/Simulation/rigid_cloth_trampoline.RISEscene  39bd108aec44b6ca40d5264ed04222a8339ba16c5e4421de0a4c630d412e5e37  1680  32

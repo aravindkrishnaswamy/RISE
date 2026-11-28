@@ -1,55 +1,17 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  SobolSampler.h - ISampler implementation backed by Owen-scrambled
-//    Sobol' sequences.
+//  SobolSampler.h - ISampler backed by Owen-scrambled Sobol' sequences.
 //
-//    Replaces IndependentSampler in BDPT (and any future integrator
-//    that consumes ISampler).  Each call to Get1D() / Get2D() draws
-//    the next dimension(s) from the Sobol sequence for the current
-//    sample index, with Owen scrambling seeded by pixel coordinates.
+//  Caller supplies per-pixel sampleIndex (0, 1, ...) and scramble seed.
+//  StartStream() partitions dimensions into fixed kStreamStride phases
+//  so subpath generators stay stratified across pixels.
 //
-//    The caller must supply:
-//      sampleIndex - which sample within this pixel (0, 1, 2, ...)
-//      seed        - a per-pixel base seed (e.g., hash of pixel coords)
-//
-//    StartStream() advances the dimension counter so that different
-//    sub-path generators (light, eye, connection) draw from
-//    independent dimension ranges — same mechanism as PSSMLTSampler.
-//
-//    NOTE (DL-81, 2026-09-14): `kStreamStride` being EVEN used to be
-//    fatal, because `SobolSequence::Sample` reduced the dimension to
-//    `dimension & 1` -- every bounce's k-th draw then had the parity of
-//    every other bounce's k-th draw, and two same-parity dimensions
-//    were two Owen-scrambled copies of ONE base value.  Distinct
-//    dimensions are now distinct SEQUENCES, so an even stride is
-//    harmless; see SobolSequence.h's header for the mechanism and
-//    docs/DEBT_LEDGER.md for the measurements.  There
-//    is now a finite dimension supply (`SobolSequence::kNumDimensions`
-//    = 8192 = 256 streams' worth), sized so that every PER-VERTEX
-//    stream a SHIPPED scene reaches has dimensions of its own; past
-//    it, Get1D draws are re-indexed rather than aliased (they
-//    decorrelate, but stop being a joint net) and Get2D draws are
-//    unaffected, since they are padded and keyed by the raw dimension.
-//    `SobolDimensionBudgetTest` Test G1 recomputes the shipped bound
-//    from the scene files.
-//
-//    NOTE (DL-283, 2026-09-27): "shipped scenes never wrap" is NOT the
-//    rule, and has not been since DL-247.  Three stream families live
-//    past the table ON PURPOSE, because they must be disjoint from
-//    every per-vertex stream at any depth: PT's volume-walk streams
-//    (`PathTransportUtilities::PTVolumeWalkStream`, 4096..8191, wrap
-//    counts 16..31), BDPT/VCM's medium distance-sampling blocks
-//    (`BDPTUtilities::MediumDistanceStream`, 8192..139263, wraps
-//    32..543) and -- DL-286 -- BDPT/VCM's DEEP walk iterations (light
-//    iteration >= 15, eye >= 31; `BDPTUtilities::LightWalkStream` /
-//    `EyeWalkStream`, 139264..141265, wraps 544..551).  Every medium
-//    render therefore draws wrapped dimensions.  Measured harmless by
-//    per-pixel variance at 8 spp (no worse than pre-DL-283; DL-81 doc
-//    section 9 -- ParityTest section H's collapse statistic is only a
-//    sanity floor), and the deep-walk block by the salted Sobol'-vs-
-//    independent deep-fog rows (DL-81 doc section 10).  Test G2
-//    enumerates all three families and asserts their wrap counts and
-//    collision-freedom.
+//  The direction table holds SobolSequence::kNumDimensions (8192 = 256
+//  streams); draws past it re-index cleanly (see SobolSequence.h and
+//  docs/DEBT_LEDGER.md).  Stream families that intentionally live past
+//  the table to remain disjoint from per-vertex streams: PT volume walk
+//  (4096..8191), BDPT/VCM medium distance (8192..139263), and deep walk
+//  iterations (139264..141265).
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: March 27, 2026
@@ -72,36 +34,12 @@ namespace RISE
 {
 	namespace Implementation
 	{
-		//////////////////////////////////////////////////////////////
-		// SobolSamplerTestHooks -- TEST-ONLY seams (DL-283 review).
-		//
-		// Production code never writes these; both default to "off",
-		// and a SobolSampler reads them ONCE, at construction, so the
-		// per-draw paths pay one predictable member-bool branch.  A test
-		// sets them between renders (a render's worker hand-off goes
-		// through the thread pool's own synchronisation, which orders
-		// the write before every sampler the render constructs).
-		//
-		//  ValueSalt   XORed into every sampler's scramble seed.  That
-		//              seed feeds only the VALUE-side Owen scramble
-		//              (`HashCombine(seed, dimension)`); `ScrambleIndex`
-		//              is keyed by the dimension group / wrap count and
-		//              never sees it.  A distinct salt per render makes
-		//              repeated renders INDEPENDENT randomized-QMC
-		//              replicates; without it every render of a scene
-		//              reuses the identical Sobol' points, so the
-		//              run-to-run sd omits the QMC error entirely and
-		//              a mean difference can look significant (or
-		//              insignificant) for the wrong reason.
-		//  Independent Replace every draw by an i.i.d. value from a
-		//              STATEFUL splitmix64 stream seeded by (seed ^
-		//              salt, sampleIndex), keeping the stream/dimension
-		//              bookkeeping and `HasFixedDimensionBudget() ==
-		//              true` -- the integrators take the identical code
-		//              path, but a dimension drawn twice yields two
-		//              FRESH values.  An unbiased reference no
-		//              sampler-correlation defect can reach.
-		//////////////////////////////////////////////////////////////
+		// Test-only hooks (read once at SobolSampler construction; set only
+		// between renders):
+		//   ValueSalt   - XORed into the value-side Owen scramble seed for
+		//                 independent randomized-QMC replicates.
+		//   Independent - Replaces draws with stateful splitmix64 while
+		//                 preserving stream/dimension bookkeeping.
 		struct SobolSamplerTestHooks
 		{
 			static std::atomic<uint32_t>& ValueSalt()
@@ -137,43 +75,17 @@ namespace RISE
 				return double( z >> 11 ) * ( 1.0 / 9007199254740992.0 );
 			}
 
-			// Dimensions are partitioned into fixed-size phases so
-			// that each bounce always starts at the same dimension
-			// offset regardless of how many dimensions previous
-			// bounces consumed (material-dependent).  This preserves
-			// cross-pixel Sobol stratification.
-			//
-			// Encoding: phase = streamBase + bounceIndex
-			//   Light source sampling:   phase 0
-			//   Light bounces d < 15:    phases 1 + d        (1..15)
-			//   Eye bounces d < 31:      phases 16 + d       (16..46)
-			//   BDPT strategy select:    phase 47
-			//   VCM NEE, eye vertex i:   phase 48 + i (i >= 1)
-			//   Deeper light / eye bounces (DL-286): a block of their
-			//   own past the medium-distance blocks, 139264 + (d - 15)
-			//   and 140273 + (d - 31) -- BDPTUtilities::
-			//   LightWalkStream / EyeWalkStream.
-			// The bounce ranges were laid out for 15 bounces; until
-			// DL-286 deeper walks continued as 1 + d / 16 + d and ran
-			// into each other's phases (light bounce 15 re-opened eye
-			// bounce 0's, and so on) -- one dimension driving a
-			// light-vertex and an eye-vertex decision of one path, a
-			// -12 % bias in dense fog.
-			//   PT HWSS SMS lanes (sms-ext Phase 4 extended; DL-453
-			//   legacy): per (PT depth mod 1024,
-			//   lane) one stream at 141312 + 4 * depth + lane, [141312,
-			//   145408), drawn through ForkStream so it never moves the
-			//   vertex stream -- PathTransportUtilities::PTSMSLaneStream.
-			// The full map, including the wrap-region families past
-			// the dimension table, is SobolDimensionBudgetTest G2.
-			//
+			// Fixed-size phase layout (cross-pixel stratification; full map in
+			// SobolDimensionBudgetTest G2):
+			//   0                  Light source sampling
+			//   1 + d  (d < 15)    Light bounces (deep d >= 15: 139264 + (d - 15))
+			//   16 + d (d < 31)    Eye bounces   (deep d >= 31: 140273 + (d - 31))
+			//   47                 BDPT strategy select
+			//   48 + i (i >= 1)    VCM NEE, eye vertex i
+			//   141312 + 4*d + l   PT HWSS SMS lanes [141312, 145408) via ForkStream
 		public:
-			// kStreamStride must be >= max dimensions consumed by
-			// any single phase (BioSpecSkinSPF uses ~20 + lobe
-			// selection + BSSRDF = ~25 max).  Public so a stream
-			// layout that must hold an open-ended consumer can
-			// static_assert its width (BDPTUtilities::
-			// MediumDistanceStream, DL-283).
+			// Must be >= max dimensions per phase (~25 max for BioSpecSkinSPF + BSSRDF).
+			// Public for static_assert in stream layouts (e.g. MediumDistanceStream).
 			static const unsigned int kStreamStride = 32;
 
 			virtual ~SobolSampler(){};
@@ -207,18 +119,8 @@ namespace RISE
                 return Scalar(SobolSequence::Sample(sampleIndex, (1u << 29) + alphaDimension++, seed));
             }
 
-			//! Returns a 2D Owen-scrambled Sobol sample in [0,1)^2.
-			//!
-			//! Drawn as a PADDED (0,2)-net pair -- Sobol' dimensions 0
-			//! and 1 at an index permuted by this dimension group --
-			//! not as two consecutive rows of the per-dimension table.
-			//! Two consecutive table rows are a legitimate 2D
-			//! projection but not a net: measured on the first
-			//! DL-81 table, the 2310 consecutive pairs have mean
-			//! t-value 2.51 at 256 samples per pixel and max 7, and
-			//! the thin-lens aperture pair reached 6 -- where
-			//! dimensions 0 and 1 are t = 0 by construction.  See
-			//! SobolSequence::SamplePair.
+			//! Returns a 2D Owen-scrambled Sobol sample in [0,1)^2 as a padded
+			//! (0,2)-net pair (Sobol' dims 0 & 1 at a group-permuted index; t = 0).
 			Point2 Get2D()
 			{
 				double u = 0.0, v = 0.0;
@@ -244,19 +146,9 @@ namespace RISE
 				dimension = static_cast<unsigned int>(streamIndex) * kStreamStride;
 			}
 
-			//! A sampler on the SAME sequence and scramble (sample index,
-			//! seed) positioned at `streamIndex`, with its own dimension
-			//! counter: draws from it never move this sampler's position.
-			//! For a consumer that must draw from a stream of its own in
-			//! the middle of another stream's draws (PT's HWSS SMS lanes,
-			//! PathTransportUtilities::PTSMSLaneStream).  In the
-			//! independent test mode the fork's generator is re-keyed by
-			//! the stream so its draws are fresh, not a replay of this
-			//! sampler's.  The fork starts at this sampler's alpha
-			//! position; a caller whose forked draws may include alpha
-			//! draws (legacy SMS with scene alpha coverage, DL-453)
-			//! hands the position back with JoinAlpha afterwards, so no
-			//! alpha dimension is drawn twice in one sample.
+			//! Fork a sampler on the same (sampleIndex, seed) at `streamIndex`
+			//! without moving this sampler's dimension (re-keying rngState in
+			//! independent mode).  Call JoinAlpha() afterward if the fork draws alpha.
 			SobolSampler ForkStream( int streamIndex ) const
 			{
 				SobolSampler fork( *this );
@@ -265,12 +157,8 @@ namespace RISE
 				return fork;
 			}
 
-			//! Resume the alpha region after a ForkStream fork's draws
-			//! (DL-453): the next GetAlpha1D draws past every alpha
-			//! dimension the fork used.  A no-op when the fork drew none.
-			//! Precondition: the parent draws no alpha between ForkStream
-			//! and JoinAlpha; otherwise the two ranges overlap and the max
-			//! below hides the reuse.
+			//! Advance parent's alphaDimension past draws made by `fork`.
+			//! Precondition: parent draws no alpha between ForkStream and JoinAlpha.
 			void JoinAlpha( const SobolSampler& fork )
 			{
 				if( fork.alphaDimension > alphaDimension ) {

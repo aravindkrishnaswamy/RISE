@@ -2,6 +2,16 @@
 //
 //  FireProductionForce.cpp - strict-binary32 production force primitives
 //
+//  CPU implementation of the staggered MAC nonpressure momentum force
+//  operators (Vreman SGS eddy viscosity, Newtonian viscous stress
+//  divergence, relative buoyancy, phase-source momentum rate, explicit
+//  viscous substepping), monitored-manifold timestep/token/checkpoint
+//  authority, and the Section 3.7 coupled projected-Heun CPU owner
+//  (R0 predictor, R1 Heun corrector, R2 endpoint projection).
+//  Mirrors FireProductionForceMac.mm arithmetic and boundary conventions:
+//  cells (z*ny+y)*nx+x; MAC faces x=(nx+1)*ny*nz, y=nx*(ny+1)*nz,
+//  z=nx*ny*(nz+1); wall-normal faces zero unless masked lower-z burner.
+//
 //  License Information: Please see the attached LICENSE.TXT file
 //
 //////////////////////////////////////////////////////////////////////
@@ -145,6 +155,8 @@ namespace RISE
 				"production checkpoint accepted state digest is invalid");
 		}
 	}
+
+	// --- Monitored-manifold checkpoint restoration, timestep, and token authority ---
 
 	bool FireProductionCheckpointManifoldAccess::RestoreValidatedCheckpointFile(
 		const std::string& path,const std::uint64_t payloadBytes,
@@ -630,6 +642,10 @@ namespace RISE
 		return true;
 	}
 
+	// --- Strict-fp32 Vreman SGS viscosity and explicit viscous substep schedule ---
+
+	// Evaluates Vreman eddy viscosity nu_t = c_v * sqrt(max(0, B_beta) / |alpha|^2)
+	// in strict fp32 matching build_stress in FireProductionForceMac.mm.
 	bool EvaluateFireProductionVremanEddyViscosity(
 		const FireProductionVremanInput& input,
 		float& eddyViscosityM2PerS,
@@ -717,6 +733,8 @@ namespace RISE
 			++count;
 		}
 	}
+
+	// --- Working-set certificates and frozen-force request validation ---
 
 	bool FireProductionFrozenForceWorkingSetBytes(
 		const FireProductionProjectionShape& shape,
@@ -1051,6 +1069,12 @@ namespace RISE
 		if( error ) error->clear();return true;
 	}
 
+	// --- Staggered MAC viscous stress, relative buoyancy, and phase-source RHS ---
+
+	// Builds cell-centered velocity gradients (no-slip ghost -u on walls,
+	// inhomogeneous 2*u_inlet - u_cell on masked bottom burner, copy on open,
+	// wrap on periodic), Vreman mu_eff, 3x3 Newtonian stress tensor tau, and
+	// staggered MAC face viscous + relative-buoyancy rates.
 	static bool BuildFireProductionFrozenForceFieldsImpl(
 		const FireProductionFrozenForceRequest& request,
 		const std::vector<float>* fixedDynamicViscosityPaS,
@@ -1346,6 +1370,8 @@ namespace RISE
 		return BuildFireProductionFrozenForceFieldsImpl(request,0,false,result,error);
 	}
 
+	// Evaluates stage nonpressure momentum RHS (buoyancy + div(tau) + u_face *
+	// I_face(S_gas_phase)) as pure rates (dt = 1) matching the Metal 5-kernel pass.
 	bool EvaluateFireProductionNonpressureMomentumRHSCPU(
 		const FireProductionNonpressureMomentumRHSRequest& request,
 		FireProductionNonpressureMomentumRHSResult& result,
@@ -1473,6 +1499,8 @@ namespace RISE
 		}
 	}
 
+	// Advances face momentum through N explicit viscous substeps with frozen
+	// beginning-state mu_eff and face density, then adds relative gravity once.
 	bool AdvanceFireProductionFrozenForceCPU(
 		const FireProductionFrozenForceRequest& request,
 		float outwardLambdaPerS,
@@ -2325,6 +2353,8 @@ namespace RISE
 		}
 	}
 
+	// --- Section 3.7 projected-Heun CPU owner (Begin, R0, R1, R2) ---
+
 	bool ComputeFireProductionGasDensityCPU(
 		const FireProductionProjectionShape& shape,
 		const std::vector<float>& conservativeValues,
@@ -2470,6 +2500,9 @@ namespace RISE
 			"projected-Heun owner begin allocation failed");}
 	}
 
+	// Coupled Picard fixed-point loop for R0 or R1: alternates MAC projection,
+	// stage transport/physical-flux/FCT scalar acceptance, active-set open-BC
+	// cycle resolution, and r70 divergence-target correction until convergence.
 	bool FireProductionProjectedHeunCPUOwner::SolveCoupledStage(
 		const FireProductionProjectedHeunStage stage,const std::vector<float>& state,
 		const std::vector<float>& temperatureK,
@@ -3157,6 +3190,8 @@ namespace RISE
 		}
 	}
 
+	// Stage R0: solves beginning-state coupled stage, gates predictor Q* via EOS,
+	// and builds predictor provisional momentum u* = u^n + dt*(RHS_0 - adv_0).
 	bool FireProductionProjectedHeunCPUOwner::SolveR0(
 		const FireProductionProjectedHeunTransportProvider& provider,std::string* error)
 	{
@@ -3213,6 +3248,9 @@ namespace RISE
 			"projected-Heun R0 allocation failed");}
 	}
 
+	// Stage R1: solves predictor coupled stage, averages R0/R1 flux stages with
+	// one fresh shared FCT alpha, gates committed Q^{n+1} via EOS, and forms
+	// Heun provisional momentum u** = u^n + 0.5*dt*(RHS_0 + RHS_1 - adv_0 - adv_1).
 	bool FireProductionProjectedHeunCPUOwner::SolveR1(
 		const FireProductionProjectedHeunTransportProvider& provider,std::string* error)
 	{
@@ -3301,6 +3339,9 @@ namespace RISE
 			"projected-Heun R1 allocation failed");}
 	}
 
+	// Stage R2: integrates open-boundary Bernoulli head from R0/R1, performs the
+	// endpoint projection + endpoint physical-flux divergence target closure on
+	// Q^{n+1}, publishes step-average pressure, and mints the owner seal.
 	bool FireProductionProjectedHeunCPUOwner::SolveR2(
 		const FireProductionProjectedHeunTransportProvider& provider,
 		FireProductionProjectedHeunOwnerResult& result,std::string* error)

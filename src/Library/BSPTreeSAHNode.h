@@ -13,6 +13,8 @@
 //
 //////////////////////////////////////////////////////////////////////
 
+// SAH-built axis-aligned BSP (kd-tree) node: internal nodes own pChildren[2]
+// and (splitAxis, splitLocation); leaf nodes own pElements.
 class BSPTreeNodeSAH
 {
 protected:
@@ -80,6 +82,7 @@ public:
 		return 2.0 * (dx*dy + dx*dz + dy*dz);
 	}
 
+	// Splits bbox along axis at location, padding child planes by NEARZERO for precision safety.
 	void SplitBoundingBox( const BoundingBox& bbox, const unsigned char axis, const Scalar location, BoundingBox& left, BoundingBox& right ) const
 	{
 		static const Scalar box_error = NEARZERO;
@@ -103,6 +106,7 @@ public:
 		}
 	}
 
+	// Stops recursion on degenerate box extents, max depth, or leaf element cap.
 	bool ShouldTerminate(
 		const ElementInfoListType& elements,
 		const BoundingBox& bbox,
@@ -121,6 +125,10 @@ public:
 			);
 	}
 
+	// ------------------------------------------------------------------ SAH split search
+
+	// Exact O(N log N) SAH plane sweep over sorted primitive bbox min/max events on all 3 axes.
+	// Evaluates C_trav + C_isect * (1 - emptyBonus) * (pBelow * nBelow + pAbove * nAbove).
 	bool FindBestExactSplit(
 		const ElementInfoListType& my_elements,
 		const BoundingBox& my_bb,
@@ -188,6 +196,8 @@ public:
 		return bFound;
 	}
 
+	// O(N + B) uniform-bin SAH approximation used above bsp_sah_exact_threshold: accumulates
+	// clamped start/end bin histograms and prefix/suffix sums to test B - 1 split planes per axis.
 	bool FindBestBinnedSplit(
 		const ElementInfoListType& my_elements,
 		const BoundingBox& my_bb,
@@ -290,6 +300,10 @@ public:
 		return bFound;
 	}
 
+	// ------------------------------------------------------------------ tree construction
+
+	// Recursively builds the SAH tree: picks exact vs binned split, partitions elements
+	// (straddling primitives go to both children), and falls back to a leaf if no split helps.
 	void AddElements(
 		const TreeElementProcessor<Element>& ep,
 		const ElementInfoListType& my_elements,
@@ -490,6 +504,7 @@ public:
 		}
 	}
 
+	// Full RayIntersection overload (includes material/exit info; mirrors geometric traversal above).
 	void IntersectRay(
 		const TreeElementProcessor<Element>& ep,
 		RayIntersection& ri,
@@ -564,6 +579,7 @@ public:
 		}
 	}
 
+	// Shadow / any-hit traversal: returns true on the first intersection within dHowFar.
 	bool IntersectRay_IntersectionOnly(
 		const TreeElementProcessor<Element>& ep,
 		const Ray& ray,
@@ -628,6 +644,9 @@ public:
 		return false;
 	}
 
+	// ------------------------------------------------------------------ serialization & diagnostics
+
+	// Depth-first binary layout: [hasElements, count, elements...], [hasChildren, axis, loc, child0, child1].
 	void Serialize( const TreeElementProcessor<Element>& ep, IWriteBuffer& buffer ) const
 	{
 		buffer.ResizeForMore( sizeof(char) );

@@ -7,6 +7,7 @@
 //  Compiled with strict IEEE binary64 arithmetic to match
 //  HyLIoSLocalBake / LoadLocalBake validation.
 //
+//  Tabs: 4
 //  License Information: Please see the attached LICENSE.TXT file
 //
 //////////////////////////////////////////////////////////////////////
@@ -121,6 +122,8 @@ namespace
 		return f;
 	}
 
+	// Projects a world direction into the right-handed (T, B, N) upper hemisphere
+	// as local response coordinates (t, phi), enforcing both geometric and shading sides.
 	inline bool WorldToLocalPoint(
 		const RightHandedSurfaceFrame& frame,
 		const Vector3& worldDir,
@@ -258,6 +261,8 @@ namespace
 	}
 } // namespace
 
+// Integrates D65-weighted hemispherical reflectance over [380, 780] nm via
+// 1 nm composite trapezoidal quadrature, normalized by illuminant Y into clamped RGB.
 bool RISE::Implementation::ComputeHyLIoSVisibleGuideRGB(
 	const std::vector<double>& wavelengthsNm,
 	const std::vector<double>& hemisphericalReflectance,
@@ -448,6 +453,8 @@ void HyLIoSLocalSPF::Scatter(
 	scattered.AddScatteredRay( sr );
 }
 
+// Samples the quantized 4D baked camera proposal (event, cell, uT, uPhi) at
+// exact wavelength nm, emitting either a planar-mirror delta or continuous bounce.
 void HyLIoSLocalSPF::ScatterNM(
 	const RayIntersectionGeometric& ri,
 	ISampler& sampler,
@@ -688,6 +695,8 @@ namespace
 		return state;
 	}
 
+	// Builds per-wavelength P2 forward transport kernels from resolved specimen
+	// JSON and checks that concentric spherical/cylindrical radii exceed skin depth.
 	std::shared_ptr<HyLIoSNonlocalRuntime> BuildNonlocalRuntime(
 		const std::string& sourceBytes,
 		const HyLIoSSkinMaterialConfig& config,
@@ -1035,6 +1044,10 @@ bool HyLIoSSkinMaterial::SelectNonlocalWavelengthNodeNM(
 	return true;
 }
 
+// Samples a nonlocal subsurface walk at wavelength nm: stochastically picks
+// a bracketing kernel node (or reuses pFixedNodeIdx), resolves outer reciprocal
+// boundary R/T, steps with absorbing lateral and host-object checks, and yields
+// interior exits for K_t NEE.
 bool HyLIoSSkinMaterial::SampleNonlocalNM(
 	const RayIntersectionGeometric& ri,
 	const Scalar nm,
@@ -1453,6 +1466,8 @@ std::size_t HyLIoSSkinMaterial::ActiveCachedAssetCount()
 	return live;
 }
 
+// Factory validating config ABI and dispatching to either live `nonlocal`
+// slab transport or `baked_local` immutable asset loading with aggregate RAM cap.
 HyLIoSSkinMaterial* HyLIoSSkinMaterial::Create(
 	const HyLIoSSkinMaterialConfig& config,
 	std::string* outError

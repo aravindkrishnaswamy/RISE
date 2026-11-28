@@ -1,34 +1,16 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  ManifoldSolver.h - Specular Manifold Sampling solver for BDPT.
+//  ManifoldSolver.h - Specular Manifold Sampling (SMS) Newton solver
+//  (Zeltner et al. 2020; Hanika et al. 2015; Fan et al. 2023).
 //
-//    Implements the Newton iteration method from Zeltner et al. 2020
-//    ("Specular Manifold Sampling") to find valid specular paths
-//    connecting two non-specular endpoints through an arbitrary chain
-//    of specular (delta distribution) surfaces.
+//  Solves the 2D specular angle-difference constraint C_i = 0 along an
+//  arbitrary chain of delta reflection/refraction surfaces via a
+//  block-tridiagonal Newton iteration, using material IOR from
+//  IMaterial::GetSpecularInfo().
 //
-//    The solver works by expressing the specular constraint at each
-//    vertex as a 2D equation C_i = 0 (the angle-difference between
-//    the actual outgoing direction and the specularly scattered
-//    direction), then using Newton's method with block-tridiagonal
-//    Jacobian structure to iteratively adjust vertex positions until
-//    the constraint is satisfied.
-//
-//    Supports both refraction and reflection at each vertex, with
-//    material-specific IOR via IMaterial::GetSpecularInfo().
-//
-//    SMS and BDPT occupy disjoint path spaces for delta materials:
-//    BDPT skips delta vertices in its MIS walk, so it cannot generate
-//    the caustic paths that SMS finds.  Simple addition of SMS and
-//    BDPT contributions is correct without cross-strategy MIS.
-//    See docs/SMS.md for the full analysis and glossy-extension notes.
-//
-//  References:
-//    - Zeltner, Georgiev, Jakob. "Specular Manifold Sampling."
-//      SIGGRAPH 2020.
-//    - Hanika, Droske, Fascione. "Manifold Next Event Estimation."
-//      CGF 2015.
-//    - Fan et al. "Manifold Path Guiding." SIGGRAPH Asia 2023.
+//  For delta materials SMS and BDPT occupy disjoint path spaces (BDPT
+//  skips delta vertices in MIS), so contributions add without cross-MIS.
+//  See docs/SMS.md for full analysis and glossy-extension notes.
 //
 //  Author: Aravind Krishnaswamy
 //  Tabs: 4
@@ -255,74 +237,33 @@ namespace RISE
 		struct ManifoldVertex
 		{
 			Point3				position;		///< World-space position on specular surface
-			Vector3				normal;			///< Surface normal (world space) — Phong-interpolated SHADING normal on triangle meshes; on analytical primitives it's the same as `geomNormal`.  Used by Newton's Jacobian and the chain-throughput math (which want the smooth shading normal so derivatives are well-defined across triangle edges).
-			Vector3				geomNormal;		///< Geometric (face) normal in world space.  On analytical primitives identical to `normal`.  On triangle meshes this is the actual flat-triangle face normal — INDEPENDENT of Phong vertex-normal interpolation.  Used by `ValidateChainPhysics` to test wi/wo against the actual surface (not the shading approximation), so chains aren't spuriously rejected when the Phong-tilted shading normal disagrees with the real geometry — empirically this was the dominant source of `physicsFail` rejections on smooth-displaced caustics (see docs/SMS_LEVENBERG_MARQUARDT.md).
-
-			//! INVARIANT (DL-70): this is the TRUE, RAY-INDEPENDENT outward
-			//! normal -- every producer stores
-			//! `RayIntersectionGeometric::UnflippedGeomNormal()`, never the
-			//! reported `vGeomNormal`, which a double-sided triangle mesh
-			//! (and ClippedPlane / BezierPatch on a back-face hit) flips to
-			//! oppose the incoming ray.  Two reasons it must be the unflipped
-			//! one.  (a) `BuildSeedChain`'s `bEntering` reads its SIGN against
-			//! the chain direction; the reported normal's sign is a constant
-			//! on such a mesh, which is why that site used to lean on the IOR
-			//! stack's `containsCurrent()` override to catch the
-			//! thin-double-sided case at all (and still missed a walk that
-			//! STARTS inside the solid, where nothing was pushed yet).
-			//! (b) Several sites republish this field into a synthetic
-			//! `RayIntersectionGeometric` whose `bGeomNormalOrientedToRay`
-			//! defaults FALSE -- a flipped value stored here would be
-			//! re-published as an unflipped one and lie to any consumer that
-			//! performs the recovery.
-			//!
-			//! The switch is invisible to this struct's other consumers by
-			//! construction: `ValidateChainPhysics` and the two-stage
-			//! `failIdx` scan test a sign PRODUCT `(wi.n)(wo.n)`, and
-			//! `EvaluateChainGeometry` / `EvaluateChainCosineProduct` /
-			//! `cosV1atX` take `fabs` -- all four are invariant under a global
-			//! sign flip of this vector.
-			//!
-			//! EXCEPTION: the three photon-chain reconstruction producers in
-			//! `ManifoldSolver.cpp` (~:5587, ~:6444, ~:7978) cannot recover
-			//! `UnflippedGeomNormal()` from a serialized `SMSPhotonChainVertex`
-			//! -- the photon record's own `geomNormal` slot is a legacy-photon
-			//! zero SENTINEL for photons captured before that field existed --
-			//! and fall back to `pv.normal` (the photon's stored SHADING
-			//! normal, which IS ray-facing: `SMSPhotonMap.cpp` captures it as
-			//! `ri.geometric.vNormal`, and a double-sided/back-face geometry
-			//! flips its shading normal in lockstep with `vGeomNormal`).  On
-			//! such a legacy-sentinel photon this field therefore does NOT
-			//! carry the TRUE-outward invariant and can disagree in sign with
-			//! `normal` below -- which itself ALWAYS keeps the ray-facing
-			//! convention, unlike this field.  The two are read jointly only
-			//! by the `SMS_SOLVE_DIAG`-gated `dotGS` diagnostic
-			//! (`ManifoldSolver.cpp` ~:2244), which is instrumentation, not a
-			//! solve-path consumer -- no production consumer of this struct
-			//! compares `normal` against `geomNormal`'s sign.
+			Vector3				normal;			///< World-space shading normal (ray-facing); used for Newton Jacobian & throughput
+			//! True, ray-independent outward geometric face normal (`UnflippedGeomNormal()`,
+			//! DL-70). Used by `BuildSeedChain` (`bEntering`), synthetic RIGs
+			//! (`bGeomNormalOrientedToRay=false`), and `ValidateChainPhysics` (avoids
+			//! Phong-tilt false rejections; docs/SMS_LEVENBERG_MARQUARDT.md).
+			//! Exception: legacy-sentinel `SMSPhotonChainVertex` falls back to ray-facing
+			//! `pv.normal`; no production consumer compares `normal` vs `geomNormal` sign.
+			Vector3				geomNormal;
 			Vector3				dpdu;			///< Position derivative w.r.t. first surface param (world space)
 			Vector3				dpdv;			///< Position derivative w.r.t. second surface param (world space)
 			Vector3				dndu;			///< Normal derivative w.r.t. first surface param (world space)
 			Vector3				dndv;			///< Normal derivative w.r.t. second surface param (world space)
 			Point3				objectPosition;	///< Exact hit in the geometry/CSG child frame for Po painters
 			Point2				uv;				///< Surface parameters
-			Scalar				eta;			///< Surface MATERIAL'S IOR at this vertex (e.g. 1.5 for typical glass).  Kept for backward compatibility with callers that just want "the dielectric's nominal IOR".  For half-vector / Snell / Fresnel math, prefer (etaI, etaT) below — they encode the actual interface, including nested-dielectric cases where neither side is air.
-			Scalar				etaI;			///< IOR on the INCOMING (`wi`) side of the interface — Walter et al. 2007 notation η_i.  This is the medium the ray is travelling FROM as it hits this vertex.  Default 1.0 (air).
-			Scalar				etaT;			///< IOR on the OUTGOING (`wo`) side of the interface — Walter et al. 2007 notation η_t.  This is the medium the ray is travelling INTO as it leaves this vertex.  Default 1.0 (air).
-			Scalar				radianceEtaI;	///< DL-619: the index RISE::RadianceEtaScale prices this crossing FROM, i.e. the receiver -> light walk's IOR-stack top before the crossing -- except on a certified open sheet, where it is etaI (the sheet's face-rule index).  0.0 sentinel = use etaI.  Differs from etaI at a non-top closed exit beneath an open-sheet entry.  Every chain producer must set it consistently (`ManifoldSolver::AssignRadianceEtas` is the stack-free form).
-			///<
-			///< Together (etaI, etaT) replace the old `eta_eff = isExiting ? 1/eta : eta` derivation, which silently assumed the OPPOSITE side of every interface was air (IOR=1.0).  That assumption holds for a single dielectric in air (the typical SMS test case) but BREAKS for nested dielectrics — e.g. an air-cavity sphere (IOR=1.0) inside a glass shell (IOR=1.5), where the inner sphere's interface has glass on one side and air on the other.  Without (etaI, etaT), Newton would solve the half-vector constraint h ∝ -(1·wi + 1·wo) at the air-cavity vertex (which is the REFLECTION constraint) instead of the actual Snell refraction h ∝ -(1.5·wi + 1.0·wo).  Convergence at the wrong constraint root explains the SMS rejection cliff on Veach Egg / luminous orb scenes.
-			///<
-			///< Populated by BuildSeedChain (RGB and NM variants) at the time of each hit, using the same `currentIOR` and IOR-stack the seed-trace already maintains.  Single-IOR scenes (the existing test corpus) get etaI=1.0 (entering) or etaT=1.0 (exiting), matching the old hardcoded defaults — so unchanged behaviour for those scenes.  ValidateChainPhysics may also fall back to `eta` when (etaI, etaT) are at default-1.0 for back-compat with hand-constructed chains.
+			Scalar				eta;			///< Nominal material IOR (legacy fallback when etaI/etaT are default 1.0)
+			Scalar				etaI;			///< Incoming-side (`wi`) medium IOR (Walter 2007 η_i; supports nested dielectrics)
+			Scalar				etaT;			///< Outgoing-side (`wo`) medium IOR (Walter 2007 η_t; supports nested dielectrics)
+			Scalar				radianceEtaI;	///< IOR `RadianceEtaScale` prices from (receiver->light stack top, or `etaI` on open sheets; 0 sentinel = use `etaI`; DL-619)
 			RISEPel				attenuation;	///< Color attenuation at this vertex (e.g., colored glass refractance, mirror reflectance)
 			Scalar				attenuationNM;	///< Cached wavelength-resolved multiplier, filled by spectral seed/reconstruction queries.
 			bool				attenuationAppliesToReflection; ///< Native refractor tint is transmission-only.
 			bool				hasCustomSpecularFresnel; ///< Reuse the material SPF coating law at the solved angle.
 			bool				attenuationIsInteriorTransmittance;	///< Dielectric per-unit-distance tau; exiting transmission only.
-			bool				isReflection;	///< True if the chain ray bounces off (mirror, Fresnel reflection on glass, or TIR); false if it refracts through.
-			bool				canRefract;		///< True if the underlying material can refract (dielectric).  False for pure mirrors / conductors.  Selects the throughput law: dielectrics use Fresnel(cosI, η_i, η_t) (covers reflection, refraction, and TIR); mirrors take full reflectance from the painter without an angle-dependent Fresnel factor.  Default true so hand-constructed test chains and pre-existing back-compat callers behave as dielectrics — the prior implicit assumption.
-			bool				isOpenSheet;	///< DL-619: the vertex lies on a certified open sheet (`RayIntersectionGeometric::bProvablyNoInterior`), crossed by its face rule (DL-345).
-			bool				isExiting;		///< True if ray EXITS the object at this vertex (glass→air).  Set at seed-build time via IOR-stack object tracking.  Refraction-direction code uses this (NOT a local dot test) because a double-sided thin-sheet mesh can be crossed twice with the normal pointing in the same direction at both hits.
+			bool				isReflection;	///< True if ray reflects (mirror, Fresnel reflection, or TIR); false if refracts.
+			bool				canRefract;		///< True for dielectrics (angle-dependent Fresnel); false for pure mirrors/conductors.
+			bool				isOpenSheet;	///< Certified open sheet (`bProvablyNoInterior`), crossed by its face rule (DL-345/DL-619).
+			bool				isExiting;		///< True if exiting object (from IOR-stack tracking, not local dot test, for double-sided sheets).
 			const IObject*		pObject;		///< Object this vertex lies on
 			const IMaterial*	pMaterial;		///< Material at this vertex
 			bool				valid;			///< True if vertex data is complete
@@ -392,123 +333,42 @@ namespace RISE
 			unsigned int	maxChainDepth;			///< Maximum number of specular vertices in chain
 			Scalar			maxGeometricTerm;		///< Clamp for manifold geometric term
 
-			/// Number of independent Newton solves per `EvaluateAtShadingPoint`
-			/// call.  Trial 0 uses the deterministic Snell-traced seed chain
-			/// (for backward compatibility and as a reliable first seed);
-			/// trials 1..N-1 use photon-aided seeds (when photonCount>0) or
-			/// skip otherwise.  Converged chains are deduped by first-vertex
-			/// world-space position and the unique contributions are summed.
-			/// On smooth specular surfaces every trial converges to the same
-			/// root so N>1 is wasted work; on bumpy / displaced surfaces each
-			/// trial can land in a DIFFERENT basin of attraction, uncovering
-			/// caustic paths the single Snell-traced seed misses entirely.
-			/// Default 1 preserves the pre-multi-trial single-solve behavior.
+			/// Independent Newton solves per EvaluateAtShadingPoint call (default 1).
+			/// Trial 0 uses the deterministic Snell seed; trials 1..N-1 use photon seeds
+			/// (if photonCount > 0) and deduplicate unique converged roots by v_0 position.
 			unsigned int	multiTrials;
 
-			/// Number of photons to emit at scene-prep time to build the
-			/// photon-aided seed map.  0 disables the photon pass; trials
-			/// 1..N-1 then have nothing to draw from and the solver behaves
-			/// as if multiTrials==1 for those pixels (trial 0's deterministic
-			/// Snell seed is the only contribution).
-			///
-			/// When > 0 the rasterizer owns an SMSPhotonMap built in
-			/// PreRenderSetup; photons are deposited at their first
-			/// diffuse-after-specular landing and each stored record
-			/// remembers the FIRST specular-caster entry point as a known-
-			/// good Newton seed.  Multi-trial queries the map by shading-
-			/// point position to pull only seeds whose photons landed in
-			/// the same neighborhood (fixed-radius kd-tree query).
+			/// Photons emitted in PreRenderSetup to build SMSPhotonMap (0 disables).
+			/// Stored records keep first specular entry points as fixed-radius kd-tree seeds.
 			unsigned int	photonCount;
 
-			/// World-space search radius for photon-seed lookup.  0 lets
-			/// the photon map auto-compute a sensible default from the
-			/// bounding box of photon landing positions (≈ 0.01 × bbox
-			/// diagonal — mirrors VCM's auto merge radius heuristic).
+			/// World-space search radius for photon-seed lookup (0 = auto ~0.01 * bbox diag).
 			Scalar			photonSearchRadius;
 
-			/// Per-shading-point cap on the number of photon seeds fed to
-			/// Newton.  After QuerySeeds returns the kd-tree neighbours,
-			/// the consumer randomly subsamples down to this count before
-			/// running Newton on each — so dense regions of the photon
-			/// map don't blow up per-pixel Newton-solve cost.  0 disables
-			/// the cap (consume every queried photon — useful for
-			/// convergence studies and unbiased-mode references).
-			///
-			/// Default 16 matches Weisstein 2024 PMS's typical
-			/// `M_photon ∈ [8, 32]` and keeps the per-pixel cost
-			/// proportional to the existing `multiTrials` budget rather
-			/// than to the kd-tree photon density.  Without the cap, a
-			/// shading point near a focused caustic can pull hundreds of
-			/// photons out of the kd-tree and pay 100×+ Newton-solve
-			/// overhead for no measurable variance reduction (the extra
-			/// photons mostly converge to roots already deduped against
-			/// earlier seeds).
+			/// Per-shading-point cap on photon seeds fed to Newton (default 16; 0 = uncapped).
+			/// Excess kd-tree neighbors are randomly subsampled.
 			unsigned int	maxPhotonSeedsPerShadingPoint;
 
-			/// Two-stage Newton solver (Zeltner 2020 §5).  When enabled,
-			/// `Solve` first runs Newton on a smoothed reference surface
-			/// (smoothing = 1: the underlying analytical base, no displacement
-			/// or normal-map detail), then refines on the actual surface
-			/// (smoothing = 0).  Gets Newton out of the C1-discontinuity-
-			/// induced plateau on Phong-shaded triangle meshes.  No-op for
-			/// scenes whose specular geometry doesn't expose a smoothing-
-			/// aware analytical query (`IGeometry::ComputeAnalyticalDerivatives`).
-			/// Default false — opt-in via the rasterizer's `sms_two_stage`
-			/// parameter.  See `docs/SMS_TWO_STAGE_SOLVER.md`.
+			/// Two-stage Newton solver (Zeltner 2020 §5; `sms_two_stage`, default false):
+			/// solves on smoothing=1 analytical base then refines on smoothing=0.
+			/// No-op unless geometry exposes `ComputeAnalyticalDerivatives`. See docs/SMS_TWO_STAGE_SOLVER.md.
 			bool			twoStage;
 
-			/// Levenberg-Marquardt damping in `NewtonSolve`.  Damps the
-			/// Jacobian's diagonal by `λ × mean(|J_ii|)` between Newton
-			/// iterations: λ shrinks on accepted line-search steps (toward
-			/// pure Newton, quadratic convergence near a root), grows on
-			/// rejected ones (toward gradient descent, escapes plateaus
-			/// where Newton's J⁻¹·C direction is unreliable).  Variant:
-			/// damped Newton on the original `J`, not full Marquardt-style
-			/// `(JᵀJ + λ·diag(JᵀJ))Δ = JᵀC` normal equations — keeps the
-			/// existing block-tridiagonal solver path intact.
-			///
-			/// Default false (opt-in).  Recovers ~5pp Newton-fail rate
-			/// on the displaced Veach egg sweep at the cost of ~50-100%
-			/// more solver work per shading point on heavy-displacement
-			/// scenes — turn on only when you've confirmed the scene
-			/// benefits.  Negligible cost on smooth geometry.  See
-			/// `docs/SMS_LEVENBERG_MARQUARDT.md`.
+			/// Damped-Newton Levenberg-Marquardt diagonal damping `λ * mean(|J_ii|)` on J
+			/// (default false; preserves block-tridiagonal solve). See docs/SMS_LEVENBERG_MARQUARDT.md.
 			bool			useLevenbergMarquardt;
 
-			/// Seeding strategy for `EvaluateAtShadingPoint`.
-			///
-			///   `Snell` (default): trace a ray from the shading point toward
-			///   the sampled light, refracting at every specular surface
-			///   (RISE legacy).  Chain length emerges naturally from the
-			///   trace; the seed pdf is unknown analytically.
-			///
-			///   `Uniform`: iterate the cached `mSpecularCasters` list and
-			///   draw a uniform-area sample on each caster's surface;
-			///   continue the chain via SnellContinueChain.  Matches
-			///   Mitsuba's manifold_ss / manifold_ms.  Required for
-			///   principled geometric Bernoulli `1/p` estimation
-			///   (Zeltner 2020 §4.3 Algorithm 2 / §4.2).
-			///
-			/// Default `Snell` preserves backward compatibility.  Opt in
-			/// via the rasterizer's `sms_seeding "uniform"` parameter.
-			/// See `docs/SMS.md`.
+			/// Seeding strategy (default Snell; see docs/SMS.md):
+			///   Snell:   trace from shading point toward light (RISE legacy).
+			///   Uniform: uniform-area sample per caster in `mSpecularCasters` + SnellContinueChain
+			///            (Mitsuba manifold_ss/ms; required for geometric Bernoulli 1/p).
 			enum SeedingMode {
 				eSeedingSnell   = 0,
 				eSeedingUniform = 1
 			};
 			SeedingMode		seedingMode;
 
-			/// Mitsuba `m_config.bounces` analogue: REQUIRED chain length.
-			/// When > 0, the seed-builder traces EXACTLY this many specular
-			/// hits and rejects seeds that don't reach the target.  Active
-			/// in BOTH snell and uniform modes — they share the same
-			/// length-cap rule.  Default 0 = "no target": snell mode
-			/// discovers chain length via the emitter-projection cap,
-			/// uniform mode caps at `maxChainDepth`.  Recommended for
-			/// `sms_seeding Uniform`, where without it the seed-chain
-			/// length is variable and produces wildly different topology
-			/// than the natural caustic (k=1, 3, 4 instead of k=2 for
-			/// a glass shell).  See `SMSConfig::targetBounces`.
+			/// Required specular chain length (0 = auto/maxChainDepth; recommended >0 for Uniform seeding).
 			unsigned int	targetBounces;
 
 			ManifoldSolverConfig() :
@@ -714,27 +574,13 @@ namespace RISE
             mutable std::atomic<bool> mediumExtendedWarningEmitted{false};
 			LightSampler* pLightSampler;
 
-			/// Optional photon-aided seeding pass.  Set once by the
-			/// rasterizer in PreRenderSetup (pointer borrowed, not owned
-			/// — the rasterizer keeps the storage alive for the full
-			/// render).  Null means no photon pass was run; multi-trial
-			/// falls back to the deterministic Snell seed only.
+			/// Optional borrowed photon-seed map set once in PreRenderSetup (null = Snell seed only).
 			const SMSPhotonMap* pPhotonMap;
 
-			/// Cached list of objects whose material reports `isSpecular`.
-			/// Populated once at scene-prep time by the rasterizer (calls
-			/// EnumerateSpecularCasters on the scene, then SetSpecular-
-			/// Casters here).  Read-only during rendering — concurrent
-			/// render workers traverse it without locking.  Consumed by
-			/// uniform-on-shape seeding (Mitsuba-style; opt-in via
-			/// `ManifoldSolverConfig::seedingMode`).  Empty if the
-			/// rasterizer hasn't populated it.
+			/// Read-only cached specular-caster list populated at scene-prep for uniform seeding.
 			std::vector<const IObject*> mSpecularCasters;
 
-			/// True when `mSpecularCasters` holds a pure-mirror caster, so
-			/// RGB snell mode adds random supplemental seeds (see
-			/// EvaluateAtShadingPoint) and its root set is not a
-			/// deterministic function of (anchor, emitter point).
+			/// True when `mSpecularCasters` contains a pure mirror (RGB snell mode adds random seeds).
 			bool mHasPureMirrorCaster;
 
 			virtual ~ManifoldSolver();
@@ -882,25 +728,14 @@ namespace RISE
 				const IORStack* pStartStack = nullptr, ISampler* alphaSampler = nullptr	///< DL-290: the RECEIVER's live IOR stack; the walk starts in that medium.  Null = air (the pre-DL-290 behaviour).
 				) const;
 
-			/// Single seed chain plus a proposal pdf (always 1.0 since
-			/// SMS path-tree branching was excised in 2026-05).  Field
-			/// retained for legacy compatibility with consumer code that
-			/// divides by `proposalPdf` — divisor is now always 1.0,
-			/// preserving the unbiased estimator without changing the
-			/// downstream formula.
+			/// Single seed chain with `proposalPdf` (always 1.0; retained for uniform-mode callers).
 			struct SeedChainResult {
 				std::vector<ManifoldVertex> chain;
 				Scalar proposalPdf = 1.0;
 			};
 
-			/// Wrapper around `BuildSeedChain` that packages the single
-			/// chain in the legacy `SeedChainResult` vector format with
-			/// `proposalPdf = 1.0`.  Retained because uniform-mode SMS
-			/// call sites consume `std::vector<SeedChainResult>` (the
-			/// pre-2026-05 shape that supported Fresnel-branched
-			/// siblings).  Per Mitsuba SOTA convention, single-chain
-			/// stochastic seeds + `multi_trials` provide variance
-			/// reduction on multi-modal scenes.
+			/// Packages a single `BuildSeedChain` result into `std::vector<SeedChainResult>`
+			/// with `proposalPdf = 1.0` for uniform-mode call sites.
 			unsigned int BuildSeedChainBranching(
 				const Point3& start,
 				const Point3& end,
@@ -912,39 +747,11 @@ namespace RISE
 				const IORStack* pStartStack = nullptr	///< DL-290: see BuildSeedChain.
 				) const;
 
-			/// Continues a manifold-seed chain by Snell-tracing a ray from
-			/// `currentOrigin` along `dir`, picking up specular hits as
-			/// ManifoldVertex entries in `chain`.  Stops at the first
-			/// non-specular hit, when no further intersection is found,
-			/// when total traced distance exceeds `maxDist * 3`, or when
-			/// the chain reaches `config.maxChainDepth`.
-			///
-			/// State arguments are mutated in-place — `currentIOR` and
-			/// `seedIor` reflect the post-trace medium / IOR-stack.
-			///
-			/// Used by both `BuildSeedChain` (the legacy "Snell-trace from
-			/// shading point toward light" entry) and the Mitsuba-style
-			/// uniform-on-shape SMS seeding path (where the first vertex
-			/// is sampled uniformly on a caster and subsequent vertices
-			/// are discovered by this routine).
-			///
-			/// \param currentOrigin  [in/out] Starting world-space point;
-			///                                set to the last hit on return.
-			/// \param dir            [in/out] Initial unit direction;
-			///                                updated to the post-Snell-trace
-			///                                direction after the last hit.
-			/// \param maxDist        Total expected distance (for the safety
-			///                       cutoff `range > maxDist*3`).
-			/// \param currentIOR     [in/out] Incident-medium IOR;
-			///                                updated as the trace pushes/pops
-			///                                IOR boundaries.
-			/// \param seedIor        [in/out] Per-object IOR stack;
-			///                                updated as above.
-			/// \param scene          Scene for ray casting.
-			/// \param caster         Ray caster (currently unused — reserved
-			///                       for visibility queries through occluders).
-			/// \param chain          [in/out] Vertices appended (not cleared).
-			/// \return Number of vertices appended in this call.
+			/// Continues a seed chain by Snell-tracing from `(currentOrigin, dir)`,
+			/// appending specular hits to `chain` and mutating `currentOrigin`, `dir`,
+			/// `currentIOR`, and `seedIor` in place. Stops at non-specular hit, miss,
+			/// `range > maxDist*3`, or `config.maxChainDepth`.
+			/// \return Number of vertices appended.
 			unsigned int SnellContinueChain(
 				Point3& currentOrigin,
 				Vector3& dir,
@@ -1004,21 +811,10 @@ namespace RISE
 				const Scalar nm
 				) const;
 
-			/// DL-419: participating-medium transmittance along every
-			/// segment of a solved chain, receiver (`startPoint`) -> v_1 ->
-			/// ... -> v_k -> light (`endPoint`).  The medium of each segment
-			/// follows the walk's own convention (MediumTracking): the
-			/// innermost enclosing object's interior medium, else the
-			/// scene's global medium.  The receiver's enclosing objects come
-			/// from `pIorStack` (null: the global medium only); a
-			/// TRANSMISSIVE chain vertex enters (`!isExiting`) or leaves
-			/// (`isExiting`) its object, a reflection changes nothing; a
-			/// medium boundary crossed strictly inside a segment pushes or
-			/// pops by its true geometric facing, as the NEE shadow walk
-			/// does.  Homogeneous media are closed form; a heterogeneous
-			/// medium's EvalTransmittance is the same per-call estimator PT
-			/// NEE uses (it consumes no sampler dimension).  Returns exactly
-			/// 1 (no ray cast) when the scene has no medium at all.
+			/// Participating-medium transmittance along receiver -> v_1 -> ... -> v_k -> light
+			/// (DL-419), following `MediumTracking` from `pIorStack` (null = global medium only).
+			/// Transmissive chain vertices enter/exit their object; interior medium boundaries
+			/// cross by geometric facing; returns 1 without ray casts if scene has no media.
 			RISEPel EvaluateChainMediumTransmittance(
 				const Point3& startPoint,
 				const Point3& endPoint,
@@ -1088,29 +884,11 @@ namespace RISE
                 const RayIntersectionGeometric* anchorContext = nullptr, bool forceLegacy = false
 				) const;
 
-			/// Uniform-on-shape SMS evaluator (Mitsuba-faithful single- /
-			/// multi-scatter; matches `manifold_ss::specular_manifold_sampling`
-			/// for k=1 and `manifold_ms::specular_manifold_sampling` via
-			/// SnellContinueChain for k>=2).
-			///
-			/// Iterates the cached `mSpecularCasters`.  For each caster:
-			///   1. Uniform-area sample on the caster surface.
-			///   2. Snell-traced seed chain shading-point→sampled-point
-			///      (this naturally produces k>=2 chains by following any
-			///      subsequent specular hits, and trips the
-			///      caster-mismatch-rejection when the visibility ray
-			///      lands somewhere unexpected).
-			///   3. Newton solve toward the same `lightSample` as the
-			///      Snell-mode path.
-			///   4. Per-caster contribution accumulated unweighted
-			///      (Mitsuba sums one independent estimate per caster
-			///      shape; no MIS over caster choice — see manifold_ss.cpp
-			///      lines 32-42).
-			///
-			/// Selected at runtime by `config.seedingMode == eSeedingUniform`.
-			/// Biased mode sums unique roots from multiTrials area seeds and
-			/// optional photon seeds. Unbiased mode (also selected for alpha
-			/// coverage) uses Bernoulli `1/p` with area seeds only.
+			/// Uniform-on-shape SMS evaluator (selected when `seedingMode == eSeedingUniform`;
+			/// Mitsuba manifold_ss/ms). Draws uniform-area seeds per caster in `mSpecularCasters`,
+			/// continues via `SnellContinueChain`, and sums per-caster estimates unweighted
+			/// (no caster-choice MIS). Biased mode sums unique roots across multiTrials/photons;
+			/// unbiased mode (and alpha coverage) uses geometric Bernoulli `1/p` with area seeds only.
 			SMSContribution EvaluateAtShadingPointUniform(
 				const Point3& pos,
 				const Vector3& geomNormal,
@@ -1172,26 +950,9 @@ namespace RISE
                 const RayIntersectionGeometric* anchorContext = nullptr, bool forceLegacy = false
 				) const;
 
-			/// Tests whether the external segments of an SMS specular
-			/// chain are unoccluded.  Checks two segments:
-			///   1. shading point -> first specular vertex
-			///   2. last specular vertex -> light source
-			///
-			/// LIMITATION: Inter-specular segments (vertices inside
-			/// the glass body) are NOT tested.  CastShadowRay uses
-			/// the scene's acceleration structure which includes the
-			/// glass geometry itself, so any ray between two glass
-			/// vertices would report a false self-intersection.
-			/// Filtering specular objects from shadow tests would
-			/// require per-object exclusion lists, which is a more
-			/// invasive change.  This means an opaque object placed
-			/// entirely inside a glass body (between two specular
-			/// vertices) would not be caught.  In practice this is
-			/// rare; the common occlusion case (wall between the
-			/// floor and the glass, or between the glass and the
-			/// light) is handled by the external-segment checks.
-			///
-			/// \return True if both external segments are unoccluded.
+			/// Tests whether external segments (shadingPoint -> v_0 and v_{k-1} -> lightPoint)
+			/// are unoccluded. Inter-specular segments inside glass are not tested (scene shadow
+			/// rays would self-intersect the caster).
 			bool CheckChainVisibility(
 				const Point3& shadingPoint,
 				const Point3& lightPoint,
@@ -1251,26 +1012,11 @@ namespace RISE
 				const Scalar nm
 				) const;
 
-			/// Reverses a photon's recorded specular chain (stored in
-			/// photon-direction order: v[0] nearest light, v[k-1] nearest
-			/// diffuse) into an SMS seed chain (receiver-direction order:
-			/// v[0] nearest receiver, v[k-1] nearest light).  Flips
-			/// `isExiting` on refraction-only vertices; reflection-only
-			/// vertices are direction-symmetric so the flag is preserved.
-			///
-			/// Re-queries each vertex's material for `attenuation` /
-			/// `canRefract` (avoids relying on stale photon-deposit data).
-			/// Positive nm also re-queries spectral IOR; zero preserves RGB eta.
-			/// Restores exact UV and object-frame hit coordinates.
-			/// Sets `mv.valid = false` so `Solve` recomputes derivatives.
-			///
-			/// Restores native interface indices recorded by photon transport;
-			/// transmission swaps their order, reflection preserves it.
-			/// Old records with zero indices retain the material/air fallback.
-			/// NM callers must additionally replay wavelength-dependent membership.
-			///
-			/// \return Number of vertices written into `chain`.  Returns 0
-			///         when the photon's chain length is invalid.
+			/// Reverses a photon's specular chain (light->receiver) into an SMS seed
+			/// chain (receiver->light): flips `isExiting` and swaps interface `(etaI, etaT)`
+			/// on refraction vertices, re-queries material attenuation/canRefract (and spectral
+			/// IOR when `nm > 0`), restores UV/objectPosition, and sets `mv.valid = false`.
+			/// \return Vertices written into `chain` (0 if photon chain length is invalid).
 			unsigned int ReversePhotonChainForSeed(
 				const SMSPhoton& photon,
 				std::vector<ManifoldVertex>& chain,
@@ -1278,43 +1024,19 @@ namespace RISE
 				const IORStack* pReceiverStack = 0
 				) const;
 
-			/// DL-619: assigns every vertex's `radianceEtaI` from the chain's
-			/// own interface indices, as the receiver -> light walk's IOR-stack
-			/// top before each crossing: @a receiverTop at the first vertex,
-			/// then the previous REFRACTION's `etaT` (a walk's top after any
-			/// crossing is that crossing's etaT; a reflection leaves the stack
-			/// alone), except at a certified open sheet, which prices from its
-			/// own `etaI` (DL-345).  `SnellContinueChain` records the same
-			/// values from its live stack; this is the form for chains that
-			/// were not built by that walk (photon-seeded chains, the
-			/// wavelength refresh's fallback).
+			/// Assigns each vertex's `radianceEtaI` (DL-619) as the receiver->light
+			/// stack top before each crossing (`receiverTop`, then each refraction's
+			/// `etaT`; certified open sheets use their own `etaI`).
 			static void AssignRadianceEtas(
 				std::vector<ManifoldVertex>& chain,
 				Scalar receiverTop
 				);
 
-			/// Computes a single converged trial's contribution at the
-			/// shading point.  Performs the visibility check, BSDF eval,
-			/// shading-point cosine, light-side cosine + Le, and the SMS
-			/// measure-conversion factor (G_x_v1 * |det dv/dy|).
-			///
-			/// Returns false (and `outContribution = 0`, `outDir = (0,0,0)`)
-			/// for any of the bail-out conditions:
-			///   - Distance to first specular vertex < 1e-8.
-			///   - External-segment visibility blocked.
-			///   - BSDF max channel <= 0 at the shading point.
-			///   - cos at shading point <= 0.
-			///   - Distance from last specular to light < 1e-8 / cos at
-			///     light <= 0 for area lights.
-			///
-			/// Used by both `EvaluateAtShadingPoint` (snell mode) and
-			/// `EvaluateAtShadingPointUniform` (Mitsuba-faithful uniform
-			/// mode), and by both their photon-aided extension paths.
-			/// The spectral counterpart `ComputeTrialContributionNM`
-			/// performs the same logic on `Scalar` per-wavelength.
-			/// outSmsGeometric reports the raw factor for the caller's sum clamp.
-			/// clampGeometric applies a positive maxGeometricTerm to this trial;
-			/// nonpositive limits disable clamping, as in the sum-clamp paths.
+			/// Evaluates one converged trial's contribution (external visibility, BSDF,
+			/// endpoint cosines, Le, and `G_x_v1 * |det dv/dy|`). Returns false on
+			/// occlusion, zero/negative cosines, near-zero segment, or zero BSDF.
+			/// `outSmsGeometric` reports the unclamped geometric factor; `clampGeometric`
+			/// applies `maxGeometricTerm` (>0) per trial when true.
 			bool ComputeTrialContribution(
 				const Point3& pos,
 				const Vector3& geomNormal,
@@ -1483,20 +1205,10 @@ namespace RISE
 				std::vector<Scalar>& C
 				) const;
 
-			/// Builds the block-tridiagonal Jacobian dC/dx.
-			/// Stored as arrays of 2x2 blocks: diag[k], upper[k-1], lower[k-1].
-			/// Each block is stored as 4 scalars in row-major order.
-			///
-			/// `includeCurvature`: if true (default), include the ds_du
-			/// tangent-frame-rotation terms — required for the measure-
-			/// conversion |det| to reflect surface curvature, hence for
-			/// correct caustic focusing in the contribution formula.  If
-			/// false, skip them — useful for Newton iteration stability
-			/// on meshes where the derivatives jump discontinuously
-			/// across triangle boundaries.  The resulting Jacobian is
-			/// APPROXIMATE w.r.t. the true dC/du (treats the surface as
-			/// locally flat) but converges more reliably under line
-			/// search.
+			/// Builds block-tridiagonal Jacobian dC/dx (row-major 2x2 blocks:
+			/// diag[k], upper[k-1], lower[k-1]). `includeCurvature = true`
+			/// includes tangent-frame rotation terms (required for caustic focusing
+			/// |det|); `false` treats surface as locally flat for mesh Newton stability.
 			void BuildJacobian(
 				const std::vector<ManifoldVertex>& chain,
 				const Point3& fixedStart,
@@ -1550,17 +1262,9 @@ namespace RISE
 				const Vector3& lightNormal
 				) const;
 
-			/// Updates a vertex position on its surface by stepping along
-			/// the surface parameterization by (du, dv), then recomputes
-			/// all derivative data via ray intersection.
-			///
-			/// `smoothing` ∈ [0, 1] — when > 0 and the vertex's object
-			/// supports `ComputeAnalyticalDerivatives`, takes the step in
-			/// (u, v) space directly and re-evaluates the smoothing-aware
-			/// analytical surface, bypassing the mesh ray-cast snap.
-			/// `smoothing = 0` (default) preserves the legacy mesh-snap
-			/// behaviour.  Used by SMS two-stage solver — see
-			/// `docs/SMS_TWO_STAGE_SOLVER.md`.
+			/// Steps a vertex by `(du, dv)` on its surface and refreshes derivatives.
+			/// When `smoothing > 0` and geometry supports `ComputeAnalyticalDerivatives`,
+			/// steps directly in (u, v) on the smoothed analytical surface (docs/SMS_TWO_STAGE_SOLVER.md).
 			bool UpdateVertexOnSurface(
 				ManifoldVertex& vertex,
 				Scalar du,
@@ -1568,29 +1272,16 @@ namespace RISE
 				Scalar smoothing = 0.0, bool referenceRefinement = false
 				) const;
 
-			/// Fills in surface derivative data (dpdu, dpdv, dndu, dndv)
-			/// for a vertex by querying its object's geometry with proper
-			/// world/object space transforms.
-			///
-			/// `smoothing` ∈ [0, 1] — when > 0 and the vertex's object
-			/// supports `ComputeAnalyticalDerivatives`, queries the
-			/// smoothing-aware analytical path (overwriting position,
-			/// normal, and derivatives at `vertex.uv`).  `smoothing = 0`
-			/// (default) preserves the legacy mesh-FD-probe behaviour.
+			/// Populates world-space `(dpdu, dpdv, dndu, dndv)` for `vertex` (using
+			/// analytical smoothed surface when `smoothing > 0` and supported).
 			bool ComputeVertexDerivatives(
 				ManifoldVertex& vertex,
 				Scalar smoothing = 0.0, bool referenceRefinement = false
 				) const;
 
-			/// Make dpdu, dpdv an orthonormal basis of the tangent plane
-			/// at vertex.normal (Gram-Schmidt + unit-length normalization).
-			/// Scales dndu, dndv consistently so dn/du remains the rate of
-			/// change per unit displacement in the (new, unit) dpdu direction.
-			/// Required because geometry-supplied dpdu/dpdv (e.g. triangle
-			/// edges) need not be orthogonal or unit — if we fed those into
-			/// BuildJacobian unchanged, |det| would vary with the arbitrary
-			/// choice of parameterization instead of tracking the physical
-			/// caustic geometry.
+			/// Gram-Schmidt orthonormalizes `(dpdu, dpdv)` in the tangent plane of
+			/// `vertex.normal` and rescales `(dndu, dndv)` consistently so Jacobian
+			/// determinants are parameterization-invariant.
 			void OrthonormalizeTangentFrame(
 				ManifoldVertex& vertex
 				) const;

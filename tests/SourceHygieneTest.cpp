@@ -3443,7 +3443,7 @@ int main()
 
 			const std::vector<std::string> allowedKw = arrayKeywords( "Allowed" );
 			const std::vector<std::string> blockedKw = arrayKeywords( "Blocked" );
-			Check( allowedKw.size() == 4 && blockedKw.size() == 8 &&
+			Check( allowedKw.size() == 4 && blockedKw.size() == 9 &&   // 9: + hyperspectral_radiometric_rasterizer (HyLIoS P6b)
 			       sessionSrc.find( "kAgentUngatedUtilityRasterizers_[] = {" ) == std::string::npos,
 			       "R1c allowlist parity: parsed the TWO policy arrays out of AgentSession.cpp, and the "
 			       "retired ungated-utility array is gone "

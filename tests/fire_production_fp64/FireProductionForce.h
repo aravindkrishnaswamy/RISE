@@ -4,6 +4,16 @@
 //
 //  FireProductionForce.h - strict-binary32 production force primitives
 //
+//  Declares the staggered MAC nonpressure momentum force operators
+//  (Vreman LES eddy viscosity, Newtonian viscous stress divergence,
+//  Boussinesq relative gravity, phase-source momentum rate, explicit
+//  viscous substepping), monitored-manifold timestep/token authority,
+//  and the Section 3.7 coupled projected-Heun (R0/R1/R2) step owners.
+//  Backends: CPU oracle/owner (FireProductionForce.cpp), Apple Metal
+//  force kernels (FireProductionForceMac.mm) & resident step owner,
+//  and non-Metal fail-closed stub (FireProductionForceUnsupported.cpp).
+//  Units: SI (m, s, kg/m^3, m^2/s, Pa*s, kg/(m^2*s), kg/(m^2*s^2)).
+//
 //  License Information: Please see the attached LICENSE.TXT file
 //
 //////////////////////////////////////////////////////////////////////
@@ -55,6 +65,8 @@ namespace RISEFireProductionFP64
 	//! owner and the production manifold owner use the same rejection budget.
 	constexpr unsigned int FireStepRejectionRetryCap=20u;
 
+	//! Cell-centered velocity gradient tensor (row-major du_j/dx_i in 1/s),
+	//! directional filter widths (m), and Vreman model constant c_v.
 	struct FireProductionVremanInput
 	{
 		std::array<double,9> velocityGradientPerS;
@@ -75,6 +87,8 @@ namespace RISEFireProductionFP64
 		double& eddyViscosityM2PerS,
 		std::string* error=0 );
 
+	//! Certified explicit viscous substepping schedule (1..8 equal fp32 substeps)
+	//! guaranteeing represented dt_sub * Lambda <= 2.0 via outward rounding.
 	struct FireProductionViscousSchedule
 	{
 		std::uint32_t substepCount;
@@ -95,6 +109,8 @@ namespace RISEFireProductionFP64
 		FireProductionViscousSchedule& schedule,
 		std::string* error=0 );
 
+	//! Inputs for beginning-state frozen-viscosity MAC force evaluation and
+	//! explicit viscous substepping (cell densities/nu and staggered face fields).
 	struct FireProductionFrozenForceRequest
 	{
 		FireProductionProjectionShape shape;
@@ -116,6 +132,8 @@ namespace RISEFireProductionFP64
 		}
 	};
 
+	//! Cell-centered eddy/effective viscosities and staggered MAC face force
+	//! rates (viscous, relative buoyancy) plus one-step gravity increment.
 	struct FireProductionFrozenForceResult
 	{
 		std::vector<double> eddyKinematicViscosityM2PerS;
@@ -421,6 +439,9 @@ namespace RISEFireProductionFP64
 		std::vector<double>& gasDensityKGPerM3,
 		std::string* error=0 );
 
+	//! Complete stage outputs for one projected-Heun step: accepted Q^{n+1},
+	//! projected MAC momentum/velocity, step-average pressure, EOS gates,
+	//! R0/R1/R2 coupled stage records, and an opaque owner acceptance seal.
 	struct FireProductionProjectedHeunOwnerResult
 	{
 		std::vector<double> conservativeValues;
@@ -996,6 +1017,8 @@ namespace RISEFireProductionFP64
 	struct FireProductionStableTimeStep;
 	struct FireProductionResidentStepResult;
 
+	//! Sealed single-step manifold observation (dt, max generation, drain
+	//! fraction, payload digests) carried across accepted steps and checkpoints.
 	class FireProductionAcceptedManifoldObservation
 	{
 	public:

@@ -1,0 +1,352 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#                                                                                                           #
+#   File:           conjurer.RISEscene                                                                      #
+#   Idea:           A conjurer's canopy.  A square of champagne silk hangs by its four corners over an      #
+#                   empty stage; a gilded cube and an emerald ball are tossed up into it from either side,  #
+#                   meet in the silk with a clack, punch it into peaks, are thrown back down by it and      #
+#                   bounce across the boards while the canopy billows and settles.  A warm spotlight pool,  #
+#                   footlights, a cool rim behind.                                                          #
+#   Simulations:    rigid.bodies `props` (a sphere and a box: analytic shapes for their mass, their         #
+#                   contact with each other and with the stage; tossed with velocity and spin) and          #
+#                   cloth.shell `silk` (silk pinned at its corners, barrier contact, self-collision) in one #
+#                   simulation_group `flourish`, coupled implicitly and sub-iterated: each prop's coupling  #
+#                   surface is its scene object's mesh (`surface <object>`, M9), a mesh collider of the     #
+#                   cloth moved by the body's state (`rigid_surface`), and the cloth's contact reaction     #
+#                   loads the bodies (`contact_reaction`): the silk is lifted by the props, throws them     #
+#                   back, and the props collide with each other (body-body contact) on the way.            #
+#   Limits:         a free silk dropped over the props and pinched between a landing prop and the stage     #
+#                   failed the cloth's Newton solve in five attempts (docs/SIMULATION_SHOWCASE.md), so the  #
+#                   silk is held above them; `on_non_convergence halve` for the coupling (M9's advice).     #
+#   Frame:          y up, metres.                                                                           #
+#   Time:           3 s at 30 fps (91 frames).                                                              #
+#   Proof/final:    a value followed by `# proof <value>` is the final setting; scripts/                    #
+#                   simulation_showcase.sh proof substitutes the proof value.                               #
+#   Bake/render:    scripts/simulation_showcase.sh proof|final conjurer   (docs/SIMULATION_SHOWCASE.md)      #
+#   showcase:       hero 22 frames 8 11 18 60                                                               #
+#                                                                                                           #
+#############################################################################################################
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultPathTracing
+}
+
+uniformcolor_painter
+{
+	name			pnt_env
+	color			0.2 0.2 0.25
+}
+
+pathtracing_pel_rasterizer
+{
+	samples			512		# proof 64
+	oidn_denoise	TRUE
+	radiance_map	pnt_env
+	radiance_scale	0.08
+	radiance_background	FALSE
+}
+
+file_rasterizeroutput
+{
+	pattern			rendered/showcase/conjurer/final/conjurer		# proof rendered/showcase/conjurer/proof/conjurer
+	multiple		TRUE
+	type			PNG
+	bpp				8
+	color_space		sRGB
+	display_transform	aces
+}
+
+film
+{
+	width			1920		# proof 640
+	height			1080		# proof 360
+}
+
+animation_options
+{
+	time_start		0
+	time_end		3
+	num_frames		91
+}
+
+pinhole_camera
+{
+	location		0.25 0.62 2.1
+	lookat			0.0 0.76 0.0
+	up				0 1 0
+	fov				36.0
+}
+
+#############################################################################################################
+# Simulations
+
+rigid_simulation
+{
+	name			props
+	frames			91
+	substeps		16
+	body			ball sphere 0.105 mass 1.0 at -0.24 0.2 0.02 velocity 0.5 4.6 0.0 spin 2 0 -3 restitution 0.6 friction 0.4 surface ball
+	body			cube box 0.17 0.17 0.17 mass 1.2 at 0.26 0.2 -0.03 velocity -0.5 4.4 0.03 spin 4 2 5 restitution 0.6 friction 0.4 surface cube
+	plane			0 0 0 0 1 0 restitution 0.45 friction 0.5
+}
+
+cloth_simulation
+{
+	name			silk
+	frames			91
+	size_u			1.0
+	size_v			1.0
+	vertices_u		49		# proof 31
+	vertices_v		49		# proof 31
+	origin			-0.5 1.0 -0.5
+	axis_u			1 0 0
+	axis_v			0 0 1
+	pin				u0v0
+	pin				u1v0
+	pin				u0v1
+	pin				u1v1
+	material		silk-lightweight
+	substeps		16
+	newton_iterations	100
+	self_collision	TRUE
+	collider		plane 0 0 0 0 1 0
+	collider_port	ball collider_ball
+	collider_port	cube collider_cube
+}
+
+simulation_group
+{
+	name			flourish
+	members			props
+	members			silk
+	connect			props.body_state -> silk.collider_ball via rigid_surface body=ball
+	connect			props.body_state -> silk.collider_cube via rigid_surface body=cube
+	connect			silk.collider_reaction -> props.body_load via contact_reaction targets=ball,cube
+	policy			implicit
+	order			gauss-seidel
+	member_order	props silk
+	tolerance		1e-6
+	absolute_tolerance	1e-4
+	sub_iterations	40
+	on_non_convergence	halve
+	minimum_macro_step	0.002
+}
+
+#############################################################################################################
+# Materials
+
+uniformcolor_painter
+{
+	name			pnt_silk_warp
+	color			0.80 0.72 0.55
+}
+
+uniformcolor_painter
+{
+	name			pnt_silk_weft
+	color			0.90 0.84 0.70
+}
+
+weave_material
+{
+	name			mat_silk
+	fabric			silk
+	warp_color		pnt_silk_warp
+	weft_color		pnt_silk_weft
+	transmission	thin
+	sheer			0.25
+	warp_transmit	0.45
+	weft_transmit	0.45
+}
+
+uniformcolor_painter
+{
+	name			pnt_gold
+	color			1.0 0.78 0.34
+}
+
+uniformcolor_painter
+{
+	name			pnt_gold_diffuse
+	color			0.02 0.015 0.005
+}
+
+ggx_material
+{
+	name			mat_gold
+	rd				pnt_gold_diffuse
+	rs				pnt_gold
+	alphax			0.22
+	alphay			0.22
+	fresnel_mode	schlick_f0
+}
+
+uniformcolor_painter
+{
+	name			pnt_emerald
+	color			0.04 0.32 0.20
+}
+
+lambertian_material
+{
+	name			mat_emerald_base
+	reflectance		pnt_emerald
+}
+
+coated_material
+{
+	name			mat_emerald
+	base			mat_emerald_base
+	coat_ior		1.5
+	coat_roughness	0.06
+}
+
+uniformcolor_painter
+{
+	name			pnt_stage
+	color			0.10 0.06 0.04
+}
+
+orennayar_material
+{
+	name			mat_stage_base
+	reflectance		pnt_stage
+	roughness		0.5
+}
+
+coated_material
+{
+	name			mat_stage
+	base			mat_stage_base
+	coat_ior		1.5
+	coat_roughness	0.18
+}
+
+uniformcolor_painter
+{
+	name			pnt_curtain
+	color			0.10 0.015 0.03
+}
+
+orennayar_material
+{
+	name			mat_curtain
+	reflectance		pnt_curtain
+	roughness		0.9
+}
+
+#############################################################################################################
+# Objects
+
+simulated_mesh_geometry
+{
+	name			geo_silk
+	source			silk.surface
+	double_sided	TRUE
+}
+
+standard_object
+{
+	name			silk_object
+	geometry		geo_silk
+	material		mat_silk
+}
+
+sphere_geometry
+{
+	name			geo_ball
+	radius			0.105
+}
+
+standard_object
+{
+	name			ball
+	geometry		geo_ball
+	material		mat_emerald
+	position		-0.24 0.2 0.02
+	transform_source	props.bodies[ball]
+}
+
+box_geometry
+{
+	name			geo_cube
+	width			0.17
+	height			0.17
+	depth			0.17
+}
+
+standard_object
+{
+	name			cube
+	geometry		geo_cube
+	material		mat_gold
+	position		0.26 0.2 -0.03
+	transform_source	props.bodies[cube]
+}
+
+clippedplane_geometry
+{
+	name			geo_stage
+	pta				-6 0 -6
+	ptb				 6 0 -6
+	ptc				 6 0  6
+	ptd				-6 0  6
+}
+
+standard_object
+{
+	name			stage
+	geometry		geo_stage
+	material		mat_stage
+}
+
+clippedplane_geometry
+{
+	name			geo_backcloth
+	pta				-6 0 -1.6
+	ptb				 6 0 -1.6
+	ptc				 6 4 -1.6
+	ptd				-6 4 -1.6
+}
+
+standard_object
+{
+	name			backcloth
+	geometry		geo_backcloth
+	material		mat_curtain
+}
+
+# A hard spotlight from above front, footlights, and a cool rim from behind.
+spot_light
+{
+	name			spot
+	position		0.3 2.2 2.6
+	target			0 0.2 -0.2
+	color			1.0 0.9 0.75
+	power			110
+	inner			16
+	outer			26
+}
+
+# Footlights: a warm strip at the stage's front edge, lighting the props and the canopy's underside.
+rect_light
+{
+	name			footlights
+	center			0.0 0.04 1.1
+	size			1.4 0.08
+	facing			0 0.55 -1
+	color			1.0 0.8 0.55
+	exitance		40
+}
+
+rect_light
+{
+	name			rim
+	center			0.0 2.3 -1.0
+	size			1.6 0.5
+	facing			0 -1 0.9
+	color			0.65 0.75 1.0
+	exitance		45
+}

@@ -2,6 +2,16 @@
 //
 //  FireProductionProjection.h - one-pass fp32 production MAC projection
 //
+//  Declares the variable-density staggered MAC pressure projection
+//  solver (div((1/rho) grad p) = -(div(u*) - S_div) / dt) using a
+//  geometric V-cycle multigrid schedule in strict fp32.
+//  Backends: CPU oracle (FireProductionProjection.cpp), Apple Metal
+//  resident kernels (FireProductionProjectionMac.mm), and non-Metal
+//  fail-closed stub (FireProductionProjectionUnsupported.cpp).
+//  Grid layout: cells (z*ny+y)*nx+x; MAC faces x=(nx+1)*ny*nz,
+//  y=nx*(ny+1)*nz, z=nx*ny*(nz+1); sides {0:-x,1:+x,2:-y,3:+y,4:-z,5:+z}.
+//  Units: SI (m, s, kg/m^3, m/s, kg/(m^2*s), Pa, 1/s).
+//
 //  License Information: Please see the attached LICENSE.TXT file
 //
 //////////////////////////////////////////////////////////////////////
@@ -23,6 +33,7 @@ namespace RISE
 {
 	//! Identity of the exact source compiled by the resident projection library.
 	std::string FireProductionProjectionMetalKernelSourceSHA256();
+	//! Per-side domain boundary condition on the 6 faces {-x,+x,-y,+y,-z,+z}.
 	enum FireProductionProjectionBoundary
 	{
 		FireProductionProjectionPeriodic,
@@ -60,6 +71,7 @@ namespace RISE
 		FireProductionProjectionDeriveEndpointOpenClassification
 	};
 
+	//! Uniform-grid dimensions (nx,ny,nz in [4,1024]) and cubic cell width dx (m).
 	struct FireProductionProjectionShape
 	{
 		std::size_t nx,ny,nz;
@@ -69,6 +81,9 @@ namespace RISE
 		std::size_t CellCount() const {return nx*ny*nz;}
 	};
 
+	//! Complete inputs for one variable-density MAC projection solve: cell gas
+	//! density, provisional face momenta, divergence target, boundaries, optional
+	//! lower-z burner inlet, and open-boundary classification/head policies.
 	struct FireProductionProjectionRequest
 	{
 		FireProductionProjectionShape shape;
@@ -108,6 +123,9 @@ namespace RISE
 		}
 	};
 
+	//! Published outputs of a MAC projection: face densities, corrected MAC
+	//! velocities/momenta, cell pressure, open-boundary inflow class, residual
+	//! band validation metrics, and resident Metal allocation/transfer telemetry.
 	struct FireProductionProjectionResult
 	{
 		std::array<std::vector<float>,3> faceDensityKGPerM3;
@@ -145,9 +163,11 @@ namespace RISE
 			deviceElapsedMS(0.0),deviceStartTimeS(0.0),deviceEndTimeS(0.0) {}
 	};
 
+	//! Number of staggered MAC faces normal to `axis` (0:x, 1:y, 2:z).
 	std::size_t FireProductionProjectionFaceCount(
 		const FireProductionProjectionShape& shape, unsigned int axis );
 
+	//! Conservative peak host + 16-KiB-aligned Metal working-set bytes (no burner).
 	bool FireProductionProjectionWorkingSetBytes(
 		const FireProductionProjectionShape& shape,
 		std::uint64_t& bytes );
@@ -155,6 +175,7 @@ namespace RISE
 	bool FireProductionProjectionWorkingSetBytes(
 		const FireProductionProjectionShape& shape,std::uint64_t& bytes,bool hasBurner );
 
+	//! Certifies max|div(u)-S_div| <= 0.005 * max|u| / L_max.
 	bool FireProductionProjectionResidualWithinBand(
 		float maximumResidualPerS,
 		float maximumVelocityMPerS,
@@ -190,6 +211,8 @@ namespace RISE
 		double maximumPostProjectionResidualPerS,
 		FireProductionRestorationPlateauValidation& result );
 
+	//! Preflight validation of shape, 2 GiB cap, boundary pairing, open-head seals,
+	//! burner operands, periodic seam equality, and finiteness/positivity.
 	bool ValidateFireProductionProjectionRequest(
 		const FireProductionProjectionRequest& request,
 		std::string* error=0 );

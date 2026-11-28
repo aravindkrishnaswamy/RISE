@@ -1,3 +1,14 @@
+//////////////////////////////////////////////////////////////////////
+//
+//  RoughDielectricMaterial.cpp - Energy-compensated rough dielectric
+//    BSDF/SPF (RoughDielectricSurface) and IMaterial wrapper with
+//    nested IORStack and open-sheet crossing resolution.
+//
+//  Tabs: 4
+//  License Information: Please see the attached LICENSE.TXT file
+//
+//////////////////////////////////////////////////////////////////////
+
 #include "pch.h"
 #include "RoughDielectricMaterial.h"
 #include "CompositeSPF.h"
@@ -10,6 +21,8 @@ using namespace RISE;
 using namespace RISE::Implementation;
 namespace RD = MicrofacetUtils::RoughDielectric;
 
+// Returns true when HWSS must disable companion wavelengths and trace hero-only
+// through this SPF (rough dielectric refraction/dispersion or composite containing one).
 bool RISE::Implementation::RoughDielectricRequiresHeroOnlySPF(const ISPF* spf)
 {
     if(dynamic_cast<const RoughDielectricSurface*>(spf)) return true;
@@ -81,6 +94,8 @@ struct Crossing
     }
 };
 
+// Draws one reflection or refraction ray using 4 variates (u, v, lobe, technique)
+// and updates ray.ior_stack on transmission. Equal-index crossings emit a delta ray.
 void DrawRay(const RoughDielectricSurface& surface, const RayIntersectionGeometric& ri,
     ISampler& sampler, Scalar nm, ScatteredRayContainer& rays, const IORStack& stack)
 {
@@ -117,6 +132,10 @@ void RoughDielectricSurface::SetAlphaY(const IScalarPainter& v) { v.addref(); sa
 RoughDielectricMaterial::RoughDielectricMaterial(const IScalarPainter& ior, const IScalarPainter& ax, const IScalarPainter& ay)
     : surface(new RoughDielectricSurface(ior,ax,ay))
 { GlobalLog()->PrintNew(surface,__FILE__,__LINE__,"rough dielectric surface"); }
+
+//////////////////////////////////////////////////////////////////////
+// BSDF / SPF / HWSS Evaluation
+//////////////////////////////////////////////////////////////////////
 
 RISEPel RoughDielectricSurface::value(const Vector3& wo, const RayIntersectionGeometric& ri) const
 { return valueStateful(wo,ri,nullptr); }
@@ -163,6 +182,8 @@ Scalar RoughDielectricSurface::EvaluateKrayNM(const RayIntersectionGeometric& ri
         Vector3Ops::SquaredModulus(wo-Vector3Ops::Normalize(ri.ray.Dir()))==0 ? Scalar(1) : Scalar(0);
     return c.Eval(wo,false).weight;
 }
+// HWSS companion-wavelength weight: re-evaluates f * |cos(wo)| / pdfHero when
+// a continuous hero PDF is provided; falls back to direct weight for delta events.
 Scalar RoughDielectricSurface::EvaluateKrayNM(const RayIntersectionGeometric& ri, const Vector3& wo, ScatteredRay::ScatRayType type, Scalar nm, const IORStack& stack, Scalar pdfHero) const
 {
     if(pdfHero<=0) return EvaluateKrayNM(ri,wo,type,nm,stack);

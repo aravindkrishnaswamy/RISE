@@ -1,7 +1,10 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  ClothLinearAlgebra.cpp - Block sparse matrix, PCG, banded Cholesky
-//
+//  ClothLinearAlgebra.cpp - Symmetric 3x3 block-sparse matrix (CSR +
+//  contact extension), PCG (Jacobi/SGS/Cholesky/multigrid), geometric
+//  line-smoothed multigrid, banded & RCM envelope Cholesky, and
+//  corotated elements (deterministic chunked dot products).
+//  Tabs: 4
 //  License Information: Please see the attached LICENSE.TXT file
 //
 //////////////////////////////////////////////////////////////////////
@@ -15,6 +18,9 @@
 
 namespace RISE { namespace Simulation { namespace Cloth {
 
+// ------------------------------------------------------------------ 3x3 block sparse matrix
+
+// Builds symmetric CSR 3x3 block sparsity from vertex pairs (always includes diagonals).
 void BlockMatrix::Build(std::uint32_t blocks, const std::vector<std::pair<std::uint32_t,std::uint32_t>>& pairs)
 {
 	n_ = blocks;
@@ -57,6 +63,7 @@ std::size_t BlockMatrix::Slot(std::uint32_t i, std::uint32_t j) const
 	return column_.size() + lo;
 }
 
+// Registers off-pattern symmetric pairs (e.g. dynamic self-collision blocks) in a sorted extension list.
 void BlockMatrix::Extend(const std::vector<std::pair<std::uint32_t,std::uint32_t>>& pairs)
 {
 	std::vector<std::pair<std::uint32_t,std::uint32_t>> blocks;
@@ -84,6 +91,7 @@ void BlockMatrix::Zero()
 	std::fill(values_.begin(), values_.end(), 0.0);
 }
 
+// Parallel CSR SpMV over pattern blocks, followed by sequential accumulation of extension blocks.
 void BlockMatrix::Multiply(const std::vector<double>& x, std::vector<double>& y, ParallelPool* pool) const
 {
 	MultiplyPattern(x, y, pool);
@@ -227,6 +235,9 @@ inline void Apply3(const double* p, const double* v, double* out)
 }
 }
 
+// ------------------------------------------------------------------ preconditioned conjugate gradient
+
+// PCG from x = 0 with Block Jacobi or Block Symmetric Gauss-Seidel preconditioning.
 bool SolveConjugateGradient(const BlockMatrix& a, const std::vector<double>& b, std::vector<double>& x,
 	double rtol, int maxIterations, LinearSolveStats& stats, Preconditioner preconditioner)
 {
@@ -393,6 +404,8 @@ bool FactorBand(double* band, std::size_t n, std::size_t bw)
 
 }
 
+// Extracts per-line banded submatrix gather tables along axis d (0 = u, 1 = v) and computes
+// conflict-free line coloring (colors = max cross-line reach + 1) for parallel Gauss-Seidel sweeps.
 void GridMultigrid::BuildLines(Level& level, const BlockMatrix& a, int d)
 {
 	LineSet& set = level.lineSet[d];
@@ -446,6 +459,7 @@ void GridMultigrid::BuildLines(Level& level, const BlockMatrix& a, int d)
 	}
 }
 
+// Cholesky-factors each line's banded submatrix in parallel and stores diagonal reciprocals.
 bool GridMultigrid::FactorLines(Level& level, const BlockMatrix& a, int d)
 {
 	LineSet& set = level.lineSet[d];
@@ -535,6 +549,8 @@ void GridMultigrid::LineSweep(Level& level, const BlockMatrix& a, int d, bool fo
 	}
 }
 
+// Builds geometric coarse-grid hierarchy: bilinear prolongation P (zero on fine Dirichlet pins),
+// transpose restriction R = P^T, Galerkin coarse pattern P^T A P, line smoothers, and coarse solver.
 void GridMultigrid::Build(const BlockMatrix& fine, std::uint32_t nu, std::uint32_t nv, const std::vector<char>& fixed,
 	std::uint32_t coarsest)
 {
@@ -633,6 +649,7 @@ void GridMultigrid::Build(const BlockMatrix& fine, std::uint32_t nu, std::uint32
 	coarse_.Prepare({}, {gridOrder});
 }
 
+// Numerically assembles Galerkin coarse operators and factors all line smoothers + coarse Cholesky.
 bool GridMultigrid::Setup(const BlockMatrix& fine)
 {
 	fine_ = &fine;
@@ -667,6 +684,8 @@ bool GridMultigrid::Setup(const BlockMatrix& fine)
 	return coarse_.Factor(Matrix(levels_.size() - 1));
 }
 
+// Symmetric multigrid V-cycle: forward u/v line smooth -> restrict residual -> coarse solve ->
+// prolongate correction -> backward v/u line smooth (adjoint of pre-smooth, keeping M SPD).
 void GridMultigrid::Cycle(std::size_t l)
 {
 	Level& f = levels_[l];
@@ -715,6 +734,8 @@ void GridMultigrid::Apply(const std::vector<double>& r, std::vector<double>& z)
 	z = levels_[0].x;
 }
 
+// ------------------------------------------------------------------ banded Cholesky
+
 std::size_t BandedCholesky::Bandwidth(const BlockMatrix& a, const std::vector<std::uint32_t>& order)
 {
 	std::vector<std::uint32_t> position(order.size());
@@ -730,6 +751,7 @@ std::size_t BandedCholesky::Bandwidth(const BlockMatrix& a, const std::vector<st
 	return 3*bw + 2;
 }
 
+// Permutes A by `order` into lower-triangle band layout i*(bw+1)+(i-j) and computes L L^T in place.
 bool BandedCholesky::Factor(const BlockMatrix& a, const std::vector<std::uint32_t>& order)
 {
 	const std::uint32_t nb = a.Blocks();
@@ -769,6 +791,7 @@ bool BandedCholesky::Factor(const BlockMatrix& a, const std::vector<std::uint32_
 	return true;
 }
 
+// Permutes RHS b, solves L y = P b and L^T z = y within the band, then unpermutes into x.
 void BandedCholesky::Solve(const std::vector<double>& b, std::vector<double>& x) const
 {
 	const std::size_t w = bw_ + 1;
@@ -801,6 +824,7 @@ void EnvelopeCholesky::Prepare(const std::vector<char>& decoupled, const std::ve
 	analysed_ = false;
 }
 
+// Computes George-Liu pseudo-peripheral Reverse Cuthill-McKee ordering on the active block graph.
 std::vector<std::uint32_t> EnvelopeCholesky::ReverseCuthillMcKee(const BlockMatrix& a, const std::vector<char>& decoupled)
 {
 	const std::uint32_t n = a.Blocks();
@@ -877,6 +901,7 @@ std::vector<std::uint32_t> EnvelopeCholesky::ReverseCuthillMcKee(const BlockMatr
 	return order;
 }
 
+// Selects lowest-operation ordering among RCM and caller candidates and allocates skyline envelope storage.
 void EnvelopeCholesky::Analyse(const BlockMatrix& a, bool useDecoupled)
 {
 	const std::uint32_t nb = a.Blocks();
@@ -928,6 +953,7 @@ void EnvelopeCholesky::Analyse(const BlockMatrix& a, bool useDecoupled)
 	analysed_ = true;
 }
 
+// Row-oriented skyline/envelope Cholesky L L^T; falls back to full pattern if a decoupled vertex couples.
 bool EnvelopeCholesky::Factor(const BlockMatrix& a)
 {
 	if (!analysed_ || a.RowStart() != patternRowStart_ || a.Column() != patternColumn_) Analyse(a, true);
@@ -1085,6 +1111,7 @@ void CorotatedElements::Mirror()
 	}
 }
 
+// Projects element gradients and stiffnesses to zero row/column sums (exact rigid-translation invariance).
 void CorotatedElements::Balance()
 {
 	for (std::size_t e = 0; e < elements.size(); ++e) {
@@ -1184,6 +1211,7 @@ double CorotatedElements::Deviation(const std::vector<double>& x0, const std::ve
 	return worst;
 }
 
+// Assembles rotated element stiffnesses R K_ab R^T into the global 3x3 block matrix.
 void CorotatedElements::Assemble(BlockMatrix& k) const
 {
 	k.Zero();
@@ -1209,6 +1237,7 @@ void CorotatedElements::Assemble(BlockMatrix& k) const
 	}
 }
 
+// Evaluates corotational elastic energy and global gradient via unrotated displacements R^T p - x0.
 double CorotatedElements::Gradient(const std::vector<double>& x0, const std::vector<double>& p, std::vector<double>& g) const
 {
 	g.assign(p.size(), 0.0);

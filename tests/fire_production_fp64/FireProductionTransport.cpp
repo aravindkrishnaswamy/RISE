@@ -4,6 +4,18 @@
 //
 //  FireProductionTransport.cpp - strict-binary32 production transport oracle
 //
+//  CPU oracle for the staggered MAC fire/smoke transport pipeline:
+//  - Frozen source packet identity verification & Metal live-increment bounds
+//  - 5-pass Strang palindrome (x/2, y/2, z, y/2, x/2) cell & dual-momentum remap
+//  - Certified nonadvective species diffusion (fp64 N_C N_C^T projection) &
+//    Fourier + enthalpy energy flux on MAC faces
+//  - Projected-Heun flux stage composition, averaging, base/Picard divergence
+//    targets, and accepted-state EOS inversion gate
+//  - Section 3.7 compatible FCT momentum advection (limited or r264 centred)
+//    and 3D MC-MUSCL / donor-cell scalar FCT limiter with commuting witness
+//  Layout: Q[9][cells] component-major with x-fast (z*ny+y)*nx+x; packed MAC
+//  faces [x,y,z] via packedFaceOffset[3]. Mirrors FireProductionAdvectionMac.mm.
+//
 //  License Information: Please see the attached LICENSE.TXT file
 //
 //////////////////////////////////////////////////////////////////////
@@ -1209,6 +1221,8 @@ namespace RISEFireProductionFP64
 		}
 	}
 
+	// --- Source-packet seal verification and resident Metal increment bounds ---
+
 	void FireProductionFrozenSourcePacketSeal::FinalizeIdentities()
 	{
 		if(::RISE::FireSim::FireFastMode()){
@@ -1415,6 +1429,8 @@ namespace RISEFireProductionFP64
 			AddMetalValueBuffer(1u,sizeof(std::uint32_t),bytes)&&bytes<=(UINT64_C(1)<<31u);
 	}
 
+	// --- 5-pass Strang palindrome cell and dual-grid momentum remap (CPU oracle) ---
+
 	bool FireProductionCellPalindromeWorkingSetBytes(
 		const FireProductionProjectionShape& shape, std::size_t componentCount,
 		std::uint64_t& bytes, bool retainAcceptedGasMassDose )
@@ -1514,6 +1530,8 @@ namespace RISEFireProductionFP64
 		return true;
 	}
 
+	// Executes symmetric 5-pass Strang split (x/2, y/2, z, y/2, x/2) using the
+	// 1D PPM remap oracle; optionally retains primal gas-mass doses per pass.
 	bool RemapFireProductionCellPalindromeCPU(
 		const FireProductionCellPalindromeRequest& request,
 		FireProductionCellPalindromeResult& result, std::string* error )
@@ -2209,6 +2227,8 @@ namespace RISEFireProductionFP64
 		}
 	}
 
+	// --- Certified nonadvective physical fluxes (diffusion + Fourier/enthalpy) ---
+
 	bool QueryFireProductionScalarPhysicalFluxPrerequisiteCPUWorkingSetBytes(
 		const FireProductionProjectionShape& shape,std::uint64_t& workingSetBytes,
 		std::string* error,const bool prescribedBottomFlux )
@@ -2233,6 +2253,11 @@ namespace RISEFireProductionFP64
 		if(error)error->clear();return true;
 	}
 
+	// Computes Fickian species diffusion (harmonic-mean rho*D, projected onto the
+	// stoichiometric nullspace N_C N_C^T in fp64 with forward-error certificates)
+	// and Fourier conduction + species enthalpy drift flux on every MAC face.
+	// Walls have zero diffusive flux; open-inflow faces use half-cell spacing dx/2
+	// to ambient; masked lower-z burner faces enforce prescribed inlet flux.
 	bool BuildFireProductionScalarPhysicalFluxPrerequisiteCPU(
 		const FireProductionScalarPhysicalFluxPrerequisiteRequest& request,
 		FireProductionScalarPhysicalFluxPrerequisiteResult& result, std::string* error )
@@ -2500,6 +2525,8 @@ namespace RISEFireProductionFP64
 		} catch(const std::bad_alloc&){result=FireProductionScalarPhysicalFluxPrerequisiteResult();
 			FailWithoutThrow(error,"physical scalar-flux prerequisite allocation failed");return false;}
 	}
+
+	// --- Projected-Heun flux stages, divergence target seals, and EOS gate ---
 
 	bool QueryFireProductionScalarHeunFluxStageCPUPayloadBytes(
 		const FireProductionProjectionShape& shape,std::uint64_t& payloadBytes,
@@ -3627,6 +3654,13 @@ namespace RISEFireProductionFP64
 				result.acceptanceIdentity;
 	}
 
+	// --- Section 3.7 compatible MAC momentum advection (limited / r264 centred) ---
+
+	// Evaluates dual-control-volume momentum flux divergence D_i(I_i(F_gas)*mean(u))
+	// on staggered MAC faces from primal gas fluxes (low + alpha*delta + physical,
+	// or r264 centred 0.5*(rho_L+rho_R)*u + physical on interior faces).
+	// Boundary half-cells scale normal flux differences by 2/dx and half total rate
+	// on open boundaries; wall-normal faces remain zero.
 	static bool EvaluateFireProductionCompatibleFCTMomentumCPUImpl(
 		const FireProductionCompatibleFCTMomentumRequest& request,
 		const bool secondFluxIsDelta,
@@ -4523,6 +4557,8 @@ namespace RISEFireProductionFP64
 		} catch(const std::bad_alloc&){result=FireProductionScalarFCTResult();
 			FailWithoutThrow(error,"scalar FCT allocation failed");return false;}
 	}
+
+	// --- 3D scalar FCT stages (donor/MC-MUSCL pair, r60 shared alpha, commit) ---
 
 	bool BuildFireProductionScalarFCTFluxPairCPU(
 		const FireProductionScalarFCTRequest& request,

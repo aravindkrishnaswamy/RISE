@@ -2152,6 +2152,11 @@ namespace RISE
 			//! AgentRasterizerKindIsExplicitlyClassified can tell "blocked
 			//! because we decided to" apart from "blocked because nobody has
 			//! looked at it yet", which is what the coverage test asserts.
+			//! HyLIoS P6b (2026-11): hyperspectral_radiometric_rasterizer, the
+			//! fixed-wavelength raw radiometric rasterizer, is a specialised
+			//! measurement tool (strict preflight refusals, EXR + manifest
+			//! output, checkpoint resume), not a general-purpose integrator, so
+			//! the PT-and-VCM-only directive blocks it like the others.
 			const char* const kAgentBlockedRasterizers_[] = {
 				"bdpt_pel_rasterizer",
 				"bdpt_spectral_rasterizer",
@@ -2161,6 +2166,7 @@ namespace RISE
 				"auto_spectral_rasterizer",
 				"pixelpel_rasterizer",
 				"pixelintegratingspectral_rasterizer",
+				"hyperspectral_radiometric_rasterizer",
 			};
 
 			//! Is `kw` a real rasterizer CHUNK?  Two conditions, both from the

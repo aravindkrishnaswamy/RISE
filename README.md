@@ -151,8 +151,8 @@ project links against the prebuilt `RISE.lib` from the VS2022 Library project,
 so build the Windows library/CLI once first.
 
 Note on incremental builds: the Unix GNU `Makefile` tracks header dependencies
-automatically via `-MMD -MP` `.d` sidecars (on macOS, `LTO=full|thin|off`
-defaults to `full` — see [docs/BUILD_FLAGS.md](docs/BUILD_FLAGS.md)) and rebuilds
+automatically via `-MMD -MP` `.d` sidecars (on macOS, `LTO=thin|full|off`
+defaults to `thin`; `make clean` when switching — see [docs/BUILD_FLAGS.md](docs/BUILD_FLAGS.md)) and rebuilds
 the test library (`librise_test.a`, a non-LTO copy, on macOS, where LTO-sensitive
 tests still link `librise.a`; `librise.a` elsewhere) before test targets. On
 Windows, rebuild the VS2022 `Library` project (`RISE.lib`) before re-linking

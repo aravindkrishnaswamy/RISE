@@ -1,3 +1,15 @@
+//////////////////////////////////////////////////////////////////////
+//
+//  SceneInputs.cpp - Captures scene objects as immutable, thread-safe
+//  ISceneInputs snapshots (world rigid transforms and tessellated or
+//  cached meshes in metres) with deterministic content-addressed hashes.
+//
+//  Tabs: 4
+//
+//  License Information: Please see the attached LICENSE.TXT file
+//
+//////////////////////////////////////////////////////////////////////
+
 #include "pch.h"
 #include "SceneInputs.h"
 #include "SimulationMesh.h"
@@ -83,6 +95,8 @@ struct Captured {
 	~Captured() { for (auto* h : holders) if (h) h->release(); }
 };
 
+// Immutable ISceneInputs snapshot that evaluates animated transforms on private
+// pose-holder clones and lazily reads simulated upstream mesh caches.
 class Inputs final : public ISceneInputs {
 public:
 	Inputs(const IAnimator* animator) : animator_(animator) { if (animator_) animator_->addref(); }
@@ -114,6 +128,7 @@ public:
 		return true;
 	}
 
+	// Extracts the rigid world transform at time t, refusing time-varying scale or shear.
 	bool Rigid(const Captured& c, double t, RigidTransform& out, std::string& error) const
 	{
 		Matrix4 m;
@@ -217,6 +232,7 @@ V MatrixValue(const Matrix4& m)
 
 } // namespace
 
+// Newton-Schulz polar decomposition X <- (X + X^-T)/2 for proper rotations (det > 0).
 bool PolarRotation(const double a[9], double r[9])
 {
 	if (!(Det(a) > 0)) return false;
@@ -260,6 +276,9 @@ bool SceneObjectInputProvider::InputDependencies(const std::string& input, std::
 	return true;
 }
 
+// Captures named scene objects: validates non-CSG built-in Object chains, clones
+// authored pose holders, encodes static/cached geometry, verifies rigid motion at
+// keyframes and quarter intervals, and hashes the canonical CBOR identity.
 std::shared_ptr<const ISceneInputs> SceneObjectInputProvider::Capture(const std::vector<std::string>& names,
 	const std::map<std::string, std::string>& upstreamKeys, std::string& error) const
 {

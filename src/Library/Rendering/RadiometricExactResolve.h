@@ -1,5 +1,14 @@
-// PRIVATE exact binary64 rounding of represented compensated moments.
-// License: see LICENSE.TXT. No external arbitrary-precision dependency.
+//////////////////////////////////////////////////////////////////////
+//
+//  RadiometricExactResolve.h - Private exact IEEE binary64 nearest-even
+//    rounding of compensated radiometric moments (high+low)*2^power/(a*b).
+//    Uses a fixed-capacity base-2^32 UInt with no external bignum dependency.
+//
+//  Tabs: 4
+//  License Information: Please see the attached LICENSE.TXT file
+//
+//////////////////////////////////////////////////////////////////////
+
 #ifndef RISE_RADIOMETRIC_EXACT_RESOLVE_H
 #define RISE_RADIOMETRIC_EXACT_RESOLVE_H
 #include "../Utilities/FiniteMath.h"
@@ -20,6 +29,8 @@ constexpr std::size_t wordCount=(std::numeric_limits<double>::max_exponent-
     std::numeric_limits<double>::min_exponent+3*std::numeric_limits<double>::digits+3+31)/32;
 constexpr int trueMinExponent=std::numeric_limits<double>::min_exponent-std::numeric_limits<double>::digits;
 constexpr int halfMinExponent=trueMinExponent-1;
+// Fixed-width little-endian base-2^32 unsigned integer sized to hold exact
+// shifted binary64 dyadic numerators and products of <= 2^53 sample counts.
 class UInt {
     std::array<std::uint32_t,wordCount> words{};
     std::size_t used=0;
@@ -88,6 +99,8 @@ public:
         result.used=4; result.Trim(); return result;
     }
 };
+// Extracts sign, unbiased binary exponent, and 53-bit (or subnormal) integer
+// significand; volatile barrier forces IEEE binary64 materialization.
 inline bool Parts(double value,std::uint64_t& significand,int& exponent,bool& negative) {
     volatile double barrier=value; const double materialized=barrier;
     std::uint64_t bits=0; std::memcpy(&bits,&materialized,sizeof(bits));
@@ -98,6 +111,8 @@ inline bool Parts(double value,std::uint64_t& significand,int& exponent,bool& ne
     else exponent=trueMinExponent;
     return true;
 }
+// Aligns a nonnegative compensated binary64 pair (high + low) into an exact
+// integer numerator * 2^exponent.
 inline bool Numerator(double high,double low,UInt& numerator,int& exponent) {
     std::uint64_t highSignificand=0,lowSignificand=0; int highExponent=0,lowExponent=0; bool highNegative=false,lowNegative=false;
     if(!Parts(high,highSignificand,highExponent,highNegative) || !Parts(low,lowSignificand,lowExponent,lowNegative) ||
@@ -109,6 +124,8 @@ inline bool Numerator(double high,double low,UInt& numerator,int& exponent) {
     numerator=a; return true;
 }
 inline int CountBits(std::uint64_t n) { int bits=0; while(n) { ++bits; n>>=1; } return bits; }
+// Returns true iff a strictly positive variance (high+low)/(n*(n-1)) exceeds
+// half-TRUE_MIN so it will not underflow to zero under nearest-even rounding.
 inline bool PositiveVarianceRepresentable(double high,double low,std::uint64_t n) {
     if(IsZeroDouble(high) && IsZeroDouble(low)) return true;
     int highExponent=0; std::uint64_t significand=0; bool negative=false;

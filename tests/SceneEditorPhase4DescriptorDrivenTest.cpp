@@ -30,6 +30,7 @@
 #include <cstdint>
 #include <cstring>
 #include <cmath>
+#include <map>
 #include <set>
 #include <string>
 #ifdef _WIN32
@@ -225,17 +226,59 @@ static void TestLightDescriptorDriven()
 
 	std::vector<CameraProperty> rows = LightIntrospection::Inspect( String( "omni" ), *light );
 
-	// Must include every descriptor param (skipping name).
+	// Must include every descriptor param (skipping name) of the light's
+	// FORM.  omni_light has two mutually exclusive forms: an RGB source
+	// (`color` + `colorspace`) and a physical source (`spectral_samples` +
+	// `spectral_outside`, which Finalize refuses together with `color`).
+	// The panel shows the rows of the form the light was built with, so an
+	// RGB light surfaces every descriptor row except the two physical ones.
 	const ChunkDescriptor* desc = DescriptorForKeyword( String( "omni_light" ) );
 	const std::set<std::string> expected = DescriptorParamNames( desc );
+	const std::set<std::string> physicalOnly = { "spectral_samples", "spectral_outside" };
+	const std::set<std::string> rgbOnly      = { "color", "colorspace" };
+	for( const std::string& name : physicalOnly )
+		Check( expected.count( name ) == 1, ( "omni_light descriptor declares '" + name + "'" ).c_str() );
 
 	std::set<std::string> seen;
 	for( const CameraProperty& r : rows ) {
 		seen.insert( r.name.c_str() );
 	}
 	for( const std::string& name : expected ) {
+		if( physicalOnly.count( name ) ) {
+			Check( seen.count( name ) == 0,
+			       ( "RGB omni_light hides the physical-only row '" + name + "'" ).c_str() );
+			continue;
+		}
 		Check( seen.count( name ) == 1,
 		       ( "omni_light row '" + name + "' surfaced" ).c_str() );
+	}
+
+	// The physical form: every descriptor row except the RGB-only pair, and
+	// the spectrum read back from the light itself.
+	{
+		const double nm[3]     = { 450.0, 550.0, 650.0 };
+		const double values[3] = { 0.5, 1.0, 0.25 };
+		Check( pJob->AddPhysicalPointOmniLight( "omni_phys", 3, nm, values, "zero", 2.0, pos, true ),
+		       "physical omni_light is created" );
+		const ILight* phys = lights->GetItem( "omni_phys" );
+		Check( phys != 0, "physical omni_light is registered" );
+		if( phys ) {
+			std::map<std::string, std::string> physRows;
+			for( const CameraProperty& r : LightIntrospection::Inspect( String( "omni_phys" ), *phys ) )
+				physRows[ r.name.c_str() ] = r.value.c_str();
+			for( const std::string& name : expected ) {
+				if( rgbOnly.count( name ) ) {
+					Check( physRows.count( name ) == 0,
+					       ( "physical omni_light hides the RGB-only row '" + name + "'" ).c_str() );
+					continue;
+				}
+				Check( physRows.count( name ) == 1,
+				       ( "physical omni_light row '" + name + "' surfaced" ).c_str() );
+			}
+			Check( physRows["spectral_outside"] == "zero", "physical omni_light reports spectral_outside zero" );
+			Check( physRows["spectral_samples"].find( "550 1" ) != std::string::npos,
+			       "physical omni_light reports its spectral_samples from the light" );
+		}
 	}
 
 	// Power/color rows pick up descriptor description text.  Just

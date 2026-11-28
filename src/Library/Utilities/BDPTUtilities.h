@@ -39,57 +39,18 @@ namespace RISE
 		//////////////////////////////////////////////////////////////
 		// Medium distance-sampling streams (DL-283).
 		//
-		// The eye and light walks give every loop iteration its own
-		// sampler stream (`EyeWalkStream` / `LightWalkStream` below --
-		// `16 + depth` / `1 + depth` for shallow iterations, DL-286 --
-		// 32 Sobol' dimensions each).  An
-		// `IMedium::SampleDistance` call is the one consumer inside
-		// that iteration whose draw count is OPEN-ENDED: heterogeneous
-		// delta tracking draws one value per majorant-grid cell it
-		// crosses plus two per tentative collision, up to
-		// `IMedium::kMaxSampleDistanceDraws` (2048).  Drawn from the
-		// vertex stream, a long free flight ran past the stream's 32
-		// slots into the stream the NEXT iteration re-opens, so one
-		// Sobol' dimension drove two decisions on one path (the PT
-		// twin of this defect was DL-247's `PTVolumeWalkStream`).
-		//
-		// Under a fixed-budget sampler (`ISampler::
-		// HasFixedDimensionBudget()`, i.e. SobolSampler) each distance
-		// sample therefore draws from a BLOCK of
-		// `kMediumDistanceStreamsPerEvent` streams of its own, wide
-		// enough for the full draw bound (64 * 32 = 2048 dimensions),
-		// keyed by (walk, loop iteration).  The caller re-opens its
-		// vertex stream afterwards, so the vertex's own draws (phase,
-		// roulette, BSDF) sit at the same slots whether or not a medium
-		// was crossed.
-		//
-		// Layout, in streams (dimension = 32 * stream):
-		//   eye   walk, iteration d:  8192 + 64 * d            d < 1024
-		//   light walk, iteration d:  8192 + 64 * (1024 + d)   d < 1024
-		// i.e. [8192, 139264), 4.46M dimensions at most.  Both walk
-		// loops saturate their iteration count at
-		// `kWalkIterationCap` (1024), which is what bounds `d`.  Every
-		// other consumer of a BDPT/VCM sampler sits below 8192 except
-		// the DEEP walk iterations (DL-286, `LightWalkStream` /
-		// `EyeWalkStream` below, [139264, 141266)): film/light select 0,
-		// shallow light walk 1..15, shallow eye walk 16..46, strategy
-		// select 47, VCM NEE 49..3121 (48 + i, i >= 1), MLT film/lens
-		// 2048 (PSSMLT only), thin-lens aperture 3322 -- and PT's own
-		// volume walks (`PTVolumeWalkStream`, 4096..8191) never share a
-		// sampler with these at all.  `tests/SobolDimensionBudgetTest.cpp`
-		// Test G2 enumerates the whole map and asserts it is
-		// collision-free.
-		//
-		// Every block lies past SobolSampler's 8192-dimension table, so
-		// each draw is a wrapped dimension (an Owen-permuted index over
-		// a table row).  Samplers WITHOUT a fixed budget are left on the
-		// vertex stream: `IndependentSampler` ignores streams, and a
-		// `PSSMLTSampler` (MLT) stream is an unbounded lane that cannot
-		// spill.  Routing MLT through the blocks too was measured and
-		// declined: no correctness gain, and +13 % user CPU on
-		// scenes/Tests/Legacy/mlt_deep_fog.RISEscene (its chains, not its
-		// storage -- 128 events cost 128 extra-tier lanes), besides
-		// needing PSSMLTSampler's 4096-stream sanity bound raised.
+		// Under fixed-budget samplers (`HasFixedDimensionBudget()`, i.e.
+		// SobolSampler), open-ended `IMedium::SampleDistance` calls (up to
+		// `IMedium::kMaxSampleDistanceDraws` = 2048 draws) draw from a
+		// dedicated 64-stream block (`64 * 32 = 2048` dims) per (walk, iter)
+		// so they never overrun the vertex stream into the next iteration.
+		// Callers re-open their vertex stream afterwards.
+		// Layout (d < kWalkIterationCap = 1024):
+		//   eye   walk: 8192 + 64 * d
+		//   light walk: 8192 + 64 * (1024 + d)   -> [8192, 139264)
+		// Unbounded-lane samplers (PSSMLTSampler, IndependentSampler) stay
+		// on the vertex stream. Checked collision-free by
+		// `tests/SobolDimensionBudgetTest.cpp`.
 		//////////////////////////////////////////////////////////////
 		static const unsigned int kWalkIterationCap = 1024;
 		static const int kMediumDistanceStreamBase = 8192;
@@ -97,10 +58,8 @@ namespace RISE
 
 		enum WalkSide { eEyeWalk = 0, eLightWalk = 1 };
 
-		//! First stream of the block a walk's distance sample at loop
-		//! iteration `depth` draws from.  `depth` is clamped into the
-		//! cap so a caller bug cannot run into a neighbouring layout;
-		//! both walk loops already keep it below the cap.
+		//! First stream of the medium-distance block for `(side, depth)`
+		//! (`depth` clamped to `< kWalkIterationCap`).
 		inline int MediumDistanceStream( const WalkSide side, const unsigned int depth )
 		{
 			const unsigned int d = depth < kWalkIterationCap ? depth : kWalkIterationCap - 1u;
@@ -114,55 +73,18 @@ namespace RISE
 			2 * static_cast<int>( kWalkIterationCap ) * kMediumDistanceStreamsPerEvent;
 
 		//////////////////////////////////////////////////////////////
-		// Per-iteration WALK streams (DL-286).
+		// Per-iteration walk streams (DL-286; docs/DEBT_LEDGER.md).
 		//
-		// Loop iteration `d` of the light walk opens one sampler stream
-		// and iteration `d` of the eye walk another; everything a
-		// vertex draws (phase / BSDF direction, lobe choice, roulette,
-		// guiding) sits at fixed slots of that stream.  Both walks run
-		// off ONE sampler per BDPT/VCM/MLT sample, so their streams
-		// must be DISJOINT at every depth.  They used to be `1 + d` and
-		// `16 + d`, laid out for 15 bounces: from light iteration 15 the
-		// light walk re-opened the eye walk's streams (and the strategy
-		// select, 47, at 46 and VCM's first NEE stream, 49, at 48; the
-		// eye walk reached 47 at 31 and the NEE at 33).  Walk iterations
-		// count medium scatters, so dense media reach that routinely,
-		// and one Sobol' dimension (one PSSMLT primary sample) then
-		// drove a light-vertex decision AND an eye-vertex decision of
-		// ONE connected path -- a bias, not just a correlation: -12 % on
-		// a light inside albedo-0.99 / sigma_t-8 fog under BDPT with
-		// Sobol' and -13 % under MLT (docs/DEBT_LEDGER.md
-		// section 10, the DL-286 ledger row).
-		//
-		// The SHALLOW iterations keep their historical streams, so a
-		// walk that never reaches light iteration 15 / eye iteration 31
-		// draws exactly what it drew before (every medium-free shipped
-		// scene; PSSMLT's legacy tier, streams < 49, is untouched):
-		//   light iteration d < 15:  1 + d      (1..15)
-		//   eye   iteration d < 31:  16 + d     (16..46)
-		// DEEP iterations move to a block of their own, light first:
-		//   light iteration d >= 15: base + (d - 15)            (1009 streams)
-		//   eye   iteration d >= 31: base + 1009 + (d - 31)     ( 993 streams)
-		// `d` < `kWalkIterationCap` (1024) always (both loops saturate).
-		// The base depends on the sampler, because the two stream
-		// spaces have different free regions:
-		//   fixed-budget (SobolSampler, `HasFixedDimensionBudget()`):
-		//     base 139264 = `kMediumDistanceStreamEnd`, i.e. streams
-		//     [139264, 141266), past the DL-283 medium-distance blocks,
-		//     in the wrap region (wraps 544..551).  Nothing below fits:
-		//     VCM's per-eye-vertex NEE owns 49..3121 (48 + i).
-		//   unbounded-lane (PSSMLTSampler, i.e. MLT; IndependentSampler
-		//     ignores streams): base 2049, i.e. lanes [2049, 4051) --
-		//     just above MLT's reserved film/lens/aperture lane 2048
-		//     (`BDPTCameraUtilities::kPSSMLTFilmLensApertureStream`) and
-		//     below PSSMLTSampler's 4096 stream sanity bound; lanes
-		//     >= 49 live in its extra tier, so the lane numbers cost
-		//     nothing.  VCM never drives a PSSMLTSampler, so its NEE
-		//     range is irrelevant here.
-		// `tests/SobolDimensionBudgetTest.cpp` Test G2 enumerates both
-		// layouts from these functions and asserts them collision-free;
-		// Test H asserts no light/eye shared dimension (Sobol') or
-		// shared primary sample (PSSMLT) on the real generators.
+		// Eye and light walks share one sampler per BDPT/VCM/MLT sample and
+		// must use disjoint streams at every iteration `d < kWalkIterationCap`:
+		//   shallow light (d < 15):  1 + d             (1..15)
+		//   shallow eye   (d < 31):  16 + d            (16..46)
+		//   deep light    (d >= 15): base + (d - 15)           (1009 streams)
+		//   deep eye      (d >= 31): base + 1009 + (d - 31)    ( 993 streams)
+		// where `base` is:
+		//   fixed-budget (SobolSampler): `kMediumDistanceStreamEnd` (139264)
+		//   unbounded-lane (PSSMLT):     2049 (above lane 2048, below 4096 cap)
+		// Checked collision-free by `tests/SobolDimensionBudgetTest.cpp`.
 		//////////////////////////////////////////////////////////////
 		static const unsigned int kLightWalkShallowIterations = 15;
 		static const unsigned int kEyeWalkShallowIterations = 31;
@@ -318,33 +240,14 @@ namespace RISE
 		}
 
 		//////////////////////////////////////////////////////////////////
-		// Medium vertex utilities
-		//
-		// For medium scatter vertices (no surface orientation), the
-		// geometric coupling and PDF measure conversions differ from
-		// surface vertices:
-		//
-		//   Geometric coupling term G(x <-> y):
-		//     surface <-> surface:  |cos_x| * |cos_y| / dist^2
-		//     surface <-> medium:   |cos_surface| / dist^2
-		//     medium  <-> medium:   1 / dist^2
-		//
-		//   Medium vertices have no surface normal, so no cosine factor
-		//   appears.  The 1/dist^2 term is the inverse-square law for
-		//   point-to-point radiance transport in free space.
-		//
-		//   For the solid-angle-to-area PDF conversion at medium
-		//   vertices, sigma_t replaces |cos(theta)| (Veach thesis
-		//   Ch. 11; PBRT v4 Section 16.3):
-		//     pdfArea = pdfSolidAngle * sigma_t / dist^2
+		// Medium vertex utilities (Veach Ch. 11; PBRT-v4 §16.3):
+		//   G(surface <-> medium) = |cos_surface| / dist^2
+		//   G(medium  <-> medium) = 1 / dist^2
+		//   pdfArea (at medium)   = pdfSolidAngle * sigma_t / dist^2
 		//////////////////////////////////////////////////////////////////
 
-		//! Converts a solid angle PDF to area measure at a medium vertex.
-		//! sigma_t at the scatter point replaces |cos(theta)| because the
-		//! free-flight sampling probability density is proportional to
-		//! sigma_t, while surface "acceptance" is proportional to the
-		//! projected area (|cos|/dist^2).
-		/// \return PDF in generalized area measure
+		//! Converts solid-angle PDF to generalized area measure at a medium vertex
+		//! (sigma_t replaces |cos(theta)|).
 		inline Scalar SolidAngleToAreaMedium(
 			const Scalar pdfSolidAngle,				///< [in] PDF in solid angle measure [1/sr]
 			const Scalar sigma_t,					///< [in] Extinction coefficient at scatter point
@@ -402,83 +305,24 @@ namespace RISE
 		}
 
 		//////////////////////////////////////////////////////////////
-		// Subsurface jumps partition paths BY PATH between the two
-		// jump families (DL-317 in VCM; shared with BDPT/MLT since
-		// DL-375).  A BSSRDF / random-walk event relocates the path
-		// from the hit where it went in (`x_o`, marked delta) to a
-		// sampled ENTRY vertex (`isBSSRDFEntry`); the relocation is not
-		// an edge and its reverse density is never evaluated, so the
-		// eye-sampled and light-sampled jump families estimate the
-		// SAME integral with nothing to MIS them against each other.
-		// A path belongs to the EYE-sampled family whenever that family
-		// has a strategy for it, and to the light-sampled family only
-		// when it has none; within the owning family the MIS walks stop
-		// at the jump (VCM: zero running quantities at the entry; BDPT:
-		// `MISWeight` breaks at an entry).
+		// Subsurface-jump path partition under depth caps (DL-317/375/380).
 		//
-		// Since DL-375 BOTH entry kinds are connectible: a diffusion
-		// entry prices Sw with its profile's Fresnel, a random-walk
-		// entry with the exact dielectric transmission
-		// (`RandomWalkEntryBSDF`, PT's own NEE adapter); the MIS
-		// density of either is the cosine exit its continuation is
-		// sampled from.  So the delta-lit random-walk class that
-		// DL-317 had to KEEP in the light family (a point light
-		// feeding a random-walk entry) is now eye-coverable through NEE
-		// at the eye's entry, and the predicate below -- which reads
-		// the entry's `isConnectible` -- cuts it.
-		//////////////////////////////////////////////////////////////
-
-		//////////////////////////////////////////////////////////////
-		// DL-380: the partition is a property of the PATH under the
-		// DEPTH CAPS, not of vertex types alone.  "The eye family has a
-		// strategy for this path" means the EYE WALK can generate the
-		// covering subpath, and that walk is capped: at most
-		// `max_eye_depth` surface hits, and at most
-		// `WalkIterationBudget(max_eye_depth, max_volume_bounce)` loop
-		// iterations (one per surface hit, medium scatter, or escape).
-		// Deciding from vertex types alone cut the light family for a
-		// path whose covering eye strategy lay past the eye cap, and
-		// the path was estimated by NOTHING (DL-375's D1 wall at
-		// `max_eye_depth 1`: BDPT -99.95 %, VCM -98.6 %).
+		// BSSRDF / random-walk jumps relocate x_o -> entry (`isBSSRDFEntry`)
+		// without a reverse relocation density, so eye- and light-sampled
+		// jump families cannot be MIS'd against each other (MIS walks stop
+		// at any entry). Both diffusion and random-walk entries are
+		// connectible (`isConnectible`). A path belongs to the EYE family
+		// iff the eye walk can generate a covering subpath within
+		// `max_eye_depth` and `WalkIterationBudget(max_eye_depth,
+		// max_volume_bounce)`, and to the LIGHT family otherwise.
 		//
-		// Counting.  A walk counts a surface vertex when it reached it
-		// along a ray: every SURFACE vertex except a BSSRDF / random-walk
-		// ENTRY (pushed in the same iteration as the hit it jumped from).
-		// The camera, a light root, medium vertices and an escape do not
-		// count toward the surface cap.  A light-side jump pair
-		// (x_o = verts[q], entry = verts[q+1]) counts ONE in either walk
-		// direction: the light walk counts x_o, the eye walk -- arriving
-		// at the entry's point along a ray and jumping to x_o -- counts
-		// the entry.  So for a path whose light part is verts[0..k] and
-		// whose eye part has eye-walk surface count S, the eye walk that
-		// covers the light-side tail verts[w..k] (split before verts[w])
-		// counts
-		//     D - L(w-1),   D = S + L(k),   L(i) = light-walk count of verts[1..i]
-		// surface hits, and every medium vertex of the path past
-		// verts[w-1] in iterations.  D is a property of the path, not of
-		// the (s, t) split, so every strategy of one path is partitioned
-		// the same way.  (A merge shares its vertex: D = S + L(k) - 1.)
-		//
-		// Witness.  Among the admissible splits of a jump's segment
-		// (LightSegmentEyeWitness), the LARGEST w needs the fewest eye
-		// surface hits AND the fewest eye medium vertices, so it alone
-		// decides; and a later jump's witness dominates an earlier
-		// one's (it needs strictly fewer of both: x_o is counted), so a
-		// light prefix is decided by the witness of the LAST
-		// witness-bearing jump in it.  The root witness w = 0 (the eye
-		// hits an area light -- that hit counts -- or escapes to an
-		// environment light -- one more iteration) is dominated by any
-		// w >= 1.
-		//
-		// The opposite failure, a path BOTH families keep, needs the
-		// light family to keep a path the eye walk CAN generate; the
-		// test below is that generation test, so it cannot happen at
-		// any combination of caps.  The light caps never enter: a
-		// covering eye strategy uses the light prefix verts[0..w-1]
-		// (w-1 < k, already generated), and the eye family itself is
-		// never cut.  (Per-type caps, `max_diffuse_bounce` & co., are
-		// per subpath and direction-dependent -- DL-351 -- and stay out
-		// of the partition, as they stay out of every BDPT MIS weight.)
+		// Surface hit count `D = S + L(k)` (minus 1 for a merge) counts
+		// ray-reached SURFACE vertices (excluding BSSRDF entries, camera,
+		// light roots, media, escapes); a jump pair counts 1 in either
+		// direction, so D is path-invariant. Covering light tail `verts[w..k]`
+		// requires `D - L(w-1)` eye surface hits plus remaining medium
+		// vertices. The largest witness `w` of the last witness-bearing
+		// jump dominates all earlier ones (`w = 0` = area hit / env escape).
 		//////////////////////////////////////////////////////////////
 
 		//! The loop budget of a BDPT/VCM/MLT subpath walk: one iteration
@@ -521,55 +365,20 @@ namespace RISE
 		}
 
 		//////////////////////////////////////////////////////////////////
-		// DL-471: per-type bounce caps (`max_diffuse_bounce`,
-		// `max_glossy_bounce`, `max_transmission_bounce`,
-		// `max_translucent_bounce`) are a property of the JOINED PATH, the
-		// contract PT implements (docs/SCENE_CONVENTIONS.md section 8.10).
+		// Joined-path per-type bounce caps (DL-471 / DL-481;
+		// docs/SCENE_CONVENTIONS.md §8.10).
 		//
-		// Number a path's scattering vertices x_1 .. x_K from the camera, x_K
-		// the one adjacent to the light (the root of the light subpath, the
-		// emitter the eye walk hit, or the environment).  The cap counts the
-		// lobe type of the scatter at every x_1 .. x_{K-1}, and at x_K only
-		// when that scatter is a DELTA lobe or x_K has no BSDF: PT's NEE at
-		// x_K is free and so is its BSDF-sampled continuation to the light
-		// (DL-467, traced for emission only), while a delta / BSDF-less x_K
-		// keeps the plain cut.  Medium scatters and subsurface jumps count
-		// nothing here (`max_volume_bounce` bounds the former; the jump's
-		// translucent count is DL-482).
+		// For scattering vertices x_1..x_K from camera to light: counts
+		// lobe types at x_1..x_{K-1}, and at x_K only if delta or no BSDF
+		// (NEE and BSDF continuation to light at x_K are free). Medium
+		// scatters do not count here; BSSRDF entries charge eRayTranslucent.
 		//
-		// With lobe labels this is a restriction of the INTEGRAND, not of
-		// which strategies exist: a strategy's expected contribution at an
-		// unlabelled path x is the sum over its sampled interior labels times
-		// the allowed part of its endpoints' BSDFs -- exactly f_cap(x) -- as
-		// long as (a) every walk truncation discards only labellings that
-		// are over the cap anyway (the light walk does not count its free
-		// first vertex; the eye walk traces a free x_K's over-cap
-		// continuation for its emitter hit, mirroring PT) and (b) a counted
-		// connection endpoint has a defined type.  (b) holds when the
-		// endpoint material's possible non-delta lobe types
-		// (IMaterial::ConnectionScatterTypes) are a single type, or include
-		// no type whose cap can bind.  Otherwise (DL-481) a material that
-		// splits its value by lobe label (IMaterial::HasConnectionTypeSplit,
-		// IBSDF::valueByScatterType) is priced by the sum over its ALLOWED
-		// labels (JoinedTypeCapPlan / AllowedTypeProduct) -- the integrand
-		// restriction itself, so the strategy stays in the estimate and
-		// every denominator and the MIS densities are untouched.  Only a
-		// material with several types and NO split keeps the old rule: the
-		// strategy is EXCLUDED from the estimate and from every MIS
-		// denominator (BDPT / MLT) and VCM estimates the path with S0 + NEE
-		// only -- exact over the strategies that remain, but a path whose
-		// only strategies have such an endpoint (a point-light caustic onto
-		// a coated receiver) loses its energy under a cap that can bind
-		// (DL-502).
-		//
-		// A cap that cannot bind is dropped here: a path the bidirectional
-		// walks can generate has at most max_eye_depth + max_light_depth
-		// scattering SURFACES (each walk's surface cap; an emitter hit is
-		// the eye walk's, a medium vertex or subsurface jump counts no
-		// type), and the counted vertices are a subset of them, so a cap
-		// N >= max_eye_depth + max_light_depth never rejects a path and the
-		// walks never reach it (each counts at most its own surface cap).
-		// A render whose caps cannot bind is therefore the cap-free one.
+		// Counted multi-type connection endpoints whose material implements
+		// `HasConnectionTypeSplit` / `IBSDF::valueByScatterType` are priced
+		// over allowed label combinations via `AllowedTypeProduct` (leaving
+		// MIS untouched). Multi-type endpoints without a split are excluded
+		// from the strategy and MIS (VCM falls back to s=0 + NEE).
+		// Caps >= max_eye_depth + max_light_depth cannot bind and become UINT_MAX.
 		//////////////////////////////////////////////////////////////////
 
 		struct BounceTypeCaps
@@ -1011,37 +820,14 @@ namespace RISE
 			return true;
 		}
 
-		/// The largest split index w at which the EYE-sampled family has
-		/// a strategy for a path whose jump the light walk sampled at
-		/// `verts[p] -> verts[p+1]` (the hit where the light went in,
-		/// then the entry), ignoring depth caps.  The eye would arrive at
-		/// the entry's point, jump to verts[p] (its own entry vertex there
-		/// -- connectible exactly when verts[p+1] is), and must split the
-		/// light-side segment verts[s..p] somewhere; verts[s] is the light
-		/// root (s == 0) or the previous KEPT light entry.  The
-		/// strategies, with the eye covering verts[w..p] and the light
-		/// verts[s..w-1]:
-		///   w = 0 (eye hits the root): s == 0, root not delta;
-		///   merge at verts[w] (VCM only): merging live, verts[w] a
-		///     non-delta surface;
-		///   NEE / connection at the edge (w-1, w): verts[w] non-delta
-		///     and connectible, and verts[w-1] the root (NEE reaches any
-		///     light) or a non-delta connectible vertex (a kept entry is
-		///     one).
-		/// "Non-delta" is the path's own scatter at that vertex (the
-		/// light walk's sampled lobe), so the witness is a function of
-		/// the path.  Returns -1 when no strategy exists at any depth.
-		///
-		/// @a seeThroughNEE (DL-330 review P1): the eye family also has
-		/// BDPT's see-through s = 1 connection -- NEE from an eye vertex to a
-		/// delta light root across a straight chain of delta pass-throughs
-		/// (DeltaPassThroughChainToRoot), evaluated on every such path and
-		/// MIS-weighted since DL-425 (DL-424 gave VCM the same NEE).  It is
-		/// a witness like any other NEE split: the eye covers verts[w..p],
-		/// the light only the root, the gaps being crossed by the
-		/// connection.  BDPT, MLT and VCM pass true when the scene's
-		/// pass-through shadow walk is live
-		/// (`RayCaster::DeltaPassThroughShadowsActive`).
+		/// Largest split index `w` where the eye family has a strategy for a
+		/// light-walk jump `verts[p] -> verts[p+1]` along segment `verts[s..p]`
+		/// (ignoring depth caps), or -1 if none exists:
+		///   w = 0: eye hits non-delta root (`s == 0`);
+		///   merge at `verts[w]`: `mergingActive` and non-delta surface;
+		///   connection/NEE on `(w-1, w)`: `verts[w]` connectible non-delta and
+		///     `verts[w-1]` is root, connectible non-delta, or (with
+		///     `seeThroughNEE` and `s == 0`) a `DeltaPassThroughChainToRoot`.
 		inline int LightSegmentEyeWitness(
 			const std::vector<BDPTVertex>& verts,
 			const std::size_t s,

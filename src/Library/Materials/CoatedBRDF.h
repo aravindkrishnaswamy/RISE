@@ -1,129 +1,30 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  CoatedBRDF.h - The CLOSED-FORM combined layer response for
-//    `coated_material` (docs/WETNESS_COAT_DESIGN.md 7.1, Phase 2
-//    item 1).
+//  CoatedBRDF.h - Closed-form layered response for `coated_material`
+//  (docs/WETNESS_COAT_DESIGN.md §7.1-7.5).
 //
-//  This class is the point of Phase 2.  `composite_material` forwards
-//  one sub-material's BSDF (3.2 defect 2) and `polished_material`
-//  returned a bare LambertianBRDF (3.3; fixed by DL-285, 2026-09-28,
-//  which gave it its own PolishedBRDF), so before this triad EVERY
-//  route to a coated surface in RISE mis-evaluated direct lighting --
-//  NEE, BDPT vertex connections and MIS denominators all saw an
-//  UNCOATED substrate.  `value` / `valueNM` here answer with the
-//  actual layered response.
+//  Model: coverage fraction `c = coat_weight` blends an air-exposed base
+//  and a dielectric-coated base:
+//    f = c * f_coat + (c * K(cos_i, cos_o) + (1 - c)) * f_base
+//    K = T(cos_i) T(cos_o) A_in A_out / (eta^2 (1 - r_i R A_rt))
+//  where `f_coat` is GGX + dielectric Fresnel + Kulla-Conty MS via
+//  `MicrofacetEnergyLUT` (coat's own MS), while `1/(1 - r_i R A_rt)`
+//  handles coat<->substrate recycling (producing spectral wet darkening
+//  and chroma boost from transport; no wet-exponent parameter).
 //
-//  THE MODEL (7.3 mixture x 7.4 layer):
-//
-//    f  =  c * f_coat
-//       +  ( c * K(cos_i, cos_o) + (1 - c) ) * f_base
-//
-//    K  =  T(cos_i) T(cos_o) A_in A_out / ( eta^2 (1 - r_i R A_rt) )
-//
-//  `c` is coat_weight, the sub-pixel COVERAGE fraction (7.3).  The
-//  two branches of 7.5's three-term mixture reach the substrate
-//  DIFFERENTLY -- the (1 - c) branch through air with no Fresnel
-//  transmission and no recycling, the `c` branch through the coat with
-//  both -- and collapsing them would turn `c` into a gloss knob rather
-//  than a coverage fraction.  The algebra above keeps them distinct
-//  while factoring the shared `f_base`.
-//
-//  DL-388 (2026-10-02): the formula above, with `f_base` read at the
-//  OUTER directions, is the Lambertian case only (where it is exact) and
-//  the fabric / weave case (an approximation, DL-417).  Oren-Nayar and
-//  GGX substrates are evaluated in the coat's REFRACTED frame,
-//      c ( f_coat + T T A A [ f_base(wi', wo') + M ] / eta^2 ) + (1 - c) f_base,
-//  with M the recycled field: the old 1/(1 - E_ret R) factor on the
-//  refracted f_base for Oren-Nayar, a lobe reservoir built from the
-//  substrate's own first-bounce return for GGX.  Derivation and
-//  measurements: CoatedBRDF.cpp "SUBSTRATE IN THE COAT'S FRAME" and
-//  docs/DEBT_LEDGER.md.
-//
-//  `f_coat` is a GGX lobe (7.2 types coat_roughness as "GGX alpha on
-//  the coat lobe") with dielectric Fresnel at the microfacet normal
-//  plus a Kulla-Conty multiple-scattering tail via
-//  `MicrofacetEnergyLUT` -- which is what 7.4 says that LUT is for
-//  here: "the coat lobe's OWN multiple-scatter once coat_roughness is
-//  non-trivial", NOT the coat<->substrate recycling (that is
-//  CoatedLayer's closed-form `1/(1 - r_i R)`).
-//
-//  SPECTRAL WET DARKENING IS TRANSPORT, NOT AN EXPONENT (7.1's second
-//  requirement).  `valueNM` evaluates the substrate at the hero
-//  wavelength through `hemisphericalAlbedoNM` / `valueNM` and lets the
-//  PER-CHANNEL
-//  recycling `1/(1 - r_i R(lambda))` act.  Since the amplification is
-//  largest where R(lambda) is largest, the Saunderson form of 2.1
-//  falls out -- darkening AND chroma boost together, from transport.
-//  There is deliberately no `substrate_wet_exponent` in the shipping
-//  parameter set (Phase 2 item 4): an additional R^k would
-//  double-count this very mechanism.
-//
-//  ============================================================
-//  TRANSMISSION THROUGH THE COAT (DL-23, docs/DEBT_LEDGER.md;
-//  mirrors FabricBRDF.h's "TRANSMISSION THROUGH THE FUZZ LAYER",
-//  R8 P1.1 / docs/CLOTH_FABRIC_DESIGN.md 15 debt 22)
-//  ============================================================
-//
-//  A `weave_material` substrate under `transmission thin` carries two
-//  BELOW-HORIZON lobes (a delta gap pass-through and a Lambertian
-//  back-face lobe, WeaveBRDF.h section 2a).  Before DL-23 this BRDF
-//  returned 0 for every opposite-hemisphere (light, view) pair --
-//  `coated_material` could not even NAME such a substrate (DL-23 is
-//  what admits `weave_material`/`fabric_material` to the allowlist at
-//  all), so this was latent rather than shipped-and-silent, unlike
-//  fabric's identical defect.  The fix is the same shape: FORWARD the
-//  substrate's transmission and MODULATE it by the coat's own
-//  two-crossing attenuation.
-//
-//      f(l, v) = f_base(l, v) * K_t(l, v)        for  (n.l)(n.v) < 0
-//
-//      K_t = Ain(|n.l|) * Aout(n.v) * rec * Tin(|n.l|) * Tout(n.v) / eta^2
-//
-//  -- literally `value()`'s existing reflection-branch `K`, with the
-//  LIGHT-side macro cosine `nr` (originally the VIEW's own, by the
-//  reciprocal naming this file already uses) replaced by `|n.l|`,
-//  since the light is now on the far side of the surface from the
-//  viewer.  `rec` (the SAME recycling factor, driven by the
-//  substrate's view-independent `R`) is REUSED, not dropped, for the
-//  reason FabricBRDF.h gives for its own continuum transmit branch:
-//  the coat's multi-bounce series is a property of the LAYER PAIR
-//  (how much the coat intercepts and re-scatters back onto the
-//  substrate before either escapes), not of which side the light
-//  ultimately exits -- and `R` legitimately falls as the substrate's
-//  own transmissiveness rises, so a highly transmissive weave
-//  automatically recycles less.
-//
-//  There is no separate coat term added on the transmit side (the
-//  coat's own GGX lobe is reflection-only and has no transmission of
-//  its own to contribute -- `FabricBRDF.h`'s identical "sheen stays 0"
-//  precedent): only the `(1-c)` uncoated fraction shows the bare
-//  substrate's transmission and the `c` fraction shows it attenuated
-//  by `K_t`, exactly mirroring the reflection formula's
-//  `fBase * (K*c + (1-c)) + fCoat*c` with the `fCoat*c` term dropped.
-//
-//  A SUBSTRATE THAT CANNOT TRANSMIT IS BIT-IDENTICAL.  The branch is
-//  gated on `bBaseFullSphere`, captured at construction from
-//  `IMaterial::ScattersFullSphere()` (the flag cannot change
-//  afterwards -- `base` is not rebindable on this material, and a
-//  weave's `transmission` enum is not rebindable either), so every
-//  Lambertian / Oren-Nayar / GGX / `transmission none` weave stack
-//  answers exactly as before -- the reflection branch below is
-//  untouched by this section.
-//
-//  `CoatedSPF`'s mixture sampler carries the matching fix: its
-//  `PdfImpl` and `ScatterImpl` admit a below-horizon `wo` exactly when
-//  `BaseScattersFullSphere()`, and a DELTA ray the substrate's own SPF
-//  emits (the weave's gap pass-through) is repriced by the coat's
-//  BARE two-crossing attenuation -- no `rec` factor, on FabricSPF's
-//  identical reasoning: a measure-zero direction has zero probability
-//  of receiving a diffusely re-scattered share of the recycling
-//  series.
-//
-//  `hemisphericalAlbedo{,NM}` and `albedo()` are NOT touched by this
-//  section -- both read the substrate's own `hemisphericalAlbedo`
-//  (`R`, a REFLECTANCE, not a reflectance+transmittance sum) exactly
-//  as before, matching FabricBRDF.h's identical choice to leave its
-//  own `hemisphericalAlbedo` untouched by its transmission fix.
+//  Load-bearing invariants:
+//  - Substrate frame dispatch (`SubstrateModel`): Lambertian uses outer
+//    directions (exact); Oren-Nayar and GGX evaluate inside the coat's
+//    refracted frame with recycled field M (cosine or lobe reservoir);
+//    fabric/weave use the outer-frame approximation.
+//  - Transmission (`bBaseFullSphere`, captured once from the substrate's
+//    IMaterial::ScattersFullSphere()): opposite-hemisphere pairs forward
+//    `f_base * (K_t*c + (1-c))` using |n.l| and the same `rec` factor,
+//    with no `f_coat` term. Delta gap rays in CoatedSPF omit `rec`.
+//    Non-transmitting bases early-out unchanged. `hemisphericalAlbedo`
+//    and `albedo` remain reflectance-only.
+//  - `SubstrateAlbedo` reads view-independent `hemisphericalAlbedo`
+//    (never `albedo`) to preserve reciprocity.
 //
 //  Author: Aravind Krishnaswamy
 //  Tabs: 4
@@ -163,21 +64,9 @@ namespace RISE
 				Scalar	thickness;		///< world length
 				Scalar	absorption;		///< 1/length
 				RISEPel	tint;			///< per-traversal transmission colour
-				//! Whether the coat is tinted AT ALL.  Decided ONCE
-				//! from the authored (un-uplifted) RGB triple and used
-				//! by both pipes, because a white painter's
-				//! `GetColorNM` is NOT exactly 1.0 across the band --
-				//! pre-Stage-C (2026-09-02,
-				//! docs/SPECTRAL_ILLUMINANT_CONVENTION.md) the
-				//! Jakob-Hanika uplift collapsed pure white off the red
-				//! end (~1.3e-5 at 660 nm, measured); post-Stage-C it is
-				//! 1 - epsilon instead, epsilon wavelength-dependent.
-				//! Testing `tint < 1` per wavelength, as an earlier
-				//! revision did, therefore made an UNTINTED coat opaque
-				//! in the red on every spectral render while RGB stayed
-				//! clean.  Full measurement in
-				//! CoatedLayer::PassTransmittance / IPainter.h's
-				//! IsUntintedWhite.
+				//! Whether the coat is tinted at all, decided once from authored RGB
+				//! so both pipes agree (spectral uplift of white is slightly < 1.0;
+				//! see IPainter::IsUntintedWhite / CoatedLayer::PassTransmittance).
 				bool	tinted;
 				Scalar	ri;				///< internal diffuse Fresnel reflectance for `eta`
 				Scalar	re;				///< external diffuse Fresnel average for `eta`
@@ -226,12 +115,9 @@ namespace RISE
 			//! weave sampling is unchanged.
 			Scalar RefractedSampleFraction() const;
 
-			//! DL-388: the share of the substrate branch CoatedSPF samples
-			//! from a cosine lobe about the macro normal, the technique for
-			//! the recycled term M (broad, while the GGX lobe a smooth
-			//! substrate's own sampler draws is narrow -- without it M's
-			//! weight value*cos/pdf is unbounded as alpha -> 0).  Nonzero only
-			//! for the GGX lobe reservoir, like RefractedSampleFraction.
+			//! Share of CoatedSPF's substrate branch sampled from a cosine lobe
+			//! about the macro normal to cover the broad recycled term M (nonzero
+			//! only for eSubstrateRefractedLobe).
 			Scalar RecycledSampleFraction() const;
 
 			CoatedBRDF(
@@ -243,32 +129,12 @@ namespace RISE
 				const IScalarPainter& coatAbsorption,
 				const IPainter& coatTint,
 				const bool recyclingCompensation = true,	///< [in] see kRecycling note below
-				//! [in] DL-23: the substrate material's `ScattersFullSphere()`.
-				//! Passed in rather than derived because `IBSDF` carries no
-				//! such flag -- it is an `IMaterial` property, and
-				//! `CoatedMaterial` is the only thing that holds both.
-				//! Defaults false so every pre-DL-23 caller (there is
-				//! exactly one production caller, `CoatedMaterial`, but the
-				//! default keeps any test-only direct construction
-				//! bit-identical to its old behaviour) is unaffected.
+				//! [in] Substrate material's `ScattersFullSphere()` (IBSDF lacks this
+				//! flag; captured once at construction from CoatedMaterial).
 				const bool baseScattersFullSphere = false,
-				//! [in] DL-192: optional tangent-space normal map applied
-				//! ONLY to the coat's own GGX lobe (Blender Principled
-				//! BSDF's "Coat Normal" socket) -- the substrate keeps its
-				//! own (possibly separately normal-mapped) shading normal
-				//! unchanged.  NULL (the default) is bit-identical to a
-				//! pre-DL-192 CoatedBRDF: `ResolveCoatFrame` returns its
-				//! input frame unchanged.  Decoded with the same glTF
-				//! convention `NormalMap.cpp` uses (RGB [0,1] -> tangent
-				//! vector [-1,1], z reconstructed), scaled by
-				//! `coatNormalScale` (the xy multiplier -- glTF
-				//! normalTexture.scale's analogue; Blender's Normal Map
-				//! node "Strength" slider binds here).  addref'd like
-				//! every other painter slot; never rebindable (no
-				//! `SetCoatNormal`) because nothing in tree needs to swap
-				//! it and the trailing-default-param ABI-preserving
-				//! extension point (RISE_API_CreateCoatedMaterial) only
-				//! promises construction-time binding.
+				//! [in] Optional tangent-space normal map applied only to the coat's
+				//! GGX lobe (NULL = unchanged frame). Decoded per NormalMap.cpp and
+				//! scaled by `coatNormalScale`. Addref'd; construction-time only.
 				const IPainter* coatNormal = 0,
 				const Scalar coatNormalScale = Scalar(1),
                 const bool auditedDiffuseBase = false
@@ -304,19 +170,10 @@ namespace RISE
 			//! both to build its mixture.
 			inline const IBSDF& GetBase() const { return *pBase; }
 
-			//! DL-192: resolve the per-lobe COAT shading frame at `ri`,
-			//! given the substrate's already ray-facing `baseOnb`
-			//! (`value`/`valueNM`/`CoatedSPF` all compute this the same
-			//! way -- `RayFacingONB(ri)` -- before calling in, so the
-			//! frame these three agree on to gate/evaluate/sample the
-			//! REST of the layer is exactly the one this perturbs).
-			//! Returns `baseOnb` UNCHANGED when no `coatNormal` painter
-			//! is bound (the common case) -- the ONE place this decision
-			//! is made, so `value`, `Scatter` and `Pdf` cannot drift
-			//! (DL-100's frame trap). A separately transported shader direction
-            //! changes anisotropy only: decode against ri.normalMapOnb's UV
-            //! axes and the ray-facing normal. Legacy UV/global Tangent4 hits
-            //! use baseOnb unchanged. NormalMap follows the same separation.
+			//! Resolves the coat-lobe shading frame from ray-facing `baseOnb`
+			//! (returns `baseOnb` unchanged if `pCoatNormal` is null). When a
+			//! separate shader tangent is present, decodes against `ri.normalMapOnb`
+			//! UV axes and the ray-facing normal (matching NormalMap).
 
 			OrthonormalBasis3D ResolveCoatFrame(
 				const RayIntersectionGeometric& ri,
@@ -330,12 +187,8 @@ namespace RISE
 			//! BaseScattersFullSphere`'s identical contract.
 			inline bool BaseScattersFullSphere() const { return bBaseFullSphere; }
 
-			//! The substrate's VIEW-INDEPENDENT reflectance -- the `R`
-			//! that drives the recycling denominator.  Reads
-			//! `IBSDF::hemisphericalAlbedo{,NM}`, never `albedo`:
-			//! feeding a view-dependent reflectance into a term shared
-			//! by both directions would make this BRDF non-reciprocal.
-			//! See the long note at the definitions in CoatedBRDF.cpp.
+			//! View-independent substrate reflectance R for recycling (reads
+			//! `hemisphericalAlbedo{,NM}`, never `albedo`, to preserve reciprocity).
 			RISEPel SubstrateAlbedo( const RayIntersectionGeometric& ri ) const;
 			Scalar  SubstrateAlbedoNM( const RayIntersectionGeometric& ri, const Scalar nm ) const;
 
@@ -351,19 +204,8 @@ namespace RISE
 			inline const IPainter*       GetCoatNormal()      const { return pCoatNormal; }
 			inline Scalar                GetCoatNormalScale() const { return coatNormalScale; }
 
-			//! Rebind for the interactive editor's MaterialIntrospection.
-			//! Unlike every other triad in Materials/, these do NOT need a
-			//! matching forwarder into the SPF: CoatedSPF holds a
-			//! reference to THIS object and reads every coat parameter
-			//! back through it (CoatedSPF.h), so evaluator and sampler
-			//! cannot drift by construction -- there is only one copy of
-			//! the state to rebind.
-			//!
-			//! addref-before-release throughout, so a self-rebind
-			//! (Set(X) where X is already bound) cannot destroy the
-			//! painter mid-swap -- LambertianBRDF::SetReflectance's
-			//! documented contract, and the same caller-side
-			//! cancel-and-park gate against the render thread applies.
+			//! Interactive editor rebinds (addref-before-release; CoatedSPF reads
+			//! shared state directly from this object, so no SPF forwarder needed).
 			void SetCoatWeight( const IScalarPainter& v );
 			void SetCoatIOR( const IScalarPainter& v );
 			void SetCoatRoughness( const IScalarPainter& v );
@@ -371,13 +213,8 @@ namespace RISE
 			void SetCoatAbsorption( const IScalarPainter& v );
 			void SetCoatTint( const IPainter& v );
 
-			//! FALSE reduces the layer to plain Weidlich-Wilkie single
-			//! bounce -- i.e. it DELETES 7.4's required interreflection
-			//! compensation.  Not reachable from the scene language and
-			//! never false in production; it exists so
-			//! tests/LayeredWhiteFurnaceTest.cpp can run the red-proof
-			//! pair (config 15) and MEASURE the ~45 % high-albedo loss
-			//! 7.4 predicts, instead of asserting it from theory.
+			//! False disables interreflection recycling (Weidlich-Wilkie single
+			//! bounce); always true in production, exposed for furnace unit tests.
 			inline bool GetRecyclingCompensation() const { return bRecycling; }
 
 		protected:

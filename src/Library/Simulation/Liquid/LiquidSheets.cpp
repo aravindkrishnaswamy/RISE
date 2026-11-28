@@ -1,7 +1,11 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  LiquidSheets.cpp - see LiquidSheets.h
-//
+//  LiquidSheets.cpp - Thin-sheet (cloth/membrane) MAC face-crossing
+//  detection, free-edge area coverage, leak blocking, and implicit
+//  Schur-complement coupling with the MAC pressure solve.
+//  Conventions: SI units; cell-centre segments detect crossed faces;
+//  thin 2-D axes (n[a] == 1) project implicit-sheet normals in-plane.
+//  Tabs: 4
 //  License Information: Please see the attached LICENSE.TXT file
 //
 //////////////////////////////////////////////////////////////////////
@@ -22,6 +26,9 @@ V3 Minus(const V3& a, const V3& b) { return {{a[0] - b[0], a[1] - b[1], a[2] - b
 V3 CrossP(const V3& a, const V3& b) { return {{a[1]*b[2] - a[2]*b[1], a[2]*b[0] - a[0]*b[2], a[0]*b[1] - a[1]*b[0]}}; }
 } // namespace
 
+// ------------------------------------------------------------------ prescribed motion & face crossings
+
+// Evaluates rigid prescribed path (X, q, V, w) onto all sheet vertices in world space.
 void LiquidSheet::PrescribedAt(double t)
 {
 	V3 X, V, w;
@@ -41,6 +48,7 @@ void LiquidSheet::PrescribedAt(double t)
 	}
 }
 
+// Upper bound on vertex speed across the sheet for adaptive CFL substep sizing.
 double LiquidSheet::SpeedBound() const
 {
 	if (motion == Motion::Prescribed) {
@@ -59,6 +67,8 @@ double LiquidSheet::SpeedBound() const
 	return std::sqrt(s);
 }
 
+// Intersects active sheet triangles with cell-centre lattice lines along all 3 axes to find
+// closed MAC faces, retaining the closest crossing per face and interpolating normal velocity.
 void FindSheetCrossings(const Grid& g, const std::vector<LiquidSheet>& sheets, std::vector<SheetCrossing>& out, Pool* pool, bool cover)
 {
 	out.clear();
@@ -182,6 +192,7 @@ bool Fed(const Grid& g, std::size_t c, const std::array<std::vector<double>,3>& 
 }
 } // namespace
 
+// Reverts dry cells that turned negative across closed sheet faces without a wet open neighbour.
 std::size_t BlockSheetLeaks(const Grid& g, const std::vector<SheetCrossing>& faces, const std::array<std::vector<double>,3>& fraction,
 	const std::vector<double>& old, std::vector<double>& phi, Pool* pool)
 {
@@ -221,6 +232,7 @@ std::size_t BlockSheetLeaks(const Grid& g, const std::vector<SheetCrossing>& fac
 	return kept;
 }
 
+// Returns true if every axis-aligned grid path from `from` to `to` hits a barrier sheet face.
 bool CrossesSheets(const Grid& g, const std::vector<SheetCrossing>& faces, const V3& from, const V3& to)
 {
 	int a[3], b[3];
@@ -404,6 +416,8 @@ bool TriangleNormal(const Grid& g, const LiquidSheet& sh, std::uint32_t t, V3& n
 }
 } // namespace
 
+// Computes fractional face-square coverage in [0, 1] near free sheet edges via Sutherland-Hodgman
+// clipping and adds partially covered edge-adjacent faces for smooth hydrodynamic loads.
 void SheetCover(const Grid& g, const std::vector<LiquidSheet>& sheets, std::vector<SheetCrossing>& faces, Pool* pool)
 {
 	std::vector<FreeEdges> free(sheets.size());
@@ -598,6 +612,8 @@ std::vector<std::uint32_t> BandOrder(const Cloth::BlockMatrix& a)
 }
 } // namespace
 
+// Assembles and Cholesky-factors the implicit sheet step matrix S = M(1 + dt*dm) +
+// (dt*dk + dt^2)*K + F_extra with Dirichlet pin elimination under RCM band ordering.
 bool SheetDynamics::Prepare(double dt, const std::vector<double>& v, const std::vector<SheetBlock>& extra,
 	const std::vector<std::uint32_t>& triangles, std::string& error)
 {
@@ -681,6 +697,7 @@ void SheetDynamics::Solve(const std::vector<double>& r, std::vector<double>& out
 	for (std::size_t q = 0; q < fixed.size(); ++q) if (fixed[q]) out[3*q] = out[3*q + 1] = out[3*q + 2] = 0;
 }
 
+// Refits corotational element rotations at predicted positions xe + dt*v and reassembles K.
 void SheetDynamics::Rotate(double dt, const std::vector<double>& v)
 {
 	if (!Corotated()) return;
@@ -703,6 +720,7 @@ void SheetDynamics::ResetElements()
 	elements.Assemble(rotated);
 }
 
+// Builds the implicit momentum RHS: M*v + dt*(f_ext - grad_elastic(xe)).
 void SheetDynamics::Rhs(double dt, const std::vector<double>& v, std::vector<double>& out) const
 {
 	const std::size_t n = mass.size();
@@ -723,6 +741,7 @@ void SheetDynamics::Rhs(double dt, const std::vector<double>& v, std::vector<dou
 		}
 }
 
+// Solves S * v_next = Rhs(dt, v) + extra - pinned, preserving pinned vertex velocities.
 void SheetDynamics::Predict(double dt, const std::vector<double>& v, const std::vector<double>& extra, std::vector<double>& out) const
 {
 	const std::size_t n = mass.size();
@@ -760,6 +779,8 @@ bool SheetDynamics::Replay(double dt, const std::vector<double>& v, const std::v
 	return true;
 }
 
+// ------------------------------------------------------------------ pressure-sheet Schur coupling
+
 SheetCoupling::SheetCoupling(const Grid& g, const std::vector<SheetCrossing>& faces, const std::vector<LiquidSheet>& sheets, double density,
 	const std::vector<std::uint8_t>* skip)
 	: g_(g), crossings_(faces), sheets_(sheets), skip_(skip && !skip->empty() ? skip : nullptr), scale_(density*g.h*g.h*g.h)
@@ -775,6 +796,7 @@ SheetCoupling::SheetCoupling(const Grid& g, const std::vector<SheetCrossing>& fa
 		}
 }
 
+// Filters crossed faces adjacent to active liquid cells and caches barycentric normal weights.
 void SheetCoupling::Begin(const std::vector<std::uint8_t>& active)
 {
 	faces_.clear();
@@ -801,6 +823,7 @@ void SheetCoupling::Begin(const std::vector<std::uint8_t>& active)
 	}
 }
 
+// Maps pressure-jump field q across crossed faces to nodal vertex impulses J^T q.
 void SheetCoupling::Measure(const std::vector<double>& q, std::vector<std::vector<double>>& out) const
 {
 	out.resize(sheets_.size());
@@ -812,6 +835,7 @@ void SheetCoupling::Measure(const std::vector<double>& q, std::vector<std::vecto
 	}
 }
 
+// Adds the symmetric Schur-complement coupling term scale * J * S^-1 * J^T * q into `out`.
 void SheetCoupling::ApplyAdd(const std::vector<double>& q, std::vector<double>& out) const
 {
 	if (faces_.empty()) return;
@@ -852,6 +876,7 @@ void SheetCrossingVelocities(const std::vector<LiquidSheet>& sheets, const std::
 	}
 }
 
+// Projects vertex impulses over time `span` onto area-weighted vertex normals to recover pressure.
 void SheetPressure(const LiquidSheet& sheet, const std::vector<double>& impulse, double span, std::vector<double>& pressure)
 {
 	const std::size_t n = sheet.Vertices();

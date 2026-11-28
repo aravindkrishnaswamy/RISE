@@ -23,7 +23,7 @@ implementation backlog is [ROADMAP.md](ROADMAP.md).
 - [RELEASE_NOTES.md](RELEASE_NOTES.md): user-visible changes and asset regeneration requirements
 - [ARCHITECTURE.md](ARCHITECTURE.md): scene/runtime ownership, render phases, snapshots, TLAS, OIDN/film behavior, and thread-safety invariants
 - [PERFORMANCE.md](PERFORMANCE.md): topology-aware worker policy, benchmarking, and load-bearing thread-priority rules
-- [BUILD_FLAGS.md](BUILD_FLAGS.md): measured `make` and Xcode fast-math / strict-FP32 / LTO flag parity (`LTO=full|thin|off`)
+- [BUILD_FLAGS.md](BUILD_FLAGS.md): measured `make` and Xcode fast-math / strict-FP32 / LTO flag parity (`LTO=thin|full|off`, default thin)
 - [CROSS_PLATFORM_CI.md](CROSS_PLATFORM_CI.md): Windows (MSVC) and Android (NDK arm64) compile/build status and workflow
 - [SCENE_CONVENTIONS.md](SCENE_CONVENTIONS.md): canonical scene-authoring semantics and common portability traps
 - [BEAUTY_ADAPTIVE_MOMENTS.md](BEAUTY_ADAPTIVE_MOMENTS.md): compensated beauty luminance moments, adaptive convergence, and producer parity
@@ -67,10 +67,11 @@ implementation backlog is [ROADMAP.md](ROADMAP.md).
 
 ### Simulation & Fire/Smoke
 
-- [SIMULATION_SOLVER_CONTRACT.md](SIMULATION_SOLVER_CONTRACT.md): frozen v1 solver contract covering `fire.methane` (v3), `cloth.shell` (m3a.8), `rigid.bodies` (m6.2), and `liquid.mac` (m7m.1)
+- [SIMULATION_SOLVER_CONTRACT.md](SIMULATION_SOLVER_CONTRACT.md): frozen v1 solver contract covering `fire.methane` (version 4), `cloth.shell` (m3a.8), `rigid.bodies` (m6.2), and `liquid.mac` (m7m.1)
 - [SIMULATION_IN_RISE_PROPOSAL.md](SIMULATION_IN_RISE_PROPOSAL.md): simulation architecture, scene chunks, and execution status (§5)
 - [SIMULATION_GUI_STATUS.md](SIMULATION_GUI_STATUS.md): macOS/Windows/agent simulation integration status
 - [SIMULATION_PERFORMANCE.md](SIMULATION_PERFORMANCE.md): simulation performance measurements and tuning notes
+- [SIMULATION_SHOWCASE.md](SIMULATION_SHOWCASE.md): the simulation showcase scenes (`scenes/Showcase/Simulation/`), how to bake and render them, and the engine requests they raised
 - [SIMULATION_FIELD_FORMAT.md](SIMULATION_FIELD_FORMAT.md), [SIMULATION_GRID_FORMAT.md](SIMULATION_GRID_FORMAT.md), [SIMULATION_MESH_FORMAT.md](SIMULATION_MESH_FORMAT.md), [SIMULATION_POINTS_FORMAT.md](SIMULATION_POINTS_FORMAT.md), [SIMULATION_TRANSFORM_FORMAT.md](SIMULATION_TRANSFORM_FORMAT.md), and [SIMULATION_M7_REFERENCES.md](SIMULATION_M7_REFERENCES.md): native cache payload formats and liquid physics references
 - [FIRE_SMOKE_STATUS.md](FIRE_SMOKE_STATUS.md): current fire/smoke state, open problems, and operating rules (start here for fire work); see also [FIRE_SMOKE_DESIGN.md](FIRE_SMOKE_DESIGN.md), [FIRE_SMOKE_PRODUCTION_SOLVER.md](FIRE_SMOKE_PRODUCTION_SOLVER.md), [FIRE_SMOKE_SOLVER_SPEC.md](FIRE_SMOKE_SOLVER_SPEC.md), [FIRE_GAS_OPACITY_DATASET.md](FIRE_GAS_OPACITY_DATASET.md), [FIRE_CHEM_RECORDS_V1.md](FIRE_CHEM_RECORDS_V1.md), [FIRE_OPTICS_PRESET_V1.md](FIRE_OPTICS_PRESET_V1.md), [FIRE_OUTPUT_PROVENANCE_PIN_V1.md](FIRE_OUTPUT_PROVENANCE_PIN_V1.md), [FIRE_DATASET_PULL_MANIFEST.md](FIRE_DATASET_PULL_MANIFEST.md), [FIRE_SIM_DATASET_MANIFEST.md](FIRE_SIM_DATASET_MANIFEST.md), and [RENDER_PREPARATION_LIFECYCLE.md](RENDER_PREPARATION_LIFECYCLE.md)
 

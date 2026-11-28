@@ -2,6 +2,11 @@
 //
 //  FireProductionAdvectionUnsupported.cpp - honest non-Metal remap seam
 //
+//  Fail-closed stub linked on platforms without Apple Metal in place of
+//  FireProductionAdvectionMac.mm. Every Metal remap, palindrome, FCT,
+//  EOS, target-lineage, and digest entry point resets its output and
+//  returns false without silently falling back to the CPU oracle.
+//
 //  License Information: Please see the attached LICENSE.TXT file
 //
 //////////////////////////////////////////////////////////////////////

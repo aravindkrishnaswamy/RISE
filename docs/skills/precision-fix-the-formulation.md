@@ -233,7 +233,7 @@ cannot represent all coefficients, preserve a separate exponent through
 the same factorization, including Vieta recovery, rather than silently
 turning small coefficients into zero. Range extension does not add
 significand precision. See [the derivation, finite boundary oracles and
-renewed gates](../../DEBT_LEDGER.md).
+renewed gates](../DEBT_LEDGER.md).
 
 ### Bilinear-patch shadow-ray self-shadowing (masqueraded as an MIS bug)
 

@@ -110,39 +110,10 @@ BSSRDFSampling::SampleResult BSSRDFSampling::SampleEntryPoint(
 		exitPoint,
 		perpU * offsetU + perpV * offsetV );
 
-	//
-	// Step 6: Cast a single finite CHORD along the probe axis, passing
-	// THROUGH the projection plane (the perpU/perpV plane through
-	// exitPoint that probeCenter lies in), and collect every
-	// intersection the chord crosses -- the standard separable-BSSRDF
-	// probe (Christensen & Burley 2015; PBRT's SeparableBSSRDF::Sample_Sp
-	// traces the same start-before/travel-through chord).
-	//
-	// DL-52: the previous implementation started BOTH probe rays AT
-	// probeCenter (a point IN the projection plane) and advanced
-	// BSSRDF_RAY_EPSILON before the first intersection test, once per
-	// +axis and once per -axis.  On a broad flat face, probeCenter is
-	// itself coplanar with the local surface (a lateral tangent/
-	// bitangent offset never leaves the plane of a flat surface), so
-	// BOTH epsilon advances moved the ray origin to the WRONG side of
-	// exactly the nearby surface the probe was centered on before the
-	// intersection test ever ran.  The dominant near-coplanar entry
-	// point -- the one the whole disk-projection scheme is built to
-	// find -- was skipped by construction on every sample; only a
-	// distant, unrelated surface crossed later along either half-line
-	// (e.g. the far side of a slab) could restore any profile mass.
-	//
-	// Fix: trace ONE continuous ray per axis, starting well BEFORE the
-	// projection plane (probeMaxDist back along -axis) and travelling
-	// forward THROUGH it for a total chord length of 2*probeMaxDist.  A
-	// surface coplanar with (or arbitrarily close to) the projection
-	// plane is now crossed mid-chord like any other intersection, never
-	// skipped by an epsilon offset anchored ON the plane.  The single
-	// monotonic sweep (the bounce loop only ever advances `traveled`
-	// forward) cannot hit the same physical point twice, and it
-	// subsumes what the old two-direction trace covered on both sides
-	// of probeCenter -- no distinct "+axis" and "-axis" loop is needed.
-	//
+	// Step 6: Cast one finite chord along probeAxis starting probeMaxDist
+	// before the projection plane (total length 2 * probeMaxDist) so
+	// coplanar flat surfaces are crossed mid-chord rather than skipped by
+	// an epsilon offset anchored on the plane (Christensen & Burley 2015).
 	struct ProbeHit {
         Scalar coverage = 1;
 		Point3 point;
@@ -174,12 +145,7 @@ BSSRDFSampling::SampleResult BSSRDFSampling::SampleEntryPoint(
 	{
 		const Point3 chordStart = Point3Ops::mkPoint3( probeCenter, -probeAxis * probeMaxDist );
 		Ray probeRay( chordStart, probeAxis );
-		// P3 bookkeeping note: this initial epsilon advance is NOT added to
-		// `traveled` below, so the loop's actual reach is
-		// `chordLength + BSSRDF_RAY_EPSILON` from `chordStart`, not exactly
-		// `chordLength` -- negligible (epsilon-scale) but stated explicitly
-		// here since the per-hit `remaining` budget is computed against
-		// `chordLength` alone.
+		// Initial epsilon advance is not counted in `traveled` (effective reach +eps).
 		probeRay.Advance( BSSRDF_RAY_EPSILON );
 
 		const Scalar chordLength = 2.0 * probeMaxDist;
@@ -194,14 +160,8 @@ BSSRDFSampling::SampleResult BSSRDFSampling::SampleEntryPoint(
 
 			if( !probeRI.geometric.bHit ) break;
 
-			// Entry material owns the optical proposal, but coverage belongs
-            // to this actual endpoint (CSG may inherit a different material).
-            // Round 3 P1-4: on a MixMaterial, apply mix pass-through coverage
-            // at the entry point composed with the exit leaf's own alpha, and
-            // inherit the exit leaf's modifier when set.
-            // Slice 3 R1 A-P2-4: populate signals & pCamera before coverage and
-            // before pEffectiveMod->Modify so procedural modifiers / weights
-            // using proximity(), osl_ao(), or camera transforms see live context.
+			// Populate live signals/camera before evaluating coverage and modifiers;
+            // on MixMaterial, compose mix coverage with exit leaf alpha and inherit leaf modifier.
             probeRI.geometric.rast = ri.rast;
             probeRI.geometric.pCamera = ri.pCamera;
             probeRI.geometric.signals.pScene = ri.signals.pScene;
@@ -253,103 +213,23 @@ BSSRDFSampling::SampleResult BSSRDFSampling::SampleEntryPoint(
 			h.signals.pSelf = pObject;
 			h.signals.ptWorld = h.point;
 
-			// DL-71/DL-75 (P1): recover the TRUE, ray-independent winding
-			// normal from a geometry that re-orients its reported normal
-			// to face the incoming ray (RayIntersectionGeometric::
-			// bGeomNormalOrientedToRay -- double-sided triangle meshes,
-			// ClippedPlaneGeometry, BezierPatchGeometry, and HairGeometry).
-			//
-			// A PREVIOUS version of this fix (round 1, DL-71) applied the
-			// correction only on "near-half" hits (`distFromChordStart <
-			// probeMaxDist`), reasoning that only those hits were reached
-			// from the "opposite" direction a pre-DL-52 `-probeAxis` probe
-			// would have used.  That positional model is WRONG in general:
-			// the flip predicate each setter evaluates (e.g.
-			// TriangleMeshGeometry::IntersectRay's `bFlipGeomNormal =
-			// Dot(vGeomNormal, ray.Dir()) > 0`) is a per-hit fact about
-			// THIS ray direction and THIS surface winding -- it does not
-			// depend on which half of the chord the hit falls in.  On a
-			// concave double-sided mesh (an L-corner, an ear) a FAR-half
-			// hit can just as easily be an EXITING crossing that gets
-			// flipped, and the near/far boundary itself sits at the
-			// initial `BSSRDF_RAY_EPSILON` advance from chordStart -- a
-			// hit a few ulps past that boundary was silently inverted by
-			// the old code for no physical reason.  The correct rule is
-			// unconditional: `oriented ? -raw : raw` recovers the true
-			// winding-order normal for EVERY hit where the flag is set,
-			// regardless of position or approach direction (see the field's
-			// own doc comment in RayIntersectionGeometric.h).
-			//
-			// EXCEPTION -- HairGeometry (DL-75): its
-			// `bGeomNormalOrientedToRay` is unconditionally true, but the
-			// reported normal is FABRICATED (ray-derived), not the
-			// recovery of a genuine two-sided winding normal -- a hair
-			// ribbon has no "outward side" to undo the flip back to.
-			// Applying the correction there would just report the
-			// ray-OPPOSITE direction, not a physically meaningful entry
-			// normal, so `bGeomNormalRayDerived` gates the correction off
-			// for hair (filed as DL-75: SSS on hair geometry has no
-			// defined outward entry normal -- coverage/precision gap, not
-			// fixed here).
-			//
-			// Geometry types that never set `bGeomNormalOrientedToRay`
-			// (the vast majority -- any consistently-wound single-sided
-			// mesh, and every analytical primitive) are untouched either
-			// way, since the flag defaults false for them.
-			//
-			// DL-96 (checked, NOT changed here): the entry GATE at the
-			// call site (PathTracingIntegrator.cpp / BDPTIntegrator.cpp)
-			// now admits BSSRDF entry from EITHER face of an open sheet
-			// (`RayIntersectionGeometric::bOpenSheet` / `BSSRDFEntryFacing`
-			// -- see those doc comments), but this probe loop's own job
-			// is different: given that an exit hit was admitted, find a
-			// SELF-CONSISTENT nearby entry point on the same physical
-			// surface.  For a thin/open sheet the profile's radiative
-			// transfer is symmetric in the sheet's SINGLE true normal
-			// regardless of which face was viewed (a backlit leaf glows
-			// the same way, mirrored) -- so probe hits keep recovering
-			// the TRUE winding-order normal unconditionally here, exactly
-			// as DL-71/DL-75 already validate ("no legitimate reason for
-			// the entry side to disagree", `BSSRDFPlanarProbeReachTest`'s
-			// `outwardOriented`/`neePositive` checks).  Gating this
-			// recovery on `bOpenSheet` too was tried and REVERTED: every
-			// double-sided `TriangleMeshGeometry` hit sets `bOpenSheet`
-			// unconditionally (that class has no watertightness
-			// certification at all), so it collapsed `outwardOriented`
-			// from 500/500 to 0/500 on that suite's real double-sided
-			// mesh/clipped-plane fixtures -- confirmed by an isolated
-			// rebuild+rerun before reverting.
+			// Unconditionally undo ray-oriented normal flipping to recover the
+			// true winding normal (double-sided meshes, clipped planes, Bezier
+			// patches), except for fabricated ray-derived normals (HairGeometry,
+			// bGeomNormalRayDerived).  Open sheets still recover unconditionally
+			// here so all probe hits share one consistent surface normal.
 			if( probeRI.geometric.bGeomNormalOrientedToRay &&
 				!probeRI.geometric.bGeomNormalRayDerived )
 			{
 				h.geomNormal = -h.geomNormal;
 
-				// P2-A: the SHADING normal's own flip predicate
-				// (`Dot(vNormal, ray.Dir()) > 0`, e.g.
-				// TriangleMeshGeometry::IntersectRay's `ri.vNormal =
-				// -ri.vNormal` a few lines above its independent
-				// `bFlipGeomNormal` test) is evaluated INDEPENDENTLY of
-				// the geometric normal's -- at a grazing crossing the two
-				// can disagree (the interpolated per-vertex shading
-				// normal already opposes the chord while the flat face
-				// normal does not, or vice versa).  Blindly negating
-				// `h.normal` in lockstep with `h.geomNormal` (round-1
-				// DL-71 behaviour) can therefore leave the pair in
-				// OPPOSITE hemispheres.  Instead, orient the (unflipped)
-				// shading normal into the SAME hemisphere as the just-
-				// corrected geometric normal -- the pairing every
-				// downstream BSSRDF/Fresnel/cosine consumer assumes.
+				// Shading and geometric normals flip independently at grazing hits;
+				// orient shading normal into the corrected geometric hemisphere.
 				if( Vector3Ops::Dot( h.normal, h.geomNormal ) < 0 ) {
 					h.normal = -h.normal;
 				}
 
-				// Rebuild the basis around the corrected shading normal,
-				// keeping the existing tangent (u) as the seed so the
-				// frame stays a genuine orthonormal triple rather than
-				// just negating W in isolation (which downstream
-				// consumers that overwrite vNormal/onb together -- e.g.
-				// PathTracingIntegrator.cpp, BDPTIntegrator.cpp -- would
-				// otherwise receive as a mismatched W-vs-U/V pair).
+				// Rebuild orthonormal frame around the corrected shading normal.
 				h.onb.CreateFromWU( h.normal, h.onb.u() );
 			}
 
@@ -434,12 +314,8 @@ BSSRDFSampling::SampleResult BSSRDFSampling::SampleEntryPoint(
 	const Scalar rProjT = sqrt( dN*dN + dB*dB );
 	const Scalar rProjB = sqrt( dN*dN + dT*dT );
 
-	// The disk-to-surface area Jacobian uses the geometric normal.
-	// Shading-normal modifiers change the angular frame, not probe-hit density.
-	// DL-96: `fabs` makes these three projections invariant under a sign
-	// flip of `entryGeomNormal`, so they need no `bOpenSheet` branch --
-	// unlike the entry-gate and the probe-recovery loop above, an open
-	// sheet's choice of "which face's normal" cancels here regardless.
+	// Disk-to-surface area Jacobian uses entryGeomNormal (fabs makes it
+	// sign-invariant on open sheets; shading modifiers don't change hit density).
 	const Scalar cosN = fabs( Vector3Ops::Dot( entryGeomNormal, exitNormal ) );
 	const Scalar cosT = fabs( Vector3Ops::Dot( entryGeomNormal, exitTangent ) );
 	const Scalar cosB = fabs( Vector3Ops::Dot( entryGeomNormal, exitBitangent ) );
@@ -515,11 +391,7 @@ BSSRDFSampling::SampleResult BSSRDFSampling::SampleEntryPoint(
 	entryRig.ptObjIntersec = hits[sel].ptObjIntersec;
 	entryRig.vColor = hits[sel].vColor;
 	entryRig.bHasVertexColor = hits[sel].bHasVertexColor;
-	// DL-49: the entry point is on the same object's boundary, bathed in
-	// the same exterior medium the exit hit was reached through (the
-	// continuation ray carries that same IOR stack), so the entry record
-	// inherits the exit record's exterior index.  The probe hits above
-	// are fresh intersections and never carried one.
+	// Inherit exit hit's exterior medium (fresh probe hits carry none).
 	entryRig.ambientIOR = ExteriorIOR( ri );
 
 	const Scalar eta = RelativeBoundaryIOR(
@@ -553,18 +425,8 @@ BSSRDFSampling::SampleResult BSSRDFSampling::SampleEntryPoint(
 		result.weightSpatialNM = RdScalar * FtExit / pdfSurface;
 	}
 
-	// Offset entry point along the surface normal so that shadow
-	// rays (NEE) and connection rays (BDPT) clear the originating
-	// surface and do not self-intersect.  This is critical for thin
-	// geometry where the entry point lies on a face whose back side
-	// is within floating-point epsilon.
-	// Offset entry point along the surface normal so that shadow
-	// rays (NEE), connection rays (BDPT), and the continuation ray
-	// all start above the originating surface.  Using the normal
-	// offset for the scattered ray (rather than advancing along the
-	// ray direction) ensures adequate clearance even for near-grazing
-	// directions, and keeps the ray origin consistent with the stored
-	// vertex position used by BDPT geometric terms.
+	// Offset entry point along entryNormal so NEE, BDPT connections, and
+	// grazing continuation rays clear thin geometry and match the stored vertex.
 	result.boundaryPoint = entryPoint;
 	result.entryPoint = Point3Ops::mkPoint3( entryPoint,
 		entryNormal * BSSRDF_RAY_EPSILON );
@@ -615,12 +477,8 @@ bool BSSRDFSampling::IntersectContactRay(
 	if( !pTarget ) {
 		return false;
 	}
-	// The band, in ray range.  Its scale is the launch point's COORDINATE
-	// magnitude (as BSSRDF_RAY_EPSILON's offsets are), not the size of either
-	// body: a millimetre contact far from the origin gets a wider band than
-	// the same contact at the origin.  The cast itself stops at the band's
-	// widest possible far edge (the 0.05 cosine floor), so a large candidate
-	// does not pay a full closest-hit traversal (review round 2, P2-1).
+	// Contact band scales with coordinate magnitude (1+s); bound the cast at
+	// the worst-case far edge (0.05 cosine floor).
 	const Point3& o = ray.origin;
 	const Scalar s = r_max( r_max( fabs( o.x ), fabs( o.y ) ), fabs( o.z ) );
 	const Scalar delta = BSSRDF_RAY_EPSILON * ( Scalar( 1 ) + s );
@@ -632,22 +490,15 @@ bool BSSRDFSampling::IntersectContactRay(
 			r_max( cosHit, Scalar( 0.05 ) );
 		const Scalar t = ri.geometric.range;
 		if( t >= Scalar( 0.5 ) * delta && t <= delta + reach ) {
-			// Slice 3 R1 A-P1-6: if the contact partner carries a MixMaterial
-			// or alpha coverage, re-resolve using the active sampler (Round 3 §3)
-			// and apply the HitCoverage() alpha test so a transparent touching
-			// sheet passes through instead of becoming an opaque black absorber.
+			// Re-resolve MixMaterial with the active sampler on launch; during
+			// deterministic discovery (!pSampler), gate unresolved mixes on
+			// mixCoverage > 0 so a cutout leaf doesn't falsely reject contact.
 			if( pSampler && ri.pUnresolvedMix ) {
 				ri.pModifier = ri.pPreMixModifier;
 				ri.pUnresolvedMix->ResolveMixHit( ri, pSampler );
 			}
 			const Scalar cov = ri.HitCoverage();
 			ri.acceptedAlphaCoverage = cov;
-			// Slice 3 R2 P1-1: during deterministic contact discovery
-			// (`pSampler == nullptr`), do not reject a touching MixMaterial
-			// partner solely because its deterministic fallback draw landed on
-			// a zero-alpha cutout leaf.  Gate discovery on `ri.mixCoverage > 0`
-			// and defer per-leaf selection + alpha testing to the actual
-			// `pSampler != nullptr` contact launch.
 			const bool accepted = pSampler
 				? ( cov >= Scalar( 1 ) || ( cov > Scalar( 0 ) && pSampler->GetAlpha1D() < cov ) )
 				: ( ri.pUnresolvedMix ? ( ri.mixCoverage > Scalar( 0 ) ) : ( cov > Scalar( 0 ) ) );
@@ -689,10 +540,7 @@ namespace
 			a.ur.x <= b.ur.x + pad && a.ur.y <= b.ur.y + pad && a.ur.z <= b.ur.z + pad;
 	}
 
-	//! DL-408 review round 2: given that candidate `pT` contains the
-	//! launch's backed-off origin (its interior overlaps the launching body
-	//! `pS` at the shared face), is `pS` nested inside `pT` (an enclosure)
-	//! rather than `pT` inside `pS` (an inset)?
+	//! True if `pS` is strictly nested inside `pT` (enclosure, not inset).
 	bool EnclosesLauncher( const IObject* pT, const IObject* pS, const Scalar pad )
 	{
 		if( !pT || !pS ) {
@@ -738,13 +586,8 @@ bool BSSRDFSampling::ResolveCoincidentEntry(
 	if( nCand == 0 ) {
 		return false;
 	}
-	// Compare the physical ray parameters stamped before Object backs its
-	// published point off and recomputes a world-space distance. The contact
-	// launch/search epsilon is not a coincidence tolerance: it grows into
-	// real gaps after translation. Use a rounding budget for the affine
-	// transforms, direction normalization and conversion of root parameters:
-	// a conservative 64-epsilon allowance on the input coordinate/parameter
-	// scale, rather than the much larger physical launch/search epsilon.
+	// Compare pre-backoff boundaryRange against a 64-eps coordinate rounding
+	// budget (not the larger physical contact epsilon).
 	const Scalar inputScale = Scalar(1) + fabs(sourceRange) + s +
 		r_max(r_max(fabs(ray.origin.x),fabs(ray.origin.y)),fabs(ray.origin.z));
 	const Scalar roundingBudget = Scalar(64) * std::numeric_limits<Scalar>::epsilon() * inputScale;
@@ -756,16 +599,12 @@ bool BSSRDFSampling::ResolveCoincidentEntry(
 		RayIntersection cand_ri( ray, ri.geometric.rast );
 		cand_ri.geometric.PropagateCastInputs( ri.geometric );
 		cand[k]->IntersectRay( cand_ri, sourceRange + radius, bHitFrontFaces, bHitBackFaces, bComputeExitInfo );
-		// (Object::IntersectRay's limit is not a hard bound on every
-		// geometry, so the window is checked on both sides.)
+		// Object::IntersectRay's limit is not a hard bound on every geometry.
 		if( !cand_ri.geometric.bHit || !cand_ri.hasBoundaryRange || !cand_ri.geometric.HasTrueGeomSide() ) {
 			continue;
 		}
-		// Coincidence is a plane-distance fact. A grazing ray magnifies
-		// coordinate rounding into parameter differences by 1/|n.d|.
-		// Require the difference projected onto BOTH geometric normals to
-		// fit the coordinate budget, rather than loosening a ray-distance
-		// epsilon. The radius limits this to the local candidate search.
+		// Project range difference onto both geometric normals so grazing rays
+		// don't loosen plane-coincidence tolerance.
 		const Scalar separation = fabs(cand_ri.boundaryRange-sourceRange);
 		const Scalar maxCos = r_max(sourceCos,fabs(cand_ri.geometric.TrueGeomFacing(d)));
 		if( separation > radius || separation * maxCos > roundingBudget ) continue;
@@ -817,14 +656,8 @@ const IObject* BSSRDFSampling::FindSurfaceContact(
 	const bool bSSSTargetsOnly
 	)
 {
-	// Candidates: every other body whose box lies within the band's reach
-	// of the launch point -- a touching neighbour, an open sheet the exit
-	// lies on (a ground plane: no interior, so no containment test can see
-	// it), and also any enclosure whose box merely contains the point.
-	// Each is asked by the restricted cast; the band is the arbiter, and
-	// the NEAREST accepted hit wins (DL-408 review: the first containing
-	// candidate used to be an enclosure, whose far face failed the band and
-	// hid the real neighbour).
+	// Query every nearby body (touching solids, open sheets, enclosures) via
+	// IntersectContactRay and keep the nearest accepted hit.
 	const Scalar s = r_max( r_max( fabs( p.x ), fabs( p.y ) ), fabs( p.z ) );
 	const Scalar radius = Scalar( 96 ) * BSSRDF_RAY_EPSILON * ( Scalar( 1 ) + s );
 	static const unsigned int kMaxCandidates = 64;
@@ -850,23 +683,9 @@ const IObject* BSSRDFSampling::FindSurfaceContact(
 		if( !( probe.geometric.range < bestT ) ) {
 			continue;
 		}
-		// A candidate whose face is at the launch point AND whose interior
-		// overlaps the launching body there (it contains the backed-off
-		// origin) is one of two NESTED configurations, locally identical --
-		// both interiors on the same side of the shared face:
-		//   * an ENCLOSURE floor: S rests on the inside face of T (a closed
-		//     box room, a glass tank); T's surface is really there, and the
-		//     continuation must meet it (review round 2, P1);
-		//   * an INSET: T sits inside S, flush with S's face; the
-		//     continuation leaves both into whatever is outside S, and T's
-		//     surface is not a neighbour across the face.
-		// No local probe separates them (a point just outside S beside p is
-		// outside T in BOTH), so the test is the nesting itself: two closed
-		// bodies whose interiors overlap and whose boundaries only touch are
-		// nested, and nesting implies world-box nesting.  S inside T is an
-		// enclosure (accept); T inside S is an inset (refuse); boxes that do
-		// not tell (equal, or loose boxes from different transforms) keep
-		// the refusal.
+		// If the candidate also contains the backed-off origin (overlapping
+		// interiors at the shared face), accept only an enclosing body (S
+		// inside T, e.g. room floor) and reject a flush inset (T inside S).
 		if( objects.ObjectContainsPoint( cand[k], ray.origin, n ) &&
 			!EnclosesLauncher( cand[k], pExitObject, radius ) ) {
 			continue;

@@ -45,345 +45,113 @@ namespace RISE
 
 	namespace Implementation
 	{
-		//! Constructs the shared cross-platform interactive preview
-		//! pipeline: material-preview shading, bounded preview AO, a
-		//! live-drag caster, a richer pointer-up polish caster, and an
-		//! InteractivePelRasterizer wired to swap between them.
-		//!
-		//! Returned pointers are refcounted ownership references for
-		//! the caller to release.  The rasterizer also addrefs the
-		//! casters internally, so platform bridges may keep and release
-		//! their own caster handles exactly as they do for normal
-		//! RISE_API_CreateRayCaster results.
+		//! Shared cross-platform interactive preview pipeline (macOS/Windows/Android
+		//! bridges MUST route through here for viewport parity): material-preview
+		//! shading, bounded AO, live-drag + polish casters, and InteractivePelRasterizer.
+		//! Returned pointers are refcounted references for the caller to release.
 		bool CreateInteractiveMaterialPreviewPipeline(
 			IRasterizer** ppRasterizer,
 			IRayCaster** ppPreviewCaster,
 			IRayCaster** ppPolishCaster );
 
-		//! Toolkit slice 3a (objectmap): the per-render object-identity
-		//! palette + registry + pixel tally shared between the caller
-		//! (AgentSession, which BUILDS it from the scene's ObjectManager
-		//! BEFORE the render, on the render thread, and READS the tally
-		//! AFTER) and the ObjectIdShader that
-		//! CreateInteractiveObjectMapPipeline installs.  Built once and
-		//! left immutable for the duration of one render EXCEPT for
-		//! `counts`, which the shader bumps concurrently (the interactive
-		//! rasterizer family renders multi-threaded via the block
-		//! ThreadPool -- so the tally is std::atomic per entry).
-		//!
-		//! COLOR CONTRACT: `bytes[id]` is the FINAL 8-bit sRGB byte triple
-		//! (== the PNG bytes == the legend colorHex).  `linearColors[id]`
-		//! is the LINEAR pre-image RISEPel the shader emits, chosen so the
-		//! forward sRGB encode (SRGBTransferFunction + truncating *255)
-		//! lands on EXACTLY `bytes[id]` (half-LSB margin both sides).
+		//! Per-render object-identity palette + atomic pixel tally shared between
+		//! caller and ObjectIdShader.  Immutable during render except `counts`.
+		//! Color contract: `linearColors[id]` is the linear pre-image whose forward
+		//! sRGB encode lands on exact 8-bit `bytes[id]`.
 		struct ObjectMapPalette
 		{
-			//! Scene IObject* (as seen on RayIntersection::pObject) ->
-			//! dense id in [0, names.size()).  A primary-ray hit whose
-			//! pObject is null or absent here decodes to the reserved
-			//! UNKNOWN color and tallies into the last `counts` slot.
-			std::unordered_map<const IObject*, std::uint32_t> registry;
-
-			//! Per-id data (parallel; size == the registered-object count).
-			std::vector<std::string>                     names;        //!< the object's manager name (legend label)
-			std::vector<RISEPel>                         linearColors; //!< the linear pre-image the shader emits
-			std::vector<std::array<unsigned char, 3> >   bytes;        //!< the final sRGB byte triple (legend colorHex)
-
-			//! The reserved UNKNOWN color (pObject null / not registered).
+			std::unordered_map<const IObject*, std::uint32_t> registry;	//!< IObject* -> dense id in [0, names.size())
+			std::vector<std::string>                     names;			//!< legend labels
+			std::vector<RISEPel>                         linearColors;	//!< linear pre-images emitted by shader
+			std::vector<std::array<unsigned char, 3> >   bytes;			//!< final 8-bit sRGB triples
 			RISEPel                                      unknownLinear;
 			std::array<unsigned char, 3>                 unknownBytes;
-
-			//! Per-id pixel tally, size == names.size()+1 (the last slot
-			//! is the UNKNOWN tally).  mutable + atomic: the shader holds a
-			//! `const ObjectMapPalette*` and increments these from the
-			//! parallel block workers.
+			//! Size == names.size() + 1 (last slot = UNKNOWN); bumped atomically by block workers.
 			mutable std::vector<std::atomic<std::uint32_t> > counts;
-
-			//! The smallest min-L1 colour separation the palette generator
-			//! had to relax to (== the default 24 when it never degraded).
-			//! Below the default it means the legend colours are still
-			//! byte-UNIQUE but visually closer than usual -- the render
-			//! result appends an honest "match by exact byte, not by eye"
-			//! note (Toolkit slice 3a fix-round P2-1).
+			//! Minimum L1 separation achieved (< 24 means byte-unique but visually close).
 			unsigned int minColorDistance = 24;
 		};
 
-		//! Toolkit slice 3a (objectmap): construct an EPHEMERAL preview
-		//! pipeline whose shader emits each hit object's flat identity
-		//! colour (from `palette`) instead of shaded radiance -- a
-		//! segmentation render.  Sibling of
-		//! CreateInteractiveMaterialPreviewPipeline: the returned pointers
-		//! are refcounted ownership references for the caller to release.
-		//!
-		//! `palette` is BORROWED -- the caller owns it and it MUST outlive
-		//! the render (the installed shader captures its address).
-		//!
-		//! EXACTNESS INVARIANT: the returned rasterizer is left with NO
-		//! sampling kernel and the caller MUST NOT install one nor call
-		//! SetSampleCountOverride(>1) -- that is what routes every pixel
-		//! through PixelBasedPelRasterizer::IntegratePixel's single-ray
-		//! (no jitter, no filter) branch, the ONLY path that guarantees an
-		//! exact, un-blended per-pixel identity byte.  A single ray caster
-		//! suffices (there is no AO / polish pass for an id render), so
-		//! unlike the material-preview factory this returns just the
-		//! rasterizer + its one caster.
+		//! Ephemeral flat-ID segmentation pipeline (caller owns returned refs;
+		//! `palette` is borrowed and must outlive the render).
+		//! Exactness invariant: NO sampling kernel and NO SetSampleCountOverride(>1)
+		//! so every pixel uses the un-blended single-ray path.
 		bool CreateInteractiveObjectMapPipeline(
 			IRasterizer** ppRasterizer,
 			IRayCaster** ppCaster,
 			const ObjectMapPalette& palette );
 
-		//! GUI render modes P1 (docs/gui/RENDER_MODES.md): the shared
-		//! viewport render-mode registry.  ONE namespace for the GUI
-		//! mode dropdown, the C-ABI, and the agent `render{mode:}`
-		//! tool, so the skill vocabulary and the UI vocabulary can
-		//! never drift.  `name` strings are the wire format everywhere;
-		//! enum values are never serialized.
+		//! Shared viewport render-mode registry across GUI, C-ABI, and agent tools
+		//! (docs/gui/RENDER_MODES.md).  `name` is the wire format; enums are never serialized.
 		enum class ViewportRenderMode
 		{
-			Preview,     //!< today's studio material preview (the platform-installed pipeline)
-			ObjectMap,   //!< per-object identity segmentation (agent surface; own factory above)
+			Preview,     //!< studio material preview
+			ObjectMap,   //!< per-object identity segmentation
 			Normals,     //!< world-space shading-normal false colour
-			Depth,       //!< per-pass AUTO-WINDOWED hit distance (near = bright) -- calibrates to the visible depth range, see DepthViewShader
-			Facets,      //!< headlamp-shaded GEOMETRIC normal (reveals tessellation)
+			Depth,       //!< auto-windowed hit distance (near = bright)
+			Facets,      //!< headlamp-shaded geometric normal
 			Wireframe,   //!< first-hit triangle edges over dim facet shading
-			//! GUI render modes P2a (docs/gui/RENDER_MODES.md §3 Transport):
-			//! a BeautyVariant pipeline kind -- an ephemeral, controller/agent-
-			//! OWNED production-class PT pipeline (a separate IRasterizer the
-			//! render loop DRIVES while the mode is active, not a caster swap
-			//! on the preview rasterizer) with fixed config deltas -- see
-			//! CreateBeautyVariantPipeline + ViewportRenderModeInfo's
-			//! variantScaleDivisor/variantMaxBounces/variantSamplesPerPass.
-			DeepReflect, //!< low-res, deep-bounce, higher-spp PT -- "what do reflections and refractions resolve to?"
-			//! GUI render modes P2a: direct lighting only (fixed maxBounces=1,
-			//! not full transport) at a moderate resolution divisor -- "what
-			//! does direct lighting alone contribute?"
-			Direct,
-			//! GUI render modes P2b (docs/gui/RENDER_MODES.md §3 Lighting):
-			//! beauty minus the direct (emission + NEE) contribution at the
-			//! camera-visible vertex -- PathTracingIntegrator::SetIndirectOnly --
-			//! "what does indirect light alone contribute?"
-			Indirect,
-			//! GUI render modes P2b: full transport with every surface's
-			//! reflectance substituted for a shared neutral clay Lambertian,
-			//! real lights/GI untouched -- PathTracingIntegrator::
-			//! SetClayOverride -- "is the lighting right, independent of
-			//! materials?"
-			ClayLights
+			DeepReflect, //!< BeautyVariant: low-res deep-bounce PT
+			Direct,      //!< BeautyVariant: direct lighting only (maxBounces=1)
+			Indirect,    //!< BeautyVariant: beauty minus camera-vertex direct (SetIndirectOnly)
+			ClayLights   //!< BeautyVariant: neutral clay Lambertian override (SetClayOverride)
 		};
 
 		struct ViewportRenderModeInfo
 		{
 			ViewportRenderMode	mode;
-			const char*			name;               //!< wire name (C-ABI, agent tool, persistence)
-			const char*			title;              //!< UI label
-			const char*			question;           //!< the question this mode answers (skill/UI tooltip)
-			bool				wantsDenoise;       //!< false for data modes (denoising a normal map is meaningless)
-			bool				viewportSelectable; //!< appears in the viewport mode dropdown
-			bool				casterFactory;      //!< CreateInteractiveViewModeCaster can build it
-			//! GUI render modes P2a (docs/gui/RENDER_MODES.md §6): BeautyVariant
-			//! config deltas.  0/0/0 for every non-variant mode (Preview/ObjectMap/
-			//! the four T1 data modes) -- IsBeautyVariantMode(mode) is the single
-			//! source of truth for "is this a variant row", keyed off
-			//! variantSamplesPerPass > 0, so these three fields are read ONLY
-			//! after that check passes.
-			unsigned int		variantScaleDivisor;   //!< preview-resolution divisor while this mode is active (e.g. 4 = quarter-res)
-			unsigned int		variantMaxBounces;     //!< P2a fix: PathTracingIntegrator::SetMaxPathDepth's cap on the PT main loop (NOT the caster's maxR -- that's a separate, harmless SSS-recursion limit)
-			unsigned int		variantSamplesPerPass; //!< the variant PT rasterizer's fixed samples/pixel
-			//! GUI render modes P2b (docs/gui/RENDER_MODES.md §3 Lighting):
-			//! stamped onto the variant PathTracingIntegrator via SetIndirectOnly/
-			//! SetClayOverride right after SetMaxPathDepth in CreateBeautyVariantPipeline.
-			//! false for every row except Indirect/ClayLights respectively -- read
-			//! ONLY after the IsBeautyVariantMode(mode) check passes, same as the
-			//! three fields above.
-			bool			variantIndirectOnly;   //!< true only for the "indirect" row
-			bool			variantClayOverride;   //!< true only for the "clay_lights" row
+			const char*			name;
+			const char*			title;
+			const char*			question;
+			bool				wantsDenoise;
+			bool				viewportSelectable;
+			bool				casterFactory;
+			//! BeautyVariant config (read only when IsBeautyVariantMode(mode) == true).
+			unsigned int		variantScaleDivisor;
+			unsigned int		variantMaxBounces;     //!< PathTracingIntegrator::SetMaxPathDepth cap
+			unsigned int		variantSamplesPerPass; //!< > 0 identifies BeautyVariant rows
+			bool			variantIndirectOnly;
+			bool			variantClayOverride;
 		};
 
-		//! GUI render modes P2a: true for the BeautyVariant rows (today:
-		//! DeepReflect, Direct) -- keyed off variantSamplesPerPass > 0 rather
-		//! than a hardcoded mode list, so a future variant row is recognized
-		//! by construction.  false for every ShaderPipeline/BeautyConfig mode.
+		//! True iff the mode row has variantSamplesPerPass > 0.
 		bool IsBeautyVariantMode( ViewportRenderMode mode );
 
-		//! All modes, in UI order.
 		const ViewportRenderModeInfo* GetViewportRenderModes( unsigned int& outCount );
-		//! nullptr when `name` is not a registered mode.
 		const ViewportRenderModeInfo* FindViewportRenderModeByName( const char* name );
 		const ViewportRenderModeInfo* FindViewportRenderModeInfo( ViewportRenderMode mode );
 
-		//! Build the ephemeral view-mode caster for the casterFactory
-		//! modes (Normals / Depth / Facets / Wireframe).  The returned
-		//! pointer is a refcounted ownership reference for the caller to
-		//! release; the caster owns its shader.  Returns false for
-		//! Preview (restore the platform-installed casters instead) and
-		//! ObjectMap (its own factory above -- palette lifecycle).
-		//!
-		//! `xray` (default false, docs/gui/RENDER_MODES.md "X-ray axis"):
-		//! when true, stamps RayCaster::SetXrayViewResolve(true) on the
-		//! built caster so it resolves each hit THROUGH transmissive
-		//! (glass-like) surfaces to the first OPAQUE hit -- a straight-line
-		//! continuation of the original ray direction, deliberately with NO
-		//! refraction bending (an x-ray, not an optics simulation).  Composes
-		//! with all four data modes.  The resolver itself lives in the
-		//! caster layer (RayCaster::ResolveXrayView_ in RayCaster.cpp), not
-		//! here -- so it applies uniformly to every shader, including the
-		//! studio material-preview shader.
+		//! Builds an ephemeral view-mode caster (Normals/Depth/Facets/Wireframe).
+		//! `xray` enables RayCaster::SetXrayViewResolve(true) (straight-line
+		//! see-through past transmissive surfaces, no refraction).  Caller releases ref.
 		bool CreateInteractiveViewModeCaster(
 			ViewportRenderMode mode,
 			IRayCaster** ppCaster,
 			bool xray = false );
 
-		//! GUI render modes P1 (docs/gui/RENDER_MODES.md): sibling of
-		//! CreateInteractiveObjectMapPipeline for the four ShaderPipeline
-		//! data modes (Normals / Depth / Facets / Wireframe -- the modes
-		//! whose ViewportRenderModeInfo::casterFactory is true).  Builds
-		//! the mode's caster via CreateInteractiveViewModeCaster and
-		//! wraps it in an InteractivePelRasterizer configured exactly
-		//! like the objectmap factory: progressiveOnIdle=false, no
-		//! sampling kernel installed, no polish caster -- a single exact
-		//! 1-spp pass is the whole point of a diagnostic image (data
-		//! modes don't need a sampling kernel for P1).  Returns false
-		//! for Preview and ObjectMap (their own factories above) and
-		//! for any non-casterFactory mode.  Returned pointers are
-		//! refcounted ownership references for the caller to release,
-		//! exactly like the other pipeline factories.
-		//! `xray` (default false): forwarded verbatim to
-		//! CreateInteractiveViewModeCaster above -- see its doc.
+		//! Wraps CreateInteractiveViewModeCaster in a 1-spp non-progressive
+		//! InteractivePelRasterizer (caller releases refs).
 		bool CreateInteractiveViewModePipeline(
 			ViewportRenderMode mode,
 			IRasterizer** ppRasterizer,
 			IRayCaster** ppCaster,
 			bool xray = false );
 
-		//! GUI render modes P2a (docs/gui/RENDER_MODES.md §6): build the
-		//! ephemeral BeautyVariant pipeline for a variant mode (today:
-		//! DeepReflect, Direct -- IsBeautyVariantMode(mode) == true).  UNLIKE
-		//! CreateInteractiveViewModePipeline, this is a REAL production-class
-		//! PT pipeline (real per-object materials, real lights, real OIDN),
-		//! not a diagnostic first-hit shader -- it mirrors the MINIMAL
-		//! production-real path Job::SetPathTracingPelRasterizer takes: a
-		//! plain RayCaster (seeRadianceMap=true, showLuminaires=true, maxR is
-		//! a fixed harmless SSS-recursion cap -- NOT the transport depth
-		//! limit, see variantMaxBounces's doc) + RISE_API_CreatePathTracingPelRasterizer
-		//! with a multijittered sampler at the mode's variantSamplesPerPass,
-		//! a box reconstruction filter, SMS off, OIDN ON (quality Auto),
-		//! default (disabled) path guiding / adaptive sampling / stability
-		//! configs, and no Z-Sobol, followed by a post-construction
-		//! PathTracingPelRasterizer::SetMaxPathDepth(variantMaxBounces) call --
-		//! THAT is what actually bounds the PT main loop's bounce depth (P2a
-		//! fix; see PathTracingIntegrator::SetMaxPathDepth's doc for the exact
-		//! accounting).
-		//!
-		//! `pDefaultShader` (P1-b fix, review-p2b): the caster's own default
-		//! IShader -- NOT dead code.  The PT main transport loop itself never
-		//! calls through it (per-object shading is inlined against each
-		//! IObject's own IMaterial), but RayCaster::CastRay / CastRayNM ARE
-		//! called recursively by the BSSRDF disk-projection and random-walk
-		//! SSS continuation sub-paths (PathTracingIntegrator.cpp), and THOSE
-		//! resolve shading via RayCaster::SelectShader -- which falls back to
-		//! this default whenever the hit object has no explicit per-object
-		//! IShader assigned (the common case: `AddObject`'s `shader` argument
-		//! is optional, and most scenes only set per-object IMaterial).  A
-		//! production PT render's default shader is a REAL shader (typically
-		//! the "global" ShaderOp-chain shader resolved via
-		//! `pShaderManager->GetItem("global")`, matching
-		//! Job::SetPathTracingPelRasterizer's own resolution -- see
-		//! BaseRasterizerDefaults::defaultShader in RasterizerDefaults.h).
-		//! Pass that same shader here so an SSS/BSSRDF object with no
-		//! explicit per-object shader shades correctly instead of resolving
-		//! to a black placeholder.  Defaulted to null so pre-existing callers
-		//! still compile.  Null does NOT fall back to a black placeholder:
-		//! this factory builds a REAL owned default (BeautyVariantDefaultShader
-		//! -- a StandardShader over a PathTracingShaderOp, i.e. a generic
-		//! `standard_shader { shaderop DefaultPathTracing }` chain) whenever
-		//! the caller passes null (P1-b fix).  Both current callers
-		//! (SceneEditController::SetViewportRenderMode, AgentSession's
-		//! doBeautyVariantRenderWork) go further (P2-c, review-p3): they
-		//! recover the PRODUCTION rasterizer's own resolved default-shader
-		//! NAME via `job.GetRasterizerParameter(job.GetActiveRasterizerName(),
-		//! "shader")` -- the exact name every Set*Rasterizer call stamped into
-		//! its registry snapshot at construction time, not a hardcoded
-		//! "global" guess -- and pass `job.GetShaders()->GetItem(thatName)`
-		//! (borrowed, not addref'd -- matches Job::SetPathTracingPelRasterizer's
-		//! own usage; RISE_API_CreateRayCaster addrefs it internally), falling
-		//! back to null (this factory's own generic default) only when no
-		//! rasterizer is active yet or the resolved name is unregistered.
-		//! RESIDUAL LIMITATION: the variant pipeline always builds a GENERIC
-		//! DefaultPathTracing chain in that fallback case (or when the resolved
-		//! shader name can't be looked up), so a scene relying on that fallback
-		//! whose `global` shader is a CUSTOM shaderop chain can still diverge
-		//! from a CLI render on SSS/BSSRDF continuations -- documented, not
-		//! solved, since there is no sound way to force-resolve an unregistered
-		//! name.
-		//!
-		//! Variant transport settings also propagate through RuntimeContext
-		//! from PathTracingPelRasterizer.  Therefore an SSS/random-walk
-		//! continuation that enters a caller-supplied default shader chain
-		//! observes the variant's max depth, indirect-only mask, and clay
-		//! override without mutating or trying to introspect that shared,
-		//! arbitrary shader chain.
-		//!
-		//! Returns false for any non-BeautyVariant mode.  Returned pointers
-		//! are refcounted ownership references for the caller to release,
-		//! exactly like the other pipeline factories.  Refcount discipline
-		//! mirrors the sibling factories exactly: internal temporaries
-		//! (sampler, filter, caster) are released locally after the
-		//! rasterizer/caster addref them internally.
+		//! Builds an ephemeral production-class PT pipeline for a BeautyVariant
+		//! mode (docs/gui/RENDER_MODES.md §6): multijittered sampler, box filter,
+		//! SMS off, OIDN on, plus SetMaxPathDepth / SetIndirectOnly / SetClayOverride
+		//! (propagated via RuntimeContext to SSS/random-walk continuations).
+		//! `pDefaultShader` is used by caster-dispatched BSSRDF/SSS continuations;
+		//! nullptr installs a generic DefaultPathTracing chain.  Caller releases refs.
 		bool CreateBeautyVariantPipeline(
 			ViewportRenderMode mode,
 			IRasterizer** ppRasterizer,
 			IRayCaster** ppCaster,
 			IShader* pDefaultShader = 0 );
 
-		//! THE MATERIAL LOOK (2026-08-24, docs: AgentSession::FinishElement).
-		//! An EPHEMERAL, FIXED-FIDELITY path-tracing pipeline built for one
-		//! purpose: rendering a single isolated element under a canonical
-		//! studio light rig so its MATERIALS can be read -- specular rolloff,
-		//! roughness, fresnel, transmission -- which a draft
-		//! (studio-preview) frame cannot show FULLY: draft shades with the
-		//! material's own BSDF too, but through a crude single-bounce,
-		//! fixed-light approximation with no true light response (no
-		//! shadows, no reflection/refraction rays, no emission), so
-		//! transmission/fresnel/true specular behaviour reads wrong or flat
-		//! there.
-		//!
-		//! WHY A FIXED PT RATHER THAN THE SCENE'S OWN RASTERIZER.  The look's
-		//! whole value is that two renders of the same element, in different
-		//! sessions and different phases, are directly comparable.  The
-		//! scene's configured rasterizer is none of those things: it may be
-		//! MLT or a photon-map family (whose per-render cost is unbounded and
-		//! whose sample count is not even introspectable -- see
-		//! AgentRenderParams::fromAgentSurface's "unknown is not cheap" note),
-		//! it may be `auto_rasterizer` (whose once-only integrator resolution
-		//! would then be decided by, or poisoned for, this diagnostic), and it
-		//! changes the instant the model inserts a different rasterizer chunk.
-		//! A fixed PT at a fixed spp and a fixed bounce cap is the only
-		//! configuration under which "the material changed" and "the render
-		//! settings changed" cannot be confused.
-		//!
-		//! Structurally the SAME shape as CreateBeautyVariantPipeline above --
-		//! a plain RayCaster (seeRadianceMap=true, showLuminaires=true) +
-		//! RISE_API_CreatePathTracingPelRasterizer with a multijittered
-		//! sampler, a box filter, SMS off, OIDN on, and a post-construction
-		//! SetMaxPathDepth -- and it takes the SAME optional production
-		//! default shader for the same reason (see CreateBeautyVariantPipeline's
-		//! `pDefaultShader` doc: the caster-dispatched BSSRDF / random-walk
-		//! SSS continuations resolve shading through it).  It differs only in
-		//! that its config comes from this factory's own two constants rather
-		//! than a ViewportRenderModeInfo row: the material look is NOT a
-		//! viewport render mode, has no wire name in the mode registry, and is
-		//! never selectable from the GUI dropdown or the agent `mode:` param.
-		//!
-		//! `outSamplesPerPixel` / `outMaxBounces` (optional) report the fixed
-		//! configuration the pipeline was built with, so a caller can state it
-		//! honestly instead of restating a literal that could drift.
-		//!
-		//! It does NOT install the light rig -- lighting is Scene state, not
-		//! rasterizer state, so the rig is applied and restored by the caller
-		//! around the render (AgentSession.cpp's StudioRigRestoreGuard).
-		//!
-		//! Returned pointers are refcounted ownership references for the
-		//! caller to release, exactly like every sibling factory here.
+		//! Ephemeral fixed-fidelity PT pipeline for isolated material inspection
+		//! (not a ViewportRenderMode; caller installs/restores light rig and
+		//! releases returned refs).
 		bool CreateMaterialLookPipeline(
 			IRasterizer** ppRasterizer,
 			IRayCaster** ppCaster,
@@ -391,36 +159,26 @@ namespace RISE
 			unsigned int* outSamplesPerPixel = 0,
 			unsigned int* outMaxBounces = 0 );
 
-		//! Configure one BeautyVariant pass for the current interaction state.
-		//! Active gestures use one sample and suppress OIDN; the release/idle
-		//! pass restores the registry-authored sample count and OIDN policy.
-		//! Returns false without changing the rasterizer when `mode` is not a
-		//! BeautyVariant or the rasterizer cannot honor the sample override.
+		//! Configures a BeautyVariant pass: liveGesture uses 1 SPP + OIDN off;
+		//! idle restores registry SPP + OIDN.  Returns false if not a BeautyVariant.
 		bool ConfigureBeautyVariantPass(
 			IRasterizer& rasterizer,
 			ViewportRenderMode mode,
 			bool liveGesture );
 
-		//! Creates a center-sampled nearest-neighbor derivative of `source`.
-		//! Used by shared multiview transport when a compatible pane requests a
-		//! lower resolution than the canonical traced image.  Caller owns *out.
+		//! Center-sampled nearest-neighbor derivative of `source` (caller owns *out).
 		bool CreateNearestNeighborSubview(
 			const IRasterImage& source,
 			unsigned int width,
 			unsigned int height,
 			IRasterImage** out );
 
-		//! Mark an in-flight BeautyVariant quantum obsolete before requesting
-		//! cancellation.  Its path loop still exits at the normal cancel point,
-		//! but its non-cancel-interruptible OIDN tail is skipped atomically.
+		//! Marks an in-flight BeautyVariant quantum obsolete so its OIDN tail skips atomically.
 		bool SuppressBeautyVariantDenoise( IRasterizer& rasterizer );
 
 		class InteractivePelRasterizer : public PixelBasedPelRasterizer
 		{
 		public:
-			//! Tile dispatch order.  CenterOut prioritizes the
-			//! image center so the user sees the part of the scene
-			//! they're pointing at first.
 			enum TileOrder
 			{
 				TileOrder_CenterOut,
@@ -428,24 +186,11 @@ namespace RISE
 				TileOrder_Random
 			};
 
-			//! Configuration. All defaults are "minimum-cost preview".
 			struct Config
 			{
-				//! Samples per pass while the user is actively
-				//! dragging.  1 is the right answer; the cancel-
-				//! restart loop discards intermediate frames anyway.
 				unsigned int liveSamplesPerPass;
-
-				//! Total cap on idle-mode passes.  After the user
-				//! releases the pointer, we keep refining up to this
-				//! many additional passes.
 				unsigned int idleMaxPasses;
-
-				//! Tile dispatch order.
 				TileOrder tileOrder;
-
-				//! True to refine progressively when the user is
-				//! idle (not dragging).
 				bool progressiveOnIdle;
 
 				Config()
@@ -465,160 +210,44 @@ namespace RISE
 				PreviewDenoise_Balanced
 			};
 
-			//! Selects the OIDN policy for the next RasterizeScene call.
-			//! Off during active manipulation, Fast for idle refinement,
-			//! Balanced for pointer-up polish.
+			//! OIDN policy for next RasterizeScene: Off (drag), Fast (idle), Balanced (polish).
 			void SetPreviewDenoiseMode( PreviewDenoiseMode mode );
 
-			//! Switch between "live drag" and "idle progressive
-			//! refinement" modes.  Called from the SceneEditController:
-			//!   - false during pointer-move flurries (1 SPP, no progressive)
-			//!   - true after pointer-up (multi-pass refinement)
+			//! False during live drag (1 SPP, non-progressive); true after pointer-up.
 			void SetIdleMode( bool idle ) const;
-
-			//! True if currently in idle (refinement) mode.
 			bool IsIdleMode() const { return mIdleMode; }
-
 			const Config& GetConfig() const { return mCfg; }
 
-			//! Configure samples-per-pixel for the next RasterizeScene
-			//! call.  n=1 (default) clears any 2D sampling kernel so
-			//! the rasterizer's per-pixel integration takes a single
-			//! ray per pixel.  n>1 installs a multi-jittered kernel
-			//! sized for the requested SPP and disables progressive
-			//! mode so the next pass runs as a single multi-sampled
-			//! render.  If a polish ray caster has been installed via
-			//! SetPolishRayCaster, n>1 also swaps to that caster so
-			//! the polish pass can use richer preview shading (for
-			//! example, more AO probes) than the caster used during
-			//! live drag.  Sticky until cleared with SetSampleCount(1).
-			//!
-			//! Used by SceneEditController to do a final 4-SPP polish
-			//! pass at full resolution after the user releases the
-			//! pointer (and after the 1-SPP scale=1 refinement pass
-			//! completes).
+			//! Sticky SPP override: n=1 clears kernel (single ray); n>1 installs a
+			//! multi-jittered kernel, disables progressive, and swaps to polish caster
+			//! (suppressed while a view-mode caster is installed).
 			void SetSampleCount( unsigned int n );
 
-			//! Install an optional secondary ray caster that
-			//! SetSampleCount(>1) swaps in for the duration of a
-			//! multi-SPP polish pass.  Refcounted; the rasterizer
-			//! addrefs and releases on destruction.  Pass nullptr to
-			//! clear.
+			//! Optional refcounted caster swapped in by SetSampleCount(>1) (nullptr clears).
 			void SetPolishRayCaster( IRayCaster* polishCaster );
 
-			//! GUI render modes P1 (docs/gui/RENDER_MODES.md §5): install
-			//! (non-null) or clear (nullptr) an ephemeral view-mode caster
-			//! (Normals / Depth / Facets / Wireframe, built by
-			//! CreateInteractiveViewModeCaster) on the SAME pCaster slot
-			//! SetPolishRayCaster's swap logic manipulates.  Refcounted:
-			//! addref'd on install, released on clear/replace/destruction.
-			//!
-			//! Install (`p` non-null): saves whichever caster pCaster
-			//! currently holds -- the TRUE preview caster, unwinding an
-			//! in-progress polish swap first if one is active, so the save
-			//! is never the transient polish caster -- then swaps pCaster
-			//! to `p`.  Calling this again with a DIFFERENT `p` while a
-			//! view mode is already installed switches directly between
-			//! modes without touching the saved preview caster.  While a
-			//! view-mode caster is installed, SetSampleCount(>1)'s usual
-			//! swap-to-the-polish-caster behaviour is suppressed (see its
-			//! own doc) -- silently flipping the image back to clay
-			//! mid-polish while the user is looking at, say, a depth map
-			//! would be a visible glitch -- but the multi-sample kernel
-			//! installation itself is unaffected.  ShouldDenoise() also
-			//! returns false while installed (denoising a normals/depth/id
-			//! map is meaningless).
-			//!
-			//! Clear (`p` is nullptr): restores the saved preview caster
-			//! and resumes normal SetSampleCount / polish-caster / denoise
-			//! behaviour.  No-op if no view-mode caster is installed.
-			//! `allowsDenoise` is the installed mode's registry
-			//! ViewportRenderModeInfo::wantsDenoise -- false for every P1
-			//! data mode (denoising a normals/depth/facets/wireframe image
-			//! is meaningless), plumbed rather than hardcoded so a future
-			//! beauty-variant mode that DOES want OIDN can install a caster
-			//! without a second edit here.  Ignored when `p` is null.
+			//! Installs/clears a refcounted view-mode caster (docs/gui/RENDER_MODES.md §5).
+			//! Unwinds any active polish swap before saving the true preview caster;
+			//! while installed, suppresses polish swaps and gates ShouldDenoise via `allowsDenoise`.
 			void SetViewModeCaster( IRayCaster* p, bool allowsDenoise = false );
-
-			//! True while a view-mode caster is installed (SetViewModeCaster
-			//! called with a non-null `p`, no matching clear yet).
 			bool HasViewModeCaster() const { return mViewModeCasterInstalled; }
 
-			//! GUI render modes (docs/gui/RENDER_MODES.md "X-ray axis"):
-			//! sets the viewport-wide x-ray see-through toggle and stamps
-			//! it onto every RayCaster this rasterizer can currently reach
-			//! -- the active `pCaster`, the polish caster, and both saved-
-			//! caster slots (dynamic_cast<RayCaster*>, null-tolerant so a
-			//! non-RayCaster caster silently no-ops).  Applies uniformly
-			//! across every viewport render mode INCLUDING Preview -- the
-			//! resolver lives in the caster layer, so the studio material-
-			//! preview caster benefits with no per-shader plumbing.  Every
-			//! caster-swap site (SetViewModeCaster install/switch/restore,
-			//! SetPolishRayCaster, SetSampleCount's polish swap) also stamps
-			//! the CURRENT `mXrayView` onto whatever caster becomes active,
-			//! so a caster installed after SetXrayView is called still
-			//! reflects the right flag.  Called only under the controller's
-			//! parked-render discipline (SceneEditController::SetViewportXray).
+			//! Viewport-wide x-ray see-through toggle (docs/gui/RENDER_MODES.md);
+			//! stamped onto active, polish, and saved RayCasters and on every swap.
 			void SetXrayView( bool on );
-
-			//! Current viewport-wide x-ray toggle (default false at
-			//! construction and when SceneEditController first attaches).
 			bool GetXrayView() const { return mXrayView; }
 
-			//! Part B (docs/gui/RENDER_MODES.md "Depth axis" self-
-			//! calibration): overrides the base RasterizeScene to run the
-			//! base pass, then -- if the ACTIVE caster is a view-mode
-			//! Depth caster whose auto-window is STALE for the pass that
-			//! just ran (see InteractiveViewModeRayCaster::
-			//! DepthWindowStale / DepthViewShader::WindowStale) and the
-			//! pass was not cancelled -- runs the base pass ONCE more so
-			//! the window (re-)arms and this SAME RasterizeScene call
-			//! returns a correctly-windowed image.  "Stale" covers two
-			//! cases: no window has ever armed (first pass ever -- shows
-			//! the flat scene-diagonal fallback, the original "depth
-			//! renders nothing" bug), and a window WAS armed but a camera
-			//! jump / crop / scene edit moved the visible depth range far
-			//! enough that this pass's own accumulated min/max no longer
-			//! match it (the same single-pass-staleness class, triggered
-			//! after a settled navigation jump rather than only on the
-			//! very first pass).  Mild per-pass drift during smooth
-			//! interactive navigation stays under the staleness
-			//! thresholds, so no extra pass runs during ordinary
-			//! dolly/orbit.  Guarded to at most one extra pass per call.
+			//! Overrides base RasterizeScene to run at most one extra pass if an
+			//! active Depth view-mode caster's auto-window is stale (not cancelled).
 			virtual void RasterizeScene( const IScene& pScene, const Rect* pRect, IRasterizeSequence* pRasterSequence ) const override;
 
 		protected:
 			virtual ~InteractivePelRasterizer();
 
-			// Skip both the random-pastel clear and the
-			// OutputIntermediateImage notification.  The clear is the
-			// debug visualization that produces "flashes of colour"
-			// during cancel-restart in the interactive viewport;
-			// OutputIntermediateImage is unused by the viewport sink
-			// (which only listens to OutputImage at end-of-pass).
-			//
-			// (The persistent IRasterImage that lets cancelled passes
-			// reuse previous content lives in PixelBasedRasterizerHelper
-			// — InteractivePelRasterizer inherits it without further
-			// configuration.)
+			// Skip random-pastel clear + intermediate output to avoid flashes on cancel-restart.
 			virtual void PrepareImageForNewRender( IRasterImage& img, const Rect* pRect ) const override;
-
-			// Honour Config::tileOrder.  Default Config produces
-			// centre-out so partial buffers from cancelled passes
-			// show the middle of the image filled first instead of
-			// the upper-left corner (Morton/Z-curve default).
 			virtual IRasterizeSequence* CreateDefaultRasterSequence( unsigned int tileEdge ) const override;
-
-			// Set RuntimeContext::bFastPreview = true so heavy shader
-			// ops (SSS point-set build, future path-guiding lookups,
-			// etc.) take their fast-preview fallback path during
-			// interactive renders.  Production rasterizers leave the
-			// default false; their RuntimeContexts carry full-
-			// fidelity behaviour.  This is the principled extension
-			// point for "interactive cares about latency, production
-			// cares about correctness" — each shader op decides
-			// what fast-preview means for its specific computation,
-			// keyed on the same flag.
+			// Sets RuntimeContext::bFastPreview = true for interactive preview latency.
 			virtual void PrepareRuntimeContext( RuntimeContext& rc ) const override;
 
 #ifdef RISE_ENABLE_OIDN
@@ -626,55 +255,21 @@ namespace RISE
 			virtual unsigned int GetDenoiseAOVSamplesPerPixel() const override;
 #endif
 
-			// L8 round 7 — `ShouldFireToggleObserverEvents()` is now
-			// false by default on the base class (see header doc on
-			// `PixelBasedRasterizerHelper`); no per-rasterizer
-			// override needed.  The previous round-6 override here
-			// was redundant once the base default flipped.
-
 		private:
 			Config                mCfg;
 			mutable bool          mIdleMode;
 			PreviewDenoiseMode    mPreviewDenoiseMode;
 
-			// Lazy-initialized 2D sampling kernel for multi-SPP polish
-			// passes.  Constructed on first SetSampleCount(>1); reused
-			// thereafter.  Released in the destructor.
 			ISampling2D*          mPolishKernel;
-
-			// Optional secondary ray caster for the polish pass.
-			// SetSampleCount(>1) swaps pCaster to this; SetSampleCount(1)
-			// swaps back to mSavedPreviewCaster.  Both are refcounted by
-			// us — addref on install, release on destruction.
 			IRayCaster*           mPolishCaster;
 			IRayCaster*           mSavedPreviewCaster;
 
-			// GUI render modes P1 (docs/gui/RENDER_MODES.md §5): true while
-			// SetViewModeCaster installed a Normals/Depth/Facets/Wireframe
-			// caster on pCaster.  mSavedPreviewCasterForViewMode holds the
-			// TRUE preview caster to restore to on clear -- refcounted,
-			// released on restore/destruction.  Kept SEPARATE from
-			// mSavedPreviewCaster (the polish-swap's own save slot above)
-			// because the two swaps nest independently: SetSampleCount
-			// suppresses its OWN pCaster swap entirely while
-			// mViewModeCasterInstalled is true (see SetSampleCount's .cpp
-			// comments), so mSavedPreviewCaster never becomes non-null
-			// during that window.
+			// Separate from mSavedPreviewCaster so view-mode and polish swaps nest cleanly.
 			bool                  mViewModeCasterInstalled;
-			// The installed view mode's registry wantsDenoise (see
-			// SetViewModeCaster); meaningful only while installed.
 			bool                  mViewModeCasterAllowsDenoise;
 			IRayCaster*           mSavedPreviewCasterForViewMode;
 
-			// GUI render modes (docs/gui/RENDER_MODES.md "X-ray axis"):
-			// current viewport-wide x-ray toggle -- see SetXrayView.
 			bool                  mXrayView;
-
-			//! Stamps `mXrayView` onto `c` via dynamic_cast<RayCaster*>;
-			//! no-op if `c` is null or not a RayCaster.  Shared by
-			//! SetXrayView and every caster-swap site so a caster that
-			//! becomes active AFTER SetXrayView was called still reflects
-			//! the current toggle.
 			void ApplyXrayViewToCaster_( IRayCaster* c ) const;
 
 		};

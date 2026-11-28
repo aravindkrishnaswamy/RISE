@@ -1,7 +1,10 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  LiquidValidation.cpp - see LiquidValidation.h
-//
+//  LiquidValidation.cpp - Analytical and experimental validation
+//  benchmarks for liquid.mac: level-set transport, inviscid/viscous/
+//  capillary flows, rigid-body coupling, and droplet dynamics.
+//  Conventions: SI units; 2-D cases use 1-cell z slabs.
+//  Tabs: 4
 //  License Information: Please see the attached LICENSE.TXT file
 //
 //////////////////////////////////////////////////////////////////////
@@ -116,6 +119,8 @@ void VortexFaces(const Grid& g, double t, double period, MacField& u)
 		u.u[1][g.F(1, i, j, 0)] = (psi(i + 1, j) - psi(i, j))/g.h;
 }
 
+// Shared 2-D kinematic transport driver: RK3 WENO5 advection with optional marker particles,
+// reinitialization, and global volume correction over one period.
 TransportResult RunTransport(const Grid& g, std::vector<double> phi, bool (*inside)(double, double), double period,
 	double umax, const std::function<void(double, MacField&)>& faces, const TransportOptions& o, Pool* pool)
 {
@@ -170,6 +175,7 @@ TransportResult RunTransport(const Grid& g, std::vector<double> phi, bool (*insi
 }
 } // namespace
 
+// Zalesak slotted-disk solid-body rotation benchmark (one full revolution).
 TransportResult RunZalesak(int n, const TransportOptions& options, Pool* pool)
 {
 	const Grid g = UnitSquare(n);
@@ -190,6 +196,7 @@ TransportResult RunZalesak(int n, const TransportOptions& options, Pool* pool)
 	return r;
 }
 
+// Reversible single-vortex stretching benchmark (Rider & Kothe / LeVeque).
 TransportResult RunVortex(int n, double period, const TransportOptions& options, Pool* pool)
 {
 	const Grid g = UnitSquare(n);
@@ -205,6 +212,7 @@ TransportResult RunVortex(int n, double period, const TransportOptions& options,
 	return r;
 }
 
+// Measures zero-contour edge-crossing drift and narrow-band |grad phi| - 1 error on a distorted 3-D sphere.
 ReinitDrift MeasureReinitDrift(int n, ReinitScheme scheme, int iterations, double distortion, Pool* pool)
 {
 	Grid g;
@@ -320,6 +328,7 @@ LiquidSetup Tank2D(int nx, int ny, double h)
 }
 } // namespace
 
+// Inviscid 2-D Taylor-Green vortex on [0, pi]^2 verifying velocity L2 error and KE preservation.
 TaylorGreenResult RunTaylorGreen(int n, double duration, const SolverOptions& options, Pool* pool)
 {
 	(void)pool;
@@ -371,6 +380,8 @@ TaylorGreenResult RunTaylorGreen(int n, double duration, const SolverOptions& op
 	return r;
 }
 
+// Still-water hydrostatic balance under tilted gravity (optional submerged sphere) checking
+// spurious velocity and pressure match against rho * g * depth.
 HydrostaticResult RunHydrostatic(int n, bool threeD, double tilt, bool sphere, double sphereY, double duration,
 	const SolverOptions& options, Pool* pool)
 {
@@ -470,6 +481,7 @@ WaveResult RunStandingWave(int cells, double kd, double ka, double periods, cons
 	return StandingWave(cells, kd, ka, periods, 0, true, 0, options, pool, nullptr);
 }
 
+// 3-D rectangular-tank free-surface sloshing validating fundamental (1,0) and (0,1) frequencies.
 SloshResult RunSloshing(int cells, double periods, const SolverOptions& options, Pool* pool)
 {
 	const double start = Now();
@@ -518,6 +530,7 @@ SloshResult RunSloshing(int cells, double periods, const SolverOptions& options,
 	return r;
 }
 
+// Analytical Fourier series for instantaneous inviscid dam-break acceleration (scaled by g).
 void CollapseAcceleration(double x, double y, double length, int terms, double& ax, double& ay)
 {
 	ax = ay = 0;
@@ -531,6 +544,7 @@ void CollapseAcceleration(double x, double y, double length, int terms, double& 
 	}
 }
 
+// Compares one tiny projection step (dt = 1e-5) of a collapsing column against CollapseAcceleration.
 CollapseResult RunColumnCollapse(int cells, double length, const SolverOptions& options, Pool* pool)
 {
 	const double start = Now();
@@ -580,6 +594,7 @@ CollapseResult RunColumnCollapse(int cells, double length, const SolverOptions& 
 	return r;
 }
 
+// Rotated dam-break column collapse against oblique cut-cell solid walls (validates cut-face pressure).
 SolidCollapseResult RunSolidCollapse(int cells, double angle, const V3& pivot, const SolverOptions& options, Pool* pool)
 {
 	const double start = Now();
@@ -668,6 +683,7 @@ const double MartinMoyceSquare[][2] = {
 	{4.56, 3.04}, {4.78, 3.21}, {4.89, 3.29}};
 const int MartinMoyceSquareCount = int(sizeof(MartinMoyceSquare)/sizeof(MartinMoyceSquare[0]));
 
+// 2-D dam-break surge front arrival times compared against Martin & Moyce (1952) data.
 DamBreakResult RunDamBreak(int cells, double duration, const SolverOptions& options, Pool* pool)
 {
 	const double start = Now();
@@ -714,6 +730,7 @@ const double LobovskyFrontSpeed300 = 1.56, LobovskyFrontSpeed600 = 1.34, Lobovsk
 const double LobovskyImpact300[4][4] = {{3, 91.44, 75.06, 130.98}, {15, 57.49, 53.26, 63.31}, {30, 43.76, 39.79, 49.62}, {80, 30.15, 24.18, 36.32}};
 const double LobovskyImpact600[4][4] = {{3, 185.7, 161.5, 343.8}, {15, 168.4, 149.4, 205.2}, {30, 138.9, 115.4, 153.7}, {80, 90.09, 80.8, 96.1}};
 
+// 2-D dam-break downstream wall impact peak pressures at four sensor heights (Lobovsky et al. 2014).
 DamBreakImpactResult RunDamBreakImpact(int cells, double duration, const SolverOptions& options, Pool* pool)
 {
 	const double start = Now();
@@ -746,6 +763,7 @@ DamBreakImpactResult RunDamBreakImpact(int cells, double duration, const SolverO
 	return r;
 }
 
+// Multi-period standing wave measuring volume drift with or without global level-set shift correction.
 VolumeResult RunVolumeConservation(int cells, double periods, bool correction, const SolverOptions& options, Pool* pool)
 {
 	const double start = Now();
@@ -827,6 +845,7 @@ double Submerged(bool threeD, double R, double h, double depth)
 }
 } // namespace
 
+// Impulsive-start added mass of a sphere (3-D) or cylinder (2-D) inside a concentric container.
 AddedMassResult RunAddedMassImpulse(int cells, bool threeD, double a, double b, double shift, const SolverOptions& options, Pool* pool,
 	const BodyShape* shape)
 {
@@ -866,6 +885,7 @@ AddedMassResult RunAddedMassImpulse(int cells, bool threeD, double a, double b, 
 	return r;
 }
 
+// Harmonic oscillation added mass of a concentric 2-D cylinder extracted by Fourier quadrature.
 AddedMassResult RunAddedMassOscillation(int cells, double a, double b, double amplitude, double frequency, double periods,
 	const SolverOptions& options, Pool* pool)
 {
@@ -917,6 +937,7 @@ AddedMassResult RunAddedMassOscillation(int cells, double a, double b, double am
 	return r;
 }
 
+// Dynamic heavy sphere/cylinder initial sinking acceleration -(m - rho V) g / (m + m_a).
 SinkResult RunHeavySinking(int cells, bool threeD, double ratio, double duration, const SolverOptions& options, Pool* pool)
 {
 	const double begin = Now();
@@ -1058,6 +1079,7 @@ double BoxHeaveManometer(double L, double w, double D, double d)
 	return std::sqrt(g*w*(1 + w/(2*s))/inertia);
 }
 
+// Secant root-find for the 2-D floating-box heave eigenfrequency omega^2 (m + A(omega^2/g)) = g w.
 double BoxHeaveFrequency(double L, double w, double D, double d, int cells)
 {
 	const double g = 9.81, m = w*d;   // per unit length / rho
@@ -1070,6 +1092,7 @@ double BoxHeaveFrequency(double L, double w, double D, double d, int cells)
 	return w1;
 }
 
+// Time-domain 2-D floating box bobbing test extracting frequency by least-squares golden-section fit.
 BobResult RunBoxBobbing(int cells, double L, double w, double D, double d, double offset, double periods,
 	const SolverOptions& options, Pool* pool)
 {
@@ -1198,6 +1221,7 @@ double HeldForce(int cells, bool threeD, double ratio, double y, double shift, c
 }
 } // namespace
 
+// Secant root-find for discrete Archimedes equilibrium height against exact floating depth.
 FloatStatics RunFloatingStatics(int cells, bool threeD, double ratio, double shift, const SolverOptions& options, Pool* pool,
 	const BodyShape* shape)
 {
@@ -1226,6 +1250,7 @@ FloatStatics RunFloatingStatics(int cells, bool threeD, double ratio, double shi
 	return r;
 }
 
+// Dynamic release of a floating body auditing body + fluid momentum conservation and equilibrium offset.
 FloatDynamics RunFloatingDynamics(int cells, bool threeD, double ratio, double startOffset, double duration, bool free,
 	const SolverOptions& options, Pool* pool)
 {
@@ -1303,6 +1328,7 @@ FloatDynamics RunFloatingDynamics(int cells, bool threeD, double ratio, double s
 	return r;
 }
 
+// Neutrally buoyant submerged body check: spurious velocity at discrete neutral mass and exact-mass drift.
 NeutralResult RunNeutralBody(int cells, bool threeD, double duration, const SolverOptions& options, Pool* pool)
 {
 	const double begin = Now();
@@ -1358,6 +1384,7 @@ NeutralResult RunNeutralBody(int cells, bool threeD, double duration, const Solv
 
 // ------------------------------------------------------------------ viscosity and surface tension (m7c)
 
+// Newton solve for the complex viscous gravity-capillary standing-wave dispersion root (Prosperetti/Lamb).
 void ViscousWaveRoot(double g, double k, double nu, double sigmaOverRho, double& decay, double& omega)
 {
 	const double w0 = std::sqrt(g*k + sigmaOverRho*k*k*k);
@@ -1405,6 +1432,7 @@ WaveResult RunCapillaryWave(int cells, double kd, double ka, double sigmaOverRho
 	return StandingWave(cells, kd, ka, periods, 0, true, sigmaOverRho, options, pool, nullptr);
 }
 
+// Viscous 2-D Taylor-Green vortex validating exponential amplitude decay exp(-2 nu t).
 ViscousTaylorGreenResult RunViscousTaylorGreen(int n, double nu, double duration, const SolverOptions& options, Pool* pool)
 {
 	const double start = Now();
@@ -1509,6 +1537,7 @@ double CouetteStartup(double R1, double R2, double omega, double nu, double t, d
 	return (1 - f)*u[std::size_t(i)] + f*u[std::size_t(i + 1)];
 }
 
+// Concentric-cylinder Taylor-Couette flow validating startup/steady velocity profile and viscous torque.
 CouetteResult RunCouette(int cells, double R1, double R2, double omega, double nu, double duration, double shift, double startupTime,
 	const SolverOptions& options, Pool* pool)
 {
@@ -1577,6 +1606,7 @@ CouetteResult RunCouette(int cells, double R1, double R2, double omega, double n
 	return r;
 }
 
+// Translating cylinder inside a concentric viscous outer cylinder (Stokes/Oseen drag formula).
 DragResult RunCylinderDrag(int cells, double a, double b, double U, double nu, double duration, double shift, const SolverOptions& options, Pool* pool)
 {
 	const double start = Now();
@@ -1621,6 +1651,7 @@ DragResult RunCylinderDrag(int cells, double a, double b, double U, double nu, d
 	return r;
 }
 
+// Rigid-body-rotation null-space test verifying the viscous operator preserves angular momentum.
 RotationResult RunRotatingDisk(int cells, double nu, double duration, const SolverOptions& options, Pool* pool)
 {
 	const double start = Now();
@@ -1716,6 +1747,7 @@ double BohlinFactor(double l)
 	return 1 - 2.10443*l + 2.08877*l3 - 0.94813*l5 - 1.372*l6 + 3.87*l8 - 4.19*l10;
 }
 
+// 3-D viscous settling sphere in a cylindrical tube against Haberman-Sayre and Bohlin wall factors.
 SettlingResult RunSettlingSphere(int cells, double a, double R, double H, double ratio, double nu, double duration,
 	const SolverOptions& options, Pool* pool)
 {
@@ -1789,6 +1821,7 @@ LiquidSetup DropSetup(int cells, bool threeD, double mu, V3& c)
 }
 } // namespace
 
+// Static capillary drop checking Young-Laplace pressure jump (d - 1) sigma / R and spurious currents.
 DropResult RunStaticDrop(int cells, bool threeD, double duration, double mu, const SolverOptions& options, Pool* pool)
 {
 	const double start = Now();
@@ -1840,6 +1873,7 @@ DropResult RunStaticDrop(int cells, bool threeD, double duration, double mu, con
 	return r;
 }
 
+// Mode-2 oscillating capillary drop (2-D cos 2 theta / 3-D P2) validating Rayleigh/Lamb frequency & decay.
 OscillationResult RunOscillatingDrop(int cells, bool threeD, double epsilon, double periods, double mu, const SolverOptions& options, Pool* pool)
 {
 	const double start = Now();

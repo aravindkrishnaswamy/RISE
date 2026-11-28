@@ -1,3 +1,15 @@
+//////////////////////////////////////////////////////////////////////
+//
+//  SimulationProcess.cpp - OS process lifecycle, paths, and advisory locks
+//
+//  Provides per-user cache/bake directories, PID-reuse-safe liveness checks
+//  via start timestamps, detached worker spawning, and non-blocking file locks
+//  (POSIX flock / Windows LockFileEx).
+//  Tabs: 4
+//  License Information: Please see the attached LICENSE.TXT file
+//
+//////////////////////////////////////////////////////////////////////
+
 #include "pch.h"
 #include "SimulationProcess.h"
 #include "../Utilities/RISECBOR64.h"
@@ -52,6 +64,7 @@ fs::path HomeDirectory()
 #endif
 }
 
+// Per-user cache root: LOCALAPPDATA (Windows), ~/Library/Caches (macOS), XDG_CACHE_HOME/~/.cache (POSIX).
 fs::path PerUserRoot()
 {
 #ifdef _WIN32
@@ -120,6 +133,8 @@ fs::path DefaultSimulationCacheDirectory()
 	return base / "scene-caches";
 }
 
+// Maps (canonicalScenePath, simName) to <cacheDir>/<sanitizedStem>-<sha256[:16]>/<name>
+// so identically named scenes in different directories do not collide.
 fs::path DefaultSimulationCachePath(const fs::path& sceneFile, const std::string& name, std::string& error)
 {
 	if (name.empty() || name == "." || name == ".." || name.find_first_of("/\\:") != std::string::npos) {
@@ -179,7 +194,8 @@ std::string CurrentHostName()
 }
 
 namespace {
-// Start stamp and whether the process is a zombie.
+// Queries OS start timestamp (macOS proc_pidinfo / Linux /proc/<pid>/stat field 22)
+// and zombie status so ProcessAlive defeats PID recycling.
 bool ProcessInfo(std::uint64_t pid, std::uint64_t& stamp, bool& zombie)
 {
 	stamp = 0;
@@ -226,6 +242,8 @@ bool ProcessAlive(std::uint64_t pid, std::uint64_t startStamp)
 	return startStamp == 0 || stamp == startStamp;
 }
 
+// Spawns a detached worker in a new session/pgroup: stdin=/dev/null, stdout+stderr
+// appended to owner-only logFile (O_NOFOLLOW), close-on-exec, default SIGINT/TERM/PIPE.
 bool SpawnDetachedProcess(const std::vector<std::string>& argv, const fs::path& logFile, std::uint64_t& pid,
 	std::string& error)
 {
@@ -285,6 +303,7 @@ bool ReapChildProcess(std::uint64_t pid, int& exitCode, bool& notChild)
 }
 
 namespace {
+// Verifies PID + startStamp match before signaling to avoid hitting a recycled PID.
 bool SignalProcess(std::uint64_t pid, std::uint64_t startStamp, int signal, std::string& error)
 {
 	if (!ProcessAlive(pid, startStamp)) return Fail(error, "process " + std::to_string(pid) + " is not the worker it was");
@@ -303,6 +322,7 @@ bool KillProcess(std::uint64_t pid, std::uint64_t startStamp, std::string& error
 	return SignalProcess(pid, startStamp, SIGKILL, error);
 }
 
+// Non-blocking exclusive flock on an owner-only file (O_NOFOLLOW|O_CLOEXEC).
 struct AdvisoryFileLock::Impl { int fd = -1; };
 
 AdvisoryFileLock::AdvisoryFileLock() : impl_(new Impl) {}
@@ -450,6 +470,7 @@ bool KillProcess(std::uint64_t pid, std::uint64_t startStamp, std::string& error
 	return ok ? true : Fail(error, "TerminateProcess failed");
 }
 
+// Byte-0 exclusive LockFileEx matching the POSIX non-blocking AdvisoryFileLock contract.
 struct AdvisoryFileLock::Impl { HANDLE h = INVALID_HANDLE_VALUE; };
 
 AdvisoryFileLock::AdvisoryFileLock() : impl_(new Impl) {}

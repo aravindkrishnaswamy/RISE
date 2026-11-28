@@ -1,7 +1,10 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  LiveSimulation.cpp - Simulation M3c, see LiveSimulation.h
+//  LiveSimulation.cpp - Interactive in-process simulation lifecycle
+//    (mesh & transform.v1 solvers), scene-time simulated geometry
+//    installation, and viewport PlaybackClock with pass coalescing.
 //
+//  Tabs: 4
 //  License Information: Please see the attached LICENSE.TXT file
 //
 //////////////////////////////////////////////////////////////////////
@@ -38,6 +41,8 @@ namespace
 
 // ---------------------------------------------------------------- install
 
+// Prepares every scene-bound SimulatedMeshGeometry and SimulatedPointsGeometry
+// at exact time t (zero-width shutter) and invalidates the scene TLAS.
 bool RISE::Implementation::InstallSimulatedMeshesAtTime( IJobPriv& job, const double t,
 	unsigned int& meshes, std::string& error )
 {
@@ -131,6 +136,8 @@ struct LiveSimulation::Hub
 	std::shared_ptr<Feed>		feed;
 };
 
+// Starts an interactive transform.v1 solver run, steps the initial frame
+// synchronously, and wires up its Feed so TransformProvider can read snapshots.
 bool LiveSimulation::StartTransformRun( const std::string& solverId, const std::vector<unsigned char>& parameters,
 	const std::filesystem::path* record, Run& run, std::string& error )
 {
@@ -202,6 +209,8 @@ double LiveSimulation::FirstSceneTime() const
 	return m_run->host->Description().cache.startTime;
 }
 
+// Starts an interactive mesh solver run, steps the first frame synchronously,
+// opens live monitor/bind MeshCacheSources, and verifies topology matches any bound mesh.
 bool LiveSimulation::StartRun( const std::string& solverId, const std::vector<unsigned char>& parameters,
 	const Simulation::MeshSourceOptions& options, const Simulation::MeshCacheSource* topology,
 	const std::filesystem::path* record, Run& run, std::string& error )
@@ -350,6 +359,8 @@ bool LiveSimulation::WaitIdle( std::string& error )
 	return ok;
 }
 
+// Two-phase restart: PrepareRestart boots the replacement Run off-lock into
+// m_pending; CommitRestart swaps m_run (and m_hub->feed) and destroys the old Run.
 bool LiveSimulation::PrepareRestart( const std::vector<unsigned char>* parameters,
 	const std::filesystem::path* record, std::string& error )
 {
@@ -626,6 +637,9 @@ void PlaybackClock::Shutdown()
 	}
 }
 
+// Dedicated playback thread: advances scaled wall clock, clamps to live solver
+// progress, coalesces viewport applies to completed render passes (1 s watchdog),
+// and handles loop wraparound or one-shot completion.
 void PlaybackClock::Loop()
 {
 	m_threadId.store( std::this_thread::get_id(), std::memory_order_release );

@@ -131,17 +131,8 @@ Vector3 GeometricUtilities::PerturbClipped(
 	const Vector3& vec, const Scalar down, const Vector3& clipN,
 	const Scalar u, Scalar* outHalfArc )
 {
-	// See the header for the derivation and the three preconditions.  This
-	// is DL-68's azimuth-arc construction with the polar angle supplied by
-	// the caller instead of drawn from a cos^N marginal.
-	//
-	// Review P3: `clipN` MUST be unit.  `cosPhiRaw` is read as a cosine
-	// below, so a non-unit `clipN` scales it -- and with |clipN| > 1 the
-	// `r_min(1, .)` clamp then reports `cosPhi == 1`, `sinPhi == 0`,
-	// `denom == 0`, and the clip is SILENTLY DISABLED (`half` stays PI and
-	// the full circle is drawn).  That is a wrong sample, not a loud one,
-	// so normalize and say so -- the same treatment
-	// `Optics::CalculateRefractedRay` gives its own non-unit inputs.
+	// See header for derivation and preconditions (DL-68 / DL-111).
+	// Normalize non-unit clipN (a >1 norm would clamp cosPhi to 1 and disable clipping).
 	Vector3 clipUnit = clipN;
 	{
 		const Scalar len2 = Vector3Ops::SquaredModulus( clipN );
@@ -162,11 +153,7 @@ Vector3 GeometricUtilities::PerturbClipped(
 
 	const Scalar cosPhiRaw = Vector3Ops::Dot( vec, clipUnit );
 	if( cosPhiRaw < Scalar(0) ) {
-		// Fail loudly rather than manufacture a direction from a corrupted
-		// frame -- the same choice TranslucentSPFDetail::SampleClippedPhong
-		// made after its own review (a masking clamp there produced a
-		// non-unit vector).  Every caller orients first, so this is
-		// unreachable from production.
+		// Fail loudly on violated axis-in-half-space precondition.
 		GlobalLog()->PrintEasyError(
 			"GeometricUtilities::PerturbClipped:: precondition violated -- "
 			"the axis is not inside the clip half-space (Dot(vec,clipN) < 0); "
@@ -183,10 +170,7 @@ Vector3 GeometricUtilities::PerturbClipped(
 	Vector3 uAxis = clipUnit - cosPhi*vec;
 	const Scalar uLen2 = Vector3Ops::SquaredModulus( uAxis );
 	if( uLen2 <= Scalar(1e-12) ) {
-		// clipN parallel to the axis: the clip is inactive, the whole cone
-		// is valid.  Reproduce the unclipped draw EXACTLY (same Perturb
-		// call, same azimuth convention) so an untilted surface is
-		// bit-for-bit unchanged.
+		// clipN parallel to axis: full cone valid; preserve unclipped Perturb draw.
 		if( outHalfArc ) *outHalfArc = PI;
 		return GeometricUtilities::Perturb( vec, down, TWO_PI * u );
 	}
@@ -195,23 +179,12 @@ Vector3 GeometricUtilities::PerturbClipped(
 
 	const Scalar sinPhi = sqrt( r_max( Scalar(0), Scalar(1) - cosPhi*cosPhi ) );
 
-	// Half-width of the valid azimuth arc, written as a ratio comparison
-	// rather than cot(theta)*cot(phi) so that theta -> 0 (cot -> infinity)
-	// needs no special case: the "whole circle" branch is exactly
-	// `num >= denom`.
+	// Half-width of valid azimuth arc via ratio comparison (avoids cot(0) singularity).
 	Scalar half = PI;
 	const Scalar denom = sinTheta * sinPhi;
 	const Scalar num   = cosTheta * cosPhi;
 	if( num < denom ) {
-		// Review P3: `-num/denom` can exceed 1 when `down > PI/2` -- then
-		// `cosTheta < 0`, `num < 0`, and a cone that is entirely OUTSIDE
-		// the half-space has no valid azimuth at all.  `acos` of that
-		// argument is NaN, and the NaN propagates straight into the
-		// returned DIRECTION.  Production never reaches it (every caller
-		// gates `down` below PI/2, and `down` is a polar perturbation
-		// angle), but a silent NaN direction is not an acceptable failure
-		// mode for a shared utility.  Detect the empty arc and fail the
-		// same way as a violated axis precondition.
+		// Detect empty arc (down > PI/2 placing entire cone outside half-space) to avoid acos NaN.
 		const Scalar arg = -num/denom;
 		if( arg > Scalar(1) ) {
 			GlobalLog()->PrintEasyError(
@@ -226,9 +199,7 @@ Vector3 GeometricUtilities::PerturbClipped(
 	if( outHalfArc ) *outHalfArc = half;
 
 	if( half >= PI ) {
-		// Same bit-for-bit reproduction as above: with the clip inactive at
-		// this particular theta the arc IS the full circle, so keep the
-		// pre-existing draw rather than an equivalent-but-different one.
+		// Clip inactive at this theta: preserve unclipped Perturb draw.
 		return GeometricUtilities::Perturb( vec, down, TWO_PI * u );
 	}
 
@@ -506,17 +477,8 @@ void GeometricUtilities::TorusTextureCoord(
 )
 {
 	// Inverse of TorusGeometry::TessellateToMesh:
-	//   pos = ( (R + r·cos(V))·cos(U),
-	//            r·sin(V),
-	//           (R + r·cos(V))·sin(U) )
+	//   pos = ((R + r·cos(V))·cos(U), r·sin(V), (R + r·cos(V))·sin(U))
 	// with U = u·2π (ring angle around Y) and V = v·2π (tube angle).
-	//
-	// The pre-fix body used acos(N·vUp) and acos((point.x, point.y, 0)·vForward)
-	// — both wrong: acos returns [0, π] so the full circle wrapped onto a
-	// half-range, the projection used (x, y) instead of (x, z), and the
-	// formula derived UV from the gradient normal rather than the position.
-	// Use atan2 of the same components TessellateToMesh uses so the (u, v)
-	// emitted here roundtrips through TessellateToMesh's forward formula.
 
 	const Scalar dXZ = std::sqrt( ptPoint.x * ptPoint.x + ptPoint.z * ptPoint.z );
 
@@ -571,17 +533,10 @@ void GeometricUtilities::CylinderTextureCoord( const Point3 point, const int chA
 	(void)dOVRadius;  // No longer used — kept for ABI compatibility.
 
 	// Inverse of CylinderGeometry::TessellateToMesh:
-	//   axis 'x':  pos = (axial, r·cos(θ), r·sin(θ))
-	//   axis 'y':  pos = (r·cos(θ), axial, r·sin(θ))
-	//   axis 'z':  pos = (r·cos(θ), r·sin(θ), axial)
+	//   axis 'x': pos = (axial, r·cos(θ), r·sin(θ))
+	//   axis 'y': pos = (r·cos(θ), axial, r·sin(θ))
+	//   axis 'z': pos = (r·cos(θ), r·sin(θ), axial)
 	// with θ = u·2π in [0, 2π) and axial = axisMin + v·(axisMax - axisMin).
-	//
-	// The pre-fix body used acos(z/r) (or x/r, y/r) with a wrap-flip on the
-	// "other" radial component, which mapped the angular axis onto a
-	// different parametrisation of the circle than TessellateToMesh
-	// (off by a quarter turn AND inverted in direction).  Use atan2 of
-	// the same two radial components TessellateToMesh uses so the (u, v)
-	// emitted here roundtrips through TessellateToMesh's forward formula.
 	Scalar a = 0.0;  // the radial coordinate playing the cos role
 	Scalar b = 0.0;  // the radial coordinate playing the sin role
 	Scalar axial = 0.0;
@@ -1391,60 +1346,12 @@ char GeometricUtilities::WhichSideOfPlane(
 	}
 }
 
-//! (Moved from TriangleMeshGeometryIndexed.cpp, DL-382.)
-//! DL-143.  Welds `points` to a shared id per PHYSICAL corner, so
-//! that watertightness (and anything else that needs "is this the
-//! same vertex") can be decided by position rather than by which
-//! array slot a per-corner import/tessellation pipeline happened to
-//! allocate.  `outWeldedId[i]` is the welded id for `points[i]`.
-//!
-//! Tolerance: `eps = max(1e-9, 1e-6 * bboxDiagonal, minEps)`, i.e.
-//! relative to THIS point set's own scale, not an absolute constant --
-//! an absolute epsilon would either be too coarse for a millimetre-scale
-//! asset or too fine to absorb import float noise on a kilometre-scale
-//! one.
-//!
-//! The partition (DL-620 review, P3-2).  Points are visited in input
-//! order.  A point joins the NEAREST existing representative within
-//! `eps` (ties: the lowest id); with none within `eps` it becomes a
-//! new representative, numbered in creation order.  The result is
-//! therefore a pure function of the input sequence -- it does not
-//! depend on the grid's cell size, hash-table capacity or bucket scan
-//! order (an earlier first-match scan did, so two equally valid grids
-//! could produce two different partitions for the same mesh).  The
-//! weld is NOT an equivalence relation on raw positions: two points
-//! within `eps` of each other can land in different classes, and two
-//! points in one class can be up to `2 eps` apart.
-//!
-//! `outTransitive` (when non-null) reports whether the weld was
-//! UNAMBIGUOUS: every point lies within `eps/2` of its representative
-//! and representatives are pairwise more than `1.5 eps` apart.  Then
-//! every point had exactly one representative within `eps`, so no
-//! tie-break or visiting-order choice influenced its class, and points
-//! in DIFFERENT classes are at least `eps/2` apart (not `eps`: a
-//! transitive weld still does not certify that the classes are
-//! `eps`-separated).  Callers use it to decide when an earlier weld's
-//! labels can be compared against a new one.
-//!
-//! Grid: cell `6 eps` over coordinates RELATIVE to the bounding box's
-//! low corner (always, DL-620 review P3-4: relative coordinates lie in
-//! [0, diagonal], so the cell arithmetic's rounding error is a few ulps
-//! of the diagonal -- about 1e-10 of `eps` -- however far the mesh is
-//! translated; absolute coordinates at 1e9 x the mesh size made
-//! `rx - floor(rx/cell)*cell` lose whole multiples of `eps`).  The home
-//! cell is scanned first; an exact (bit-identical) duplicate, the common
-//! case for shared corners, is its own nearest representative at
-//! distance 0 and ends the scan there.  Otherwise, unless the point's
-//! search box (`1.5 eps`, or `eps` once the weld is known to be
-//! ambiguous, plus the rounding bound) lies inside its home cell, every
-//! cell overlapping the box is scanned.  The cell is small (`6 eps`)
-//! because each visited cell is scanned in full and representatives are
-//! only `eps` apart: the per-cell count is what a dense mesh can blow up.
-//!
-//! O(n) expected.  DL-197: `outEps`, when non-null, receives the SAME
-//! epsilon this function used, so a caller that needs a second
-//! geometric test at "the tolerance the weld itself trusted" does not
-//! re-derive the formula.
+//! Welds `points` by physical position (DL-143): greedy nearest earlier
+//! representative within `eps = max(1e-9, 1e-6 * diag, minEps)` (ties: lowest
+//! ID), independent of grid size or hash layout. `outTransitive` is true iff
+//! every point is <= `eps/2` from its rep and reps are > `1.5 eps` apart.
+//! Uses coordinates relative to `bbox.ll` so cell rounding stays O(ulp * diag)
+//! regardless of world translation. O(n) expected; `outEps` receives `eps`.
 bool GeometricUtilities::WeldVertexPositions(
 	const std::vector<Point3>& points,
 	std::vector<unsigned int>& outWeldedId,
@@ -1471,31 +1378,10 @@ bool GeometricUtilities::WeldVertexPositions(
 	const Vector3 extents = bbox.GetExtents();
 	const Scalar diag = Vector3Ops::Magnitude( extents );
 	const Scalar eps = std::max( std::max( Scalar( 1e-9 ), Scalar( 1e-6 ) * diag ), minEps );
-	// Cell size (DL-620 review round 2, P2).  Each lookup scans every
-	// representative in the cells it visits, and representatives are only
-	// guaranteed to be more than eps apart, so a cell of k eps can hold
-	// ~k^2 representatives on a surface and ~k^3 in a volume.  32 eps let a
-	// vertex spacing just above eps (the DL-150 regime: a dense model whose
-	// epsilon one stray far vertex has inflated) put ~1,000 representatives
-	// in a cell and slowed the weld by ~20x on a 490k-vertex sheet.  Smaller
-	// cells cost hash lookups instead: the 1.5 eps search box spans up to
-	// two cells per axis, and only a point more than that far inside its
-	// home cell on every axis can skip its neighbours.  Measured on 490k
-	// vertices (OpenSheetCertificateTiming, weld alone, n=5): 3 eps reads
-	// 18 / 48 ms (dense / ordinary sheet), 6 eps 15 / 21 ms, 8 eps 36 / 24
-	// ms, 32 eps 237 / 12 ms.  6 eps keeps the dense case bounded (about
-	// 30 representatives per cell on a surface) for ~10 ms on an ordinary
-	// one.
-	// DL-623 (4): adaptive cell size between 6*eps and 32*eps.  Sample up
-	// to 64 evenly-spaced points to estimate the core point spacing (the
-	// 12.5%..87.5% interdecile span, immune to isolated far outliers as in
-	// `dense`).  On ordinary meshes (`estSpacing >> 32*eps`) this selects
-	// 32*eps so ~75% of points stay inside their home cell and skip all 7
-	// neighbour probes (saving ~10 ms on 490k vertices); on dense-outlier
-	// clouds (`estSpacing ~ eps`) it clamps to 6*eps so per-cell lists stay
-	// short.  Because every point searches all cells overlapping its
-	// `searchRad` box, `outWeldedId` and `outTransitive` are independent of
-	// `cell`.
+	// Adaptive cell size in [6*eps, 32*eps] from 64-sample interdecile spacing:
+	// large cells (~32*eps) skip neighbour probes on ordinary meshes, while
+	// small cells (~6*eps) keep bucket lists bounded on dense-outlier clouds.
+	// Output partition is independent of `cell`.
 	Scalar cell = Scalar( 6 ) * eps;
 	if( points.size() >= 64 ) {
 		double sx[64], sy[64], sz[64];
@@ -2563,26 +2449,10 @@ GeometricUtilities::OpenSurfaceCertificate GeometricUtilities::IsEmbeddedOpenOri
 		// DL-623 (1): test oversize triangles (those spanning > 64 fine cells)
 		// without coarsening the grid for the rest of the mesh.
 		if( !oversizeTris.empty() ) {
-			// 1. Oversize vs. oversize pairs, by a sort-and-sweep on the
-			// boxes' low corner along one axis (DL-623 review).  Nothing caps
-			// how many triangles are oversize (up to ~1/8 of a mesh mixing
-			// two densities, e.g. a terrain LOD seam), and the earlier
-			// all-pairs scan box-tested every pair (~7e9 tests for 120k
-			// oversize triangles).  The sweep axis is the one along which
-			// the boxes overlap least -- the sum of box extents over the
-			// set's span, which estimates how many boxes cover a point -- so
-			// long slivers lying side by side are swept across, not along.
-			// Two linear budgets bound the work, and a set that exceeds
-			// either is refused (sound: a refusal never certifies): EVERY
-			// visited pair, overlapping or not, is charged to
-			// `oversizeVisitBudget` (a cheap box test each), and every pair
-			// whose boxes overlap -- an exact triangle-pair test each, ~100x
-			// dearer -- to `oversizeTestBudget` as well as to `pairBudget`.
-			// Boxes that overlap on every axis keep any sweep quadratic; a
-			// side-by-side sliver strip overlaps ~6 neighbours per triangle.
-			// The order is a pure function of the boxes (ties by triangle
-			// index), so the counts -- and with them the refusal point -- do
-			// not depend on input order.
+			// 1. Oversize vs. oversize via sort-and-sweep along the minimum-overlap
+			// axis (min sum(ext)/span, ties by triangle index for determinism).
+			// Bounded by linear visit/test budgets (`oversizeVisitBudget`,
+			// `oversizeTestBudget`, `pairBudget`); exceeding any refuses soundly.
 			int axis = 0;
 			{
 				Scalar extSum[3] = { 0, 0, 0 };
@@ -2787,61 +2657,19 @@ GeometricUtilities::OpenSurfaceCertificate GeometricUtilities::IsEmbeddedOpenOri
 namespace
 {
 	//////////////////////////////////////////////////////////////////////
-	// DL-616: patch-set certifier.
+	// DL-616: analytic patch-set certifier (conservative; any unproved step refuses).
 	//
-	// The claim either output makes is about the WHOLE set, so every step
-	// below is a proof, and anything a step cannot prove is a refusal:
-	//
-	//  T. TOPOLOGY from exact seam identity only.  Every side is a cubic
-	//     control polygon; two sides are glued iff one is the bitwise
-	//     reverse of the other (the reversal is the orientation check).
-	//     A side shared by more than two patches, a self-glued patch, a
-	//     side whose endpoints coincide (collapsed / looping) or a patch
-	//     with two coincident corners is refused.  Nothing is welded by a
-	//     tolerance: two corners that merely coincide in space without a
-	//     glued seam between them are DIFFERENT vertices, so the geometric
-	//     steps below must prove them apart -- which is how a T-junction,
-	//     a pinch vertex or a corner that touches without a seam is
-	//     refused rather than silently stitched.
-	//  G. EMBEDDING on an n x n grid of sub-patches per patch (n = 4, then
-	//     8 on a geometric refusal).  Sub-patch vertices are identified by
-	//     union-find over the glued seams (exact topology again), and
-	//     glued sub-patch boundaries are ASSIGNED bitwise equal (after a
-	//     tolerance sanity check), never left to two rounding sequences.
-	//     Then:
-	//      - every sub-patch is INJECTIVE: if every cross product
-	//        du_i x dv_k of a u- and a v-derivative control vector has a
-	//        positive component along one direction V, the map is
-	//        injective, because P(x) - P(y) = a du + b dv with a in the
-	//        convex hull of the u-derivatives and b in that of the
-	//        v-derivatives (mean-value theorem along the segment), and
-	//        (a x b).V is bilinear, so its minimum over the two hulls is
-	//        attained at control vectors and is positive -- a x b != 0;
-	//      - every pair of sub-patches sharing a SIDE is injective as a
-	//        union: the two nets, rotated so the shared side is v = 1 of
-	//        one and v = 0 of the other, parameterize one continuous
-	//        piecewise-polynomial map of a rectangle, and the same
-	//        argument applies to the pooled derivative vectors;
-	//      - every pair sharing only a VERTEX X is strictly separated by
-	//        a plane through X: every control point but the corner on one
-	//        side, every one of the other's on the other side; a convex
-	//        combination with weight off the corner is then strictly on
-	//        its own side, so the two meet only at X;
-	//      - every other pair is DISJOINT, proved by recursive subdivision
-	//        of control-point boxes (inflated by a relative epsilon).
-	//     Together: the map from the glued topological complex to space is
-	//     injective, i.e. an embedding.
-	//  C. CLASSIFICATION.  The complex is connected.  No free side: an
-	//     embedded closed oriented surface bounds a region, and the EXACT
-	//     signed volume (1/3 of the integral of P.(Pu x Pv), integrated in
-	//     Bernstein form) gives its orientation; positive certifies
-	//     watertight, negative or tiny is refused.  With a free side: a
-	//     connected compact surface with non-empty boundary encloses no
-	//     volume -> provably open; the signed volume about the bbox centre
-	//     drives the inward-winding warning.
-	//
-	// Cost: sub-patch pairs come from a sort-and-sweep over boxes, and a
-	// work budget refuses (never certifies) a set it cannot finish.
+	//  T. TOPOLOGY: exact bitwise-reversed cubic seam identity (no tolerance
+	//     welding), single connected component, manifold vertex/pole links.
+	//  G. EMBEDDING on an n x n sub-patch grid (n = 4, retry n = 8 on geometric
+	//     refusal; glued boundaries assigned bitwise equal after seamTol check):
+	//     - sub-patch injectivity & shared-side union injectivity: all active
+	//       du_i x dv_k lie in one open half-space (mean-value theorem);
+	//     - shared-vertex pairs: strictly separated by a plane through the vertex;
+	//     - disjoint pairs: recursive subdivision of inflated control boxes.
+	//  C. CLASSIFICATION: exact Bernstein signed volume (1/3 int P.(Pu x Pv)).
+	//     No free sides + positive volume => watertight; free sides => provably open.
+	//     Bounded by a work budget and sub-patch count cap.
 	//////////////////////////////////////////////////////////////////////
 
 	typedef std::array<Point3, 4> PatchCurve;
@@ -3421,28 +3249,11 @@ namespace
 		return true;
 	}
 
-	//! Verifies that at every corner / pole position shared by one or more
-	//! patches, the incident wedges are linked by matched non-collapsed
-	//! seams into a single manifold fan (either one closed cycle of glued
-	//! radial seams or one open chain with two boundary radial sides).
-	//! Rejects tip-to-tip double cones, closed cones with extra flaps, and
-	//! multi-fan pinch vertices.
-	//!
-	//! Cost (DL-623 review): O(I log I) for I incidences (at most 4 per
-	//! patch) -- the sort -- and linear after it: a side id is the
-	//! `inSide` of exactly one incidence, so the wedge a matched seam
-	//! leads to is found through the side-id -> incidence table, not by
-	//! scanning the position's group (which was quadratic in the number of
-	//! patches meeting at one point: a fan of 16k wedges at a pole is ~1e9
-	//! comparisons).  When `work` is given, the incidences are charged to
-	//! it up front and an exhausted budget returns FALSE with
-	//! `work->exhausted` set, so the caller can tell a refusal for budget
-	//! from a non-manifold vertex.  Behaviour change (DL-623 review): these
-	//! 4 P units now come out of the SAME per-attempt budget the embedding
-	//! steps use (they used to be free), so a caller-supplied
-	//! PatchSetCertDiagnostics::workBudget smaller than 4 x the patch count
-	//! refuses at topology with "certification work budget exhausted", and
-	//! the embedding steps have 4 P fewer units than before.
+	//! Verifies every shared corner/pole position's incident wedges form a
+	//! single manifold cycle or open chain (rejects double cones, extra flaps,
+	//! multi-fan pinches). O(I log I) via sort + unique `inSide` table.
+	//! Charges `4 * patches.size()` units to `work` (if provided) so a budget
+	//! refusal is distinguishable from a non-manifold vertex.
 	bool CheckManifoldVertexLinks(
 		const std::vector<BezierPatch>& patches,
 		const std::vector<int>& collapsedSide,
@@ -4351,32 +4162,15 @@ namespace
 		return x;
 	}
 
-	//! DL-621 review (P2): the fraction of a mesh's area its free boundary
-	//! must span before the mesh takes a SHEET role in a composite.  Each
-	//! boundary component's vector area |sum (a - c) x (b - c)| / 2 (a
-	//! closed, oriented 1-cycle, so independent of the reference point c)
-	//! is a lower bound on the area of any surface that caps it; the mesh
-	//! is a sheet only when those caps add up to at least this fraction of
-	//! its own area.  A pinhole caps with ~ its own (tiny) area, and a
-	//! crack or an unwelded T-junction with ~ zero (its two sides run back
-	//! along each other), so a "solid" that is not quite closed -- most
-	//! real imported ones (DL-143) -- is left UNDECIDED (the composite
-	//! falls back to its solid interval algebra), not trimmed as a skin.
-	//! For scale: a flat sheet or a twisted strip reads ~1, a hemispherical
-	//! bowl 0.5, an open-top cup of height h and radius r  r / (r + 2h), an
-	//! open tube of length L  r / L (so a tube longer than 50 radii is left
-	//! undecided too), one missing triangle of an N-triangle closed mesh
-	//! ~1/N.
+	//! Minimum boundary vector-area cap fraction required to classify an open
+	//! mesh as a sheet (DL-621): prevents pinholes, cracks, and unwelded
+	//! T-junctions on near-closed solids from taking a sheet role.
 	const Scalar kMinSheetBoundaryCapFraction = Scalar( 0.02 );
 
-	//!
-	//! Free edges are directed by their own triangle's winding.  That makes
-	//! each boundary loop an oriented 1-cycle only because the caller has
-	//! already refused (-1) any edge two triangles traverse the same way,
-	//! so every edge-connected component is consistently wound.  Separate
-	//! components may still be wound against each other and touch at a
-	//! vertex, so loops are grouped per (component, welded vertex): a loop
-	//! never sums with another component's loop and cancels against it.
+	//! Sums each boundary loop's vector area `|sum (a-c) x (b-c)| / 2` grouped
+	//! per `(edge-connected component, welded vertex)` so oppositely wound
+	//! components touching at a vertex cannot cancel. Caller has already
+	//! rejected inconsistently wound shared edges.
 	template<class EdgeQuery>
 	bool TriangleMeshBoundaryIsSubstantial(
 		const std::vector<Point3>& corners,
@@ -4458,17 +4252,9 @@ namespace
 		return caps >= kMinSheetBoundaryCapFraction * area;
 	}
 
-	//! DL-621 review (P3): the DL-197 coplanar-opposed guard for a mesh
-	//! with no free boundary.  Two independent sheets closer than the weld
-	//! epsilon weld into a closed "pillow" that encloses no volume, and
-	//! across their seam two triangles fold back onto each other (opposed
-	//! normals, each one's third vertex within `weldEps` of the other's
-	//! plane).  A connected component containing such a fold is refused
-	//! (false) when its enclosed volume is also degenerate: 2|V|/A, a thin
-	//! slab's thickness, at most `weldEps`.  A genuine closed solid whose
-	//! surface merely carries a flat pleat (a fold inside a face) keeps its
-	//! closed role, which the watertightness certificate's own DL-197 check
-	//! refuses; this is a role, not that certificate.
+	//! Coplanar-opposed pillow guard for closed meshes (DL-621 / DL-197):
+	//! rejects a component that both folds back on itself across a shared edge
+	//! within `weldEps` and has degenerate thickness `2|V|/A <= weldEps`.
 	template<class EdgePartner>
 	bool TriangleMeshClosedComponentsHaveVolume(
 		const std::vector<Point3>& corners,

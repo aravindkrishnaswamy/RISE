@@ -2326,7 +2326,10 @@ namespace RISE
 		//!   * Blocked        -- EVERYTHING ELSE that is a rasterizer chunk.
 		//!                       Today that is exactly bdpt_pel /
 		//!                       bdpt_spectral / mlt / mlt_spectral / auto /
-		//!                       auto_spectral, but the classifier does NOT
+		//!                       auto_spectral, the two frozen pixel
+		//!                       rasterizers and the HyLIoS
+		//!                       hyperspectral_radiometric_rasterizer (a
+		//!                       measurement tool), but the classifier does NOT
 		//!                       read off a hard-coded blocked list at
 		//!                       runtime: anything that is a rasterizer chunk
 		//!                       and is in neither named set falls through to

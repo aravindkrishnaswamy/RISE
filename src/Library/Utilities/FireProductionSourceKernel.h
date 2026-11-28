@@ -2,6 +2,16 @@
 //
 // FireProductionSourceKernel.h - shared canonical methane source arithmetic
 //
+// Header-only binary64 reference kernels for the canonical methane fire
+// source map: profiling counters, persistent FireSim worker pool, 9-row
+// conservative state [rho*Z, CH4, O2, N2, CO2, H2O, CO, C(gr), rho*e_s],
+// EOS temperature inversion and residual, molecular/Vreman transport and
+// mixing time, CFL timestep selection, EDC reaction/soot/pilot packets,
+// ignition BFS graph, backward-Euler gas+soot radiation (optically thin
+// and six-flux self-absorption/deposit), and radiatively adiabatic floor
+// heat balance. Grid indexing is x-fast cell-major: (z*ny+y)*nx+x; units
+// are SI (kg/m^3, J/m^3, K, W/m^3, s, m).
+//
 // License Information: Please see the attached LICENSE.TXT file
 //
 //////////////////////////////////////////////////////////////////////
@@ -39,6 +49,8 @@ namespace RISE
 {
 	namespace FireSim
 	{
+		// --- Optional profiling instrumentation (RISE_FIRE_PROFILE) ---
+
 		struct FireProfileCounters
 		{
 			std::atomic<unsigned long long> sliceCalls{0},sliceSerialCalls{0},sliceThreads{0};
@@ -101,6 +113,8 @@ namespace RISE
 				c.nsFCT.exchange(0)*1.0e-6,c.nsTarget.exchange(0)*1.0e-6,
 				c.nsInvertT.exchange(0)*1.0e-6,c.nsMGCoarsen.exchange(0)*1.0e-6);
 		}
+
+		// --- Persistent FireSim worker pool and dynamic chunk scheduler ---
 
 		class PersistentFireWorkerPool
 		{
@@ -229,6 +243,10 @@ namespace RISE
 					if(chunk>=chunks)return;function(chunk);}
 			});
 		}
+		// --- Conservative 9-component methane state and EOS inversion ---
+
+		//! Canonical species ordering within the 9-component conservative tuple:
+		//! [0]=rho*Z, [1..7]=species densities below (6 gas + solid soot), [8]=rho*e_s.
 		enum MethaneSpeciesIndex
 		{
 			MethaneCH4 = 0,
@@ -302,6 +320,8 @@ namespace RISE
 			return larger*(0.5+0.5*(smaller/larger));
 		}
 
+		//! Cell-centered thermochemical state (kg/m^3, J/m^3, K) tagged with the
+		//! producer precision class used to select EOS/admissibility roundoff bands.
 		struct MethaneCellState
 		{
 			double rhoTotalZ;
@@ -442,6 +462,8 @@ namespace RISE
 			const double lowerK,const double upperK,
 			const FireSimulationMethaneRecord& thermochemistry);
 
+		//! Monotone bisection (96 iterations) of signed mixture sensible energy
+		//! against NASA-9 enthalpies within [lowerTemperatureK, upperTemperatureK].
 		inline bool InvertMethaneTemperatureWithinAcceptedEnvelope(
 			const MethaneCellState& state,
 			const double lowerTemperatureK,
@@ -519,6 +541,8 @@ namespace RISE
 				Fail(error,"fire solver cell has no finite positive total density");
 		}
 
+		//! Relative low-Mach EOS residual |p(rho,T)/P0 - 1| using positive-part gas
+		//! species densities and ideal-gas constant R = 8314.46261815324 J/(kmol*K).
 		inline bool EquationOfStateResidual(
 			const MethaneCellState& state,
 			const FireSimulationMethaneRecord& thermochemistry,
@@ -571,6 +595,8 @@ namespace RISE
 			return EquationOfStateResidual(state,thermochemistry,
 				state.producerPrecision,result,error);
 		}
+
+		// --- Molecular + Vreman SGS transport, mixing time, and CFL timestep ---
 
 		struct CellTransportEvaluation
 		{
@@ -776,6 +802,8 @@ namespace RISE
 			StableTimeStep() : seconds(0.0) {}
 		};
 
+		//! Selects dt = min(advective CFL 0.5*dx/u, buoyancy 0.5*sqrt(2*dx/g'),
+		//! explicit diffusion dx^2/(8*nu_max), 1.1*dt_prev) and records active limit.
 		inline bool ComputeStableTimeStep(
 			const double cellWidthM,
 			const double maximumVelocityMPerS,
@@ -819,6 +847,10 @@ namespace RISE
 			return (result.seconds > 0.0 && !std::isnan(result.seconds)) ||
 				Fail(error,"fire solver timestep selection failed");
 		}
+		// --- Frozen reaction, pilot, soot, and radiative source packets ---
+
+		//! Per-cell conservative source increments (kg/m^3, J/m^3) and diagnostic
+		//! reaction/pilot/radiation rates produced for one step.
 		struct MethaneSourcePacket
 		{
 			std::array<double,MethaneSpeciesCount> constituentDelta;
@@ -966,6 +998,8 @@ namespace RISE
 			double expansionIntegral=0.0;
 		};
 
+		//! Computes pilot sensible-energy injection and expansion integral capped
+		//! by the canonical 17/16 single-step volume-expansion ratio.
 		inline bool ComputeMethanePilotProjectionMap(
 			const MethaneCellState& beginning,
 			const FireSimulationMethaneRecord& thermochemistry,
@@ -1334,6 +1368,9 @@ namespace RISE
 			reaches=available>=required;return true;
 		}
 
+		//! Builds a mixing-limited EDC primary CH4 + soot oxidation reaction packet
+		//! plus pilot dose, bisecting reaction extent in IEEE bit space if needed
+		//! to stay strictly below maximumAcceptedTemperatureK.
 		// sootSheetRadiativeLossFraction < 0 keeps the cell-mean oxidation gate.
 		inline bool BuildMethaneReactionPacket(
 			const MethaneCellState& beginning,
@@ -1560,6 +1597,10 @@ namespace RISE
 			return AcceptedMethaneCellStateAdmissible(state,fuel,
 				state.producerPrecision,error);
 		}
+		// --- Low-Mach divergence targets and ignition connectivity graph ---
+
+		//! Evaluates exact EOS tangent divergence rate from a discrete nonadvective
+		//! + source conservative rate vector.
 		inline bool DivergenceFromDiscreteRate(
 			const ConservativeVector& stateVector,
 			const ConservativeVector& nonadvectiveAndSourceRate,
@@ -1823,6 +1864,8 @@ namespace RISE
 			std::vector<bool> pilotMask;
 		};
 
+		//! 6-connected BFS from piloted/autoigniting seeds over cells whose
+		//! stoichiometric parcel passes the critical flame temperature (CFT).
 		inline bool BuildIgnitionEligibility(
 			const IgnitionGrid& grid,
 			const FireSimulationMethaneRecord& fuel,
@@ -1904,6 +1947,8 @@ namespace RISE
 			}
 			return true;
 		}
+
+		// --- Gas + soot radiative cooling (backward Euler) and packet assembly ---
 
 		struct GasExchangeEvaluation
 		{
@@ -2557,6 +2602,9 @@ namespace RISE
 			std::vector<double> downwardSootWPerM2;
 		};
 
+		//! Two-pass grid source builder: (1) per-cell EDC reaction + unscaled gas/soot
+		//! emission, (2) global escape factor (and optional 6-flux soot transport),
+		//! (3) backward-Euler cooling + ledger/expansion certification.
 		inline bool BuildFrozenMethaneSourcePackets(
 			const std::vector<MethaneCellState>& beginning,
 			const std::vector<MethaneReactionStep>& reactionStep,

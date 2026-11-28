@@ -1,0 +1,463 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#                                                                                                           #
+#   File:           hearth.RISEscene                                                                        #
+#   Idea:           A fire-lit still life.  A pool fire burns in a slate hearth and is the room's only key  #
+#                   light: a yellow-orange flame on a blue base, puffing under a dark smoke column; a silk  #
+#                   pennant rides the plume's updraft out over the flame from an iron rod; a glass of #
+#                   water on a low oak stool catches the flame.  Shown in slow motion.                      #
+#   Simulations:    fire.methane (Metal) `fire`, the certified 0.30 m / 33 kW burner with soot (the chosen  #
+#                   look: `methane_soot_yield 0.1`, `soot_radiative_fraction_cap 0.45`,                     #
+#                   `soot_self_absorption 1`: a sooty-fuel look on methane chemistry, about three times     #
+#                   methane's fitted soot; real methane makes far less); cloth.shell `pennant` reads the    #
+#                   fire's gas velocity and temperature one way through `port_source ... via               #
+#                   aerodynamic_drag` (quadratic drag of the hot gas on the silk).  That is the only        #
+#                   fire-cloth coupling there is: the fire does not heat, scorch or burn the cloth, and     #
+#                   the glass of water is static geometry.  The fire's light on the silk, the stool and     #
+#                   the glass is ordinary light transport from the emitting medium.                         #
+#   Frame:          z up, metres: the fire's own frame (domain 0..2.12 x 0..2.12 x 0..3.26 at tier 6, the   #
+#                   burner centred at x = y = 1.06 on z = 0).  The cloth uses gravity 0 0 -9.81.            #
+#   Time:           the shot is the burner's ignition-pilot phase, fire time 1.0 to 2.06 s (scene t = 0 is  #
+#                   fire time 1.0 s, frame_origin_s): the tall, bright, puffing flame; at 2.1 s the pilot   #
+#                   ends and the flame settles to 0.4-0.5 m, 8-16 times dimmer.  The fire's frames are a    #
+#                   fixed 1/16 s apart and play back at scene time = fire time, so the animation renders    #
+#                   that 1.0625 s as 64 frames (a quarter-speed slow motion at 16 fps playback; between     #
+#                   fire frames the renderer advances the last frame by its velocity), and the pennant is   #
+#                   baked at 60 Hz so each rendered frame has its own cloth state.                          #
+#   Proof/final:    a value followed by `# proof <value>` is the final setting; scripts/                    #
+#                   simulation_showcase.sh proof substitutes the proof value.                               #
+#   Bake/render:    scripts/simulation_showcase.sh proof|final hearth   (docs/SIMULATION_SHOWCASE.md)        #
+#   showcase:       hero 36 frames 12 20 44 63                                                              #
+#                                                                                                           #
+#############################################################################################################
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultPathTracing
+}
+
+# The spectral path tracer: the soot glows in either integrator, but the flame's blue base is the
+# chemiluminescent CH*/C2*/CO2* emission, which only the spectral integrator evaluates.
+pathtracing_spectral_rasterizer
+{
+	samples			256		# proof 32
+	nmbegin			380
+	nmend			780
+	num_wavelengths	16		# proof 10
+	oidn_denoise	TRUE
+}
+
+# A fire render records its provenance in its primary output: linear 32-bit EXR first.
+file_rasterizeroutput
+{
+	pattern			rendered/showcase/hearth/final/hearth		# proof rendered/showcase/hearth/proof/hearth
+	multiple		TRUE
+	type			EXR
+	bpp				32
+	color_space		Rec709RGB_Linear
+}
+
+file_rasterizeroutput
+{
+	pattern			rendered/showcase/hearth/final/hearth		# proof rendered/showcase/hearth/proof/hearth
+	multiple		TRUE
+	type			PNG
+	bpp				8
+	color_space		sRGB
+	exposure		8.0
+	display_transform	aces
+}
+
+film
+{
+	width			1920		# proof 640
+	height			1080		# proof 360
+}
+
+animation_options
+{
+	time_start		0
+	time_end		1.05
+	num_frames		64
+}
+
+pinhole_camera
+{
+	location		1.95 -1.05 0.50
+	lookat			1.10 1.12 0.75
+	up				0 0 1
+	fov				50.0
+}
+
+#############################################################################################################
+# The fire: tier 6 for the proof, tier 8 for the final; window 1.0 .. 2.07 s of fire time (the pilot phase).
+
+fire_simulation
+{
+	name			fire
+	tier			8		# proof 6
+	mode			fast
+	frame_origin_s	1.0
+	end_time_s		2.07
+	methane_soot_yield	0.1
+	soot_radiative_fraction_cap	0.45
+	soot_self_absorption	1
+}
+
+fire_medium
+{
+	name				flame
+	fidelity_mode		preview
+	source				fire.volume
+	channel_carbon		carbon
+	channel_temperature	temperature
+	channel_chem_ch		chem_CH
+	channel_chem_c2		chem_C2
+	channel_chem_co2	chem_CO2
+	channel_reaction	reaction
+	channel_velocity	velocity
+}
+
+global_medium
+{
+	medium			flame
+}
+
+#############################################################################################################
+# The pennant: silk chiffon (silk-lightweight at 25 g/m^2) pinned along one edge to a rod behind the fire and laid out level over the plume,
+# so the updraft meets its face (a pennant hanging edge-on in an updraft feels only the small tangential drag and
+# stays limp); gravity pulls it down, the plume pushes it up, and it rides the puffs.
+
+cloth_simulation
+{
+	name			pennant
+	material		silk-lightweight
+	material_density	0.025
+	size_u			0.46
+	size_v			0.58
+	vertices_u		19		# proof 13
+	vertices_v		37		# proof 25
+	frames			64
+	frame_rate		60
+	origin			0.83 1.36 1.42
+	axis_u			1 0 0
+	axis_v			0 -1 0
+	gravity			0 0 -9.81
+	pin				v0
+	self_collision	TRUE
+	port_source		surface_load from fire.volume via aerodynamic_drag temperature_channel=temperature time_offset 1.0
+}
+
+simulated_mesh_geometry
+{
+	name			geo_pennant
+	source			pennant.surface
+	double_sided	TRUE
+}
+
+uniformcolor_painter
+{
+	name			pnt_silk_warp
+	color			0.85 0.45 0.10
+}
+
+uniformcolor_painter
+{
+	name			pnt_silk_weft
+	color			0.95 0.72 0.30
+}
+
+weave_material
+{
+	name			mat_pennant
+	fabric			silk
+	transmission	thin
+	sheer			0.35
+	warp_color		pnt_silk_warp
+	weft_color		pnt_silk_weft
+	warp_transmit	0.45
+	weft_transmit	0.45
+}
+
+standard_object
+{
+	name			pennant_object
+	geometry		geo_pennant
+	material		mat_pennant
+}
+
+# The iron rod the pennant hangs from, on a wall bracket out of frame.
+cylinder_geometry
+{
+	name			geo_rod
+	axis			x
+	radius			0.008
+	height			1.2
+}
+
+uniformcolor_painter
+{
+	name			pnt_iron
+	color			0.05 0.045 0.04
+}
+
+ggx_material
+{
+	name			mat_iron
+	rd				pnt_iron
+	rs				pnt_iron
+	alphax			0.35
+	alphay			0.35
+}
+
+standard_object
+{
+	name			rod
+	geometry		geo_rod
+	material		mat_iron
+	position		1.06 1.36 1.428
+}
+
+#############################################################################################################
+# The hearth: a slate floor, a ring of dark firebrick round the burner, a lime-plaster wall behind.
+
+clippedplane_geometry
+{
+	name			geo_floor
+	pta				-8 -8 0
+	ptb				 8 -8 0
+	ptc				 8  8 0
+	ptd				-8  8 0
+}
+
+uniformcolor_painter
+{
+	name			pnt_slate
+	color			0.06 0.06 0.065
+}
+
+lambertian_material
+{
+	name			mat_slate_base
+	reflectance		pnt_slate
+}
+
+coated_material
+{
+	name			mat_slate
+	base			mat_slate_base
+	coat_ior		1.5
+	coat_roughness	0.25
+}
+
+standard_object
+{
+	name			floor
+	geometry		geo_floor
+	material		mat_slate
+}
+
+lathe_geometry
+{
+	name			geo_hearth_ring
+	axis			z
+	n_radial		64
+	profile_point	0.17 0.0
+	profile_point	0.30 0.0
+	profile_point	0.30 0.045
+	profile_point	0.27 0.06
+	profile_point	0.19 0.06
+	profile_point	0.17 0.045
+}
+
+uniformcolor_painter
+{
+	name			pnt_brick
+	color			0.16 0.07 0.04
+}
+
+orennayar_material
+{
+	name			mat_brick
+	reflectance		pnt_brick
+	roughness		0.8
+}
+
+standard_object
+{
+	name			hearth_ring
+	geometry		geo_hearth_ring
+	material		mat_brick
+	position		1.06 1.06 0
+}
+
+clippedplane_geometry
+{
+	name			geo_wall
+	pta				-8 2.6 0
+	ptb				 8 2.6 0
+	ptc				 8 2.6 5
+	ptd				-8 2.6 5
+}
+
+uniformcolor_painter
+{
+	name			pnt_plaster
+	color			0.42 0.36 0.30
+}
+
+orennayar_material
+{
+	name			mat_plaster
+	reflectance		pnt_plaster
+	roughness		0.9
+}
+
+standard_object
+{
+	name			wall
+	geometry		geo_wall
+	material		mat_plaster
+}
+
+#############################################################################################################
+# The still life: a low oak stool, a heavy glass tumbler of water on it.
+
+cylinder_geometry
+{
+	name			geo_stool_top
+	axis			z
+	radius			0.17
+	height			0.04
+}
+
+uniformcolor_painter
+{
+	name			pnt_oak
+	color			0.30 0.16 0.07
+}
+
+orennayar_material
+{
+	name			mat_oak_base
+	reflectance		pnt_oak
+	roughness		0.5
+}
+
+coated_material
+{
+	name			mat_oak
+	base			mat_oak_base
+	coat_ior		1.5
+	coat_roughness	0.15
+}
+
+standard_object
+{
+	name			stool_top
+	geometry		geo_stool_top
+	material		mat_oak
+	position		1.62 0.55 0.40
+}
+
+cylinder_geometry
+{
+	name			geo_stool_leg
+	axis			z
+	radius			0.02
+	height			0.38
+}
+
+standard_object
+{
+	name			stool_leg_a
+	geometry		geo_stool_leg
+	material		mat_oak
+	position		1.73 0.55 0.19
+}
+
+standard_object
+{
+	name			stool_leg_b
+	geometry		geo_stool_leg
+	material		mat_oak
+	position		1.565 0.645 0.19
+}
+
+standard_object
+{
+	name			stool_leg_c
+	geometry		geo_stool_leg
+	material		mat_oak
+	position		1.565 0.455 0.19
+}
+
+# The tumbler: a thick-walled glass (lathe, closed profile) and the water inside it.
+lathe_geometry
+{
+	name			geo_tumbler
+	axis			z
+	n_radial		96
+	profile_point	0.0 0.0
+	profile_point	0.040 0.0
+	profile_point	0.044 0.004
+	profile_point	0.048 0.120
+	profile_point	0.044 0.120
+	profile_point	0.0405 0.016
+	profile_point	0.0 0.016
+}
+
+lathe_geometry
+{
+	name			geo_tumbler_water
+	axis			z
+	n_radial		96
+	profile_point	0.0 0.0165
+	profile_point	0.0403 0.0165
+	profile_point	0.0425 0.090
+	profile_point	0.0 0.090
+}
+
+dielectric_material
+{
+	name				mat_glass
+	tau					0.985 0.99 0.985
+	ior					1.52
+	scattering			10000
+	henyey-greenstein	FALSE
+}
+
+dielectric_material
+{
+	name				mat_water
+	tau					0.93 0.97 0.99
+	ior					1.33
+	scattering			10000
+	henyey-greenstein	FALSE
+}
+
+standard_object
+{
+	name			tumbler
+	geometry		geo_tumbler
+	material		mat_glass
+	position		1.60 0.55 0.42
+}
+
+standard_object
+{
+	name			tumbler_water
+	geometry		geo_tumbler_water
+	material		mat_water
+	position		1.60 0.55 0.42
+}
+
+# A faint cool moonlight from a window behind the camera: the only light that is not the fire.
+directional_light
+{
+	name			moon
+	power			0.0012
+	color			0.55 0.65 1.0
+	direction		0.4 -0.8 0.45
+}

@@ -1,56 +1,14 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  RandomWalkSSS.h - Random-walk subsurface scattering sampler
+//  RandomWalkSSS.h - Volumetric random-walk subsurface scattering
+//    sampler (Chiang, Burley et al., SIGGRAPH 2016).
 //
-//  Implements the volumetric random walk algorithm for subsurface
-//  light transport (Chiang, Burley et al., SIGGRAPH 2016).  At a
-//  surface entry point on a translucent object, the algorithm traces
-//  a random walk inside the mesh geometry using Beer-Lambert
-//  free-flight distance sampling and Henyey-Greenstein phase function
-//  scattering.  When the walk exits the mesh, the exit point becomes
-//  the re-emission vertex.
-//
-//  ALGORITHM OVERVIEW:
-//    1. Refract the incoming ray into the surface using Snell's law
-//       (exterior index `ri.ambientIOR` -> material index; DL-49).
-//    2. Walk loop (up to maxBounces):
-//       a. Trace ray from current position against the object with
-//          back-face-only hits to find the exit distance.
-//       b. Sample a spectral channel uniformly (RGB) or use the
-//          single channel (NM mode).
-//       c. Sample distance: t = -log(1-xi) / q, where q is the chosen
-//          effective rate (with tiny-extinction fallback). Event weights
-//          divide physical collision/survival density by that proposal.
-//       d. If t < exitDist: scatter inside.  Advance position, update
-//          throughput, sample new direction from HG phase function.
-//       e. If t >= exitDist: exit the mesh.  Compute Fresnel at exit.
-//          If total internal reflection: reflect back inside and
-//          continue.  Otherwise refract out and return the exit point.
-//          DL-370: if the point the continuation would start from (the
-//          exit offset BSSRDF_RAY_EPSILON outward) lies inside another
-//          random-walk body -- a touching or overlapping neighbour,
-//          `IObjectManager::RandomWalkObjectContaining` -- the walk
-//          crosses that interface instead and continues inside the
-//          neighbour with its coefficients.
-//    3. At exit: generate a cosine-weighted scattered direction from
-//       the exit normal and compute the BSSRDF weight.
-//
-//  ADVANTAGES OVER DISK PROJECTION:
-//    - Correctly handles thin geometry (ears, noses, fingers) where
-//      disk projection probe rays miss the surface.
-//    - Naturally captures high-albedo diffusion without profile
-//      approximation artifacts.
-//    - Models geometry-dependent subsurface transport (light leaking
-//      through thin features).
-//
-//  The output is a BSSRDFSampling::SampleResult, identical to the
-//  disk-projection method, so integrator vertex plumbing is reused.
-//
-//  Reference:
-//    Chiang, M. J., Burley, B., et al. (2016).
-//    "A Practical and Controllable Hair and Fur Model for Production
-//    Path Tracing." SIGGRAPH 2016.
-//    (Section on Subsurface Scattering via Random Walk)
+//  Refracts the incoming ray across the boundary using the relative
+//  index (ior / ri.ambientIOR), walks the interior via Beer-Lambert
+//  free-flight sampling and Henyey-Greenstein scattering, handles
+//  internal Fresnel/TIR and crossings into touching random-walk
+//  bodies (IObjectManager::RandomWalkObjectContaining), and emits a
+//  BSSRDFSampling::SampleResult matching disk-projection plumbing.
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: April 7, 2026
@@ -75,29 +33,20 @@ namespace RISE
 		//! Winding-independent entry admission for solids that certify containment.
 		Scalar EntryFacing( const RayIntersectionGeometric& ri, const IObject* object, const Vector3& wo );
 
-		/// Traces a random walk inside a mesh object and returns the
-		/// exit point as a BSSRDFSampling::SampleResult.
+		/// Traces a random walk inside a mesh object and returns the exit point
+		/// as a BSSRDFSampling::SampleResult.  Caller owns the entry Fresnel coin
+		/// flip (enter vs reflect); this function handles the interior walk and
+		/// boundary exit only.
 		///
-		/// The caller is responsible for the Fresnel coin flip at the
-		/// surface (deciding to enter the medium vs reflect).  This
-		/// function handles the interior walk and boundary exit only.
-		///
-		/// \param ri         Exit point intersection (where the camera
-		///                   ray hit the surface).  Used as the walk
-		///                   entry point after refraction.
-		/// \param pObject    The translucent object to walk inside (the walk
-		///                   may cross into a touching random-walk body;
-		///                   the result's pExitObject names the one left).
+		/// \param ri         Surface hit (walk entry point after refraction;
+		///                   ri.ambientIOR supplies the exterior IOR).
+		/// \param pObject    Entry object (result.pExitObject names the exited
+		///                   body if the walk crosses into a touching RW neighbour).
 		/// \param sigma_a    Absorption coefficient per channel [1/m]
 		/// \param sigma_s    Scattering coefficient per channel [1/m]
 		/// \param sigma_t    Extinction coefficient per channel [1/m]
 		/// \param g          Henyey-Greenstein asymmetry parameter
-		/// \param ior        The material's (absolute) index of refraction.
-		///                   The boundary is an interface against the
-		///                   exterior index `ri.ambientIOR` (DL-49): entry
-		///                   and exit refraction, exit Fresnel and the Sw
-		///                   factor all use the relative index
-		///                   ior / ri.ambientIOR.
+		/// \param ior        Absolute material IOR (boundary uses ior / ri.ambientIOR)
 		/// \param maxBounces Maximum walk steps (safety cap)
 		/// \param sampler    Random number source
 		/// \param nm         Wavelength for spectral path (0 = RGB)

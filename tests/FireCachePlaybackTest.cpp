@@ -122,15 +122,16 @@ bool CheckMissingRecords(std::string& error)
 	return true;
 }
 
-// Solver version 3 (docs/SIMULATION_SOLVER_CONTRACT.md section 13): a cache written by fire.methane
-// versions 1 and 2 passes playback's version gate (it is stale for baking only, through the key);
-// any other version is refused there.  The fixture has no frame template, so an admitted version
-// stops at the physical-record check, after the gate.
+// Solver version 4 (docs/FIRE_SMOKE_STATUS.md, "Fire solver version 4"; version 3: the contract's
+// Appendix C, docs/SIMULATION_SOLVER_CONTRACT.md): a cache written by fire.methane versions 1, 2
+// and 3 passes playback's version gate (it is stale for baking only, through the key); any other
+// version is refused there.  The fixture has no frame template, so an admitted version stops at
+// the physical-record check, after the gate.
 bool CheckSolverCacheVersions(std::string& error)
 {
-	const std::string versions[]={"1","2","3",Implementation::FireMethaneSolverVersion,"0","4"};
+	const std::string versions[]={"1","2","3","4",Implementation::FireMethaneSolverVersion,"0","5"};
 	for(const std::string& v:versions){
-		const bool playable=v=="1"||v=="2"||v=="3";
+		const bool playable=v=="1"||v=="2"||v=="3"||v=="4";
 		if(Implementation::FireMethaneSolverCacheVersionPlayable(v)!=playable){
 			error="fire solver cache version "+v+" has the wrong playability";return false;
 		}
@@ -161,7 +162,7 @@ bool CheckSolverCacheVersions(std::string& error)
 			return false;
 		}
 	}
-	std::cout<<"Fire solver caches of versions 1, 2 and 3 pass playback's version gate; 0 and 4 are refused\n";
+	std::cout<<"Fire solver caches of versions 1, 2, 3 and 4 pass playback's version gate; 0 and 5 are refused\n";
 	return true;
 }
 }

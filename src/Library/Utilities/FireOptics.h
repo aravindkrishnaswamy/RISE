@@ -6,6 +6,11 @@
 //  Date of Birth: August 6, 2026
 //  Tabs: 4
 //  Comments:
+//    Canonical CBOR64-backed optical property records for fire and
+//    smoke constituents (hot soot, cool carbon smoke, and condensed
+//    organics), monotone C1 PCHIP spectral curves with certified
+//    derivative enclosures, temperature partitioning phi(T), and
+//    predictive vs. preview fidelity gating.
 //
 //  License Information: Please see the attached LICENSE.TXT file
 //
@@ -20,6 +25,9 @@
 
 namespace RISE
 {
+	//! Certified [derivativeMin, derivativeMax] enclosure of d(value)/d(x)
+	//! over one knot interval [wavelengthMinNM, wavelengthMaxNM] (also reused
+	//! for temperature-axis PCHIP curves in transport records).
 	struct SpectralDerivativeEnclosure
 	{
 		double wavelengthMinNM;
@@ -28,6 +36,10 @@ namespace RISE
 		double derivativeMax;
 	};
 
+	//! Monotone C1 PCHIP cubic-Hermite curve over strictly increasing knots
+	//! (wavelength in nm, or temperature in K for transport records).
+	//! Evaluate() and Derivative() clamp at domain endpoints; callers enforcing
+	//! strict out-of-domain rejection must check Contains() first.
 	class DifferentiableSpectrum
 	{
 		std::vector<double> m_wavelengths;
@@ -61,6 +73,8 @@ namespace RISE
 		}
 	};
 
+	//! Result of predictive-mode gating for a fire render configuration.
+	//! reasonCodes is sorted and deduplicated when predictiveAllowed is false.
 	struct FireFidelityEvaluation
 	{
 		bool predictiveAllowed;
@@ -68,6 +82,10 @@ namespace RISE
 		std::vector<std::string> reasonCodes;
 	};
 
+	//! Immutable fire-constituent optical preset decoded from canonical CBOR64
+	//! bytes (RecordId() is the lowercase SHA-256 hex digest of RecordBytes()).
+	//! Separates certified [380, 780] nm PCHIP presets (PredictiveOpticalPreset)
+	//! from analytic constant fixtures (SyntheticRegressionFixture).
 	class FireOpticsPreset
 	{
 	public:
@@ -122,15 +140,21 @@ namespace RISE
 	public:
 		FireOpticsPreset();
 
+		//! Decodes and validates canonical CBOR64 bytes, verifying provenance,
+		//! source bindings, and PCHIP derivative enclosures. Resets to invalid on error.
 		bool LoadCanonicalRecord(
 			const RISECBOR64::Bytes& bytes,
 			std::string* error = 0
 			);
 
+		//! Built-in embedded presets verified against pinned SHA-256 digests.
 		static const FireOpticsPreset& PredictiveV1();
 		static const FireOpticsPreset& SyntheticRegressionV1();
+		//! Resolves by canonical record name or alias ("fire_optics_v1", "synthetic_regression_v1").
 		static const FireOpticsPreset* Named( const char* name );
 
+		//! Synthesizes a valid SyntheticRegressionFixture record from caller-supplied
+		//! analytic constants (sootDensityKgM3 in kg/m^3, k_m in m^2/g); never predictive.
 		static FireOpticsPreset CreateExplicitSyntheticFixture(
 			double sootEffectiveAbsorption,
 			double sootDensityKgM3,
@@ -168,13 +192,21 @@ namespace RISE
 		double DomainMaxNM() const { return m_domainMaxNM; }
 		double CoolCarbonDomainMinNM() const { return m_coolDomainMinNM; }
 		double CoolCarbonDomainMaxNM() const { return m_coolDomainMaxNM; }
+		//! Returns true if [minimumNM, maximumNM] lies inside the certified wavelength domain
+		//! (synthetic analytic fixtures accept any positive ordered range).
 		bool SupportsWavelengthRange( double minimumNM, double maximumNM ) const;
 		double HotFractionMinK() const { return m_hotFractionMinK; }
 		double HotFractionMaxK() const { return m_hotFractionMaxK; }
+		//! C1 cubic-Hermite smoothstep phi(T) over [HotFractionMinK(), HotFractionMaxK()] K
+		//! partitioning carbon mass into hot soot (phi) and cool carbon (1 - phi).
 		double HotFraction( double temperatureK ) const;
+		//! Pinned soot material density in g/cm^3 and kg/m^3.
 		double SootDensityGCM3() const { return m_densityGCM3; }
 		double SootDensityKgM3() const { return m_densityGCM3*1000.0; }
 
+		//! Spectral constituent optical properties at wavelengthNM (nm):
+		//! mass absorption/extinction in m^2/g, dimensionless E_eff and albedo omega in [0,1),
+		//! and Henyey-Greenstein asymmetry g in (-1,1).
 		double MAC( double wavelengthNM ) const;
 		double EffectiveAbsorption( double wavelengthNM ) const;
 		double EffectiveAbsorptionDerivative( double wavelengthNM ) const;
@@ -189,11 +221,14 @@ namespace RISE
 		double CondensedAlbedo( double wavelengthNM ) const;
 		double CondensedG( double wavelengthNM ) const;
 
+		//! Conservative visible-band majorant upper bounds (m^2/g) over SpectralConfig's
+		//! [nmBegin, nmEnd] band for null-collision tracking.
 		double MaximumExtinctionMassVisible() const;
 		double MaximumHotAbsorptionMassVisible() const;
 		double MaximumCoolAbsorptionMassVisible() const;
 		double MaximumCondensedAbsorptionMassVisible() const;
 
+		//! Representative single-wavelength (550 nm / 633 nm) scalar proxies for RGB preview.
 		double PelApproximateEffectiveAbsorption633() const
 		{
 			return EffectiveAbsorption(633.0);
@@ -217,6 +252,8 @@ namespace RISE
 			return m_condensedKm;
 		}
 
+		//! Evaluates predictive-mode eligibility given render inputs and populates
+		//! sorted unique reasonCodes blocking predictive status.
 		FireFidelityEvaluation EvaluateFidelity(
 			bool predictiveRequested,
 			bool hasNonzeroCondensedInventory,

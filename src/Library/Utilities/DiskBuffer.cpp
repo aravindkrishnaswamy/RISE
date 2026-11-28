@@ -5,7 +5,9 @@
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: March 3, 2003
 //  Tabs: 4
-//  Comments:
+//  Comments: 64-bit file-backed IBuffer base. Legacy 32-bit IBuffer
+//    accessors (Size, getCurPos, HowFarToEnd) saturate at UINT_MAX for
+//    files > 4 GiB; use Size64/getCurPos64/seek64 for large files.
 //
 //  License Information: Please see the attached LICENSE.TXT file
 //
@@ -63,6 +65,7 @@ unsigned int DiskBuffer::getCurPos( ) const
 	return static_cast<unsigned int>(std::min<std::uint64_t>(getCurPos64(), std::numeric_limits<unsigned int>::max()));
 }
 
+// Returns current byte offset, 0 if no file is open, or UINT64_MAX on tell failure.
 std::uint64_t DiskBuffer::getCurPos64() const
 {
 	if( !hFile ) return 0;

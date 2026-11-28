@@ -1,3 +1,14 @@
+//////////////////////////////////////////////////////////////////////
+//
+//  SimulationParameterSchema.cpp - Text-to-CBOR parameter parsing,
+//  scene chunk translation, and thread-safe solver schema registry.
+//
+//  Tabs: 4
+//
+//  License Information: Please see the attached LICENSE.TXT file
+//
+//////////////////////////////////////////////////////////////////////
+
 #include "pch.h"
 #include "SimulationParameterSchema.h"
 
@@ -54,6 +65,8 @@ const SchemaParameter* FindSchemaParameter(const ParameterSchema& schema, const 
 	return nullptr;
 }
 
+// Parses a typed text parameter into a canonical CBOR64 value, enforcing
+// declared bounds, enum membership, or text validation predicates.
 bool SchemaValueFromText(const SchemaParameter& p, const std::string& text, V& value, std::string& error)
 {
 	const auto tokens = Tokens(text);
@@ -126,6 +139,8 @@ bool SchemaDefaultValue(const SchemaParameter& p, V& value)
 	return SchemaValueFromText(p, p.defaultText, value, ignored);
 }
 
+// Splits scalar schema parameters from structured chunk fields, runs the
+// schema translator, rejects duplicates, and verifies canonical CBOR64 encoding.
 bool TranslateSchemaChunk(const ParameterSchema& schema, const SchemaFieldValues& values, V& parameters,
 	std::vector<std::string>& sceneInputs, std::string& error)
 {
@@ -159,6 +174,9 @@ bool TranslateSchemaChunk(const ParameterSchema& schema, const SchemaFieldValues
 	return true;
 }
 
+// ------------------------------------------------------------------ solver schema registry
+
+// Registers a solver's parameter schema factory idempotently under the registry mutex.
 bool RegisterSolverSchema(const std::string& solverId, std::function<const ParameterSchema&()> schema,
 	std::string& error)
 {

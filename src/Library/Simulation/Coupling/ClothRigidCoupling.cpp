@@ -1,4 +1,14 @@
-// Simulation M6: see ClothRigidCoupling.h.
+//////////////////////////////////////////////////////////////////////
+//
+//  ClothRigidCoupling.cpp - Cloth-rigid coupling scenarios, group
+//  wiring, momentum/energy measurement, and M6 coupling evidence.
+//  Conventions: SI units (m, kg, s); rigid pose drives cloth collider
+//  via RigidSurfaceAdapter, cloth impulses feed back via
+//  ContactReactionAdapter.
+//  Tabs: 4
+//  License Information: Please see the attached LICENSE.TXT file
+//
+//////////////////////////////////////////////////////////////////////
 #include "pch.h"
 #include "ClothRigidCoupling.h"
 #include "../SimulationField.h"
@@ -23,6 +33,7 @@ bool Fail(std::string& error, const std::string& message) { error = message; ret
 double Float(std::uint32_t b) { float f; std::memcpy(&f, &b, 4); return f; }
 V Vec(double a, double b, double c) { return V::ArrayValue({V::Float(a), V::Float(b), V::Float(c)}); }
 
+// Trapezoidal vertex-mass lumping on a uniform n x n square sheet (half weights on boundaries).
 std::vector<double> SheetMasses(double size, std::uint32_t n)
 {
 	const double h = size/static_cast<double>(n - 1);
@@ -85,6 +96,9 @@ bool BodyMesh(const V& rigid, const std::string& body, ClothRigidScenario& out, 
 V Members(V::Members m) { return V::MapValue(m); }
 }
 
+// ------------------------------------------------------------------ canonical scenarios
+
+// Free spinning box impacting an unpinned sheet in zero gravity (conservation benchmark).
 bool ZeroGravitySpinScenario(std::uint64_t substeps, std::uint64_t frames, ClothRigidScenario& out, std::string& error,
 	std::uint32_t vertices)
 {
@@ -106,6 +120,7 @@ bool ZeroGravitySpinScenario(std::uint64_t substeps, std::uint64_t frames, Cloth
 	return true;
 }
 
+// Sheet falling under gravity onto a free zero-gravity box of configurable mass.
 bool FloatingBoxScenario(double mass, std::uint64_t frames, ClothRigidScenario& out, std::string& error)
 {
 	out = ClothRigidScenario();
@@ -123,6 +138,7 @@ bool FloatingBoxScenario(double mass, std::uint64_t frames, ClothRigidScenario& 
 	return true;
 }
 
+// Heavy sphere dropping under gravity onto a four-corner pinned cloth sheet.
 bool TrampolineScenario(double mass, std::uint64_t frames, ClothRigidScenario& out, std::string& error)
 {
 	out = ClothRigidScenario();
@@ -142,7 +158,11 @@ bool TrampolineScenario(double mass, std::uint64_t frames, ClothRigidScenario& o
 	return true;
 }
 
+// ------------------------------------------------------------------ group assembly
+
 namespace {
+// Wires rigid-to-cloth collider surface port; when live, also connects cloth contact
+// reaction impulses back to the rigid body's load port for two-way coupling.
 void Connections(SimulationGroup& g, const ClothRigidScenario& sc, bool live, std::string& error, bool& ok)
 {
 	PortConnection toSheet;
@@ -177,6 +197,10 @@ bool BuildClothFromCachedRigid(SimulationGroup& g, const ClothRigidScenario& sc,
 	return ok && g.Configure(policy, EmptySceneInputs(), error);
 }
 
+// ------------------------------------------------------------------ conservation measurement & evidence
+
+// Sums cloth vertex linear/angular momentum and KE with the rigid body's translational
+// and rotational (R * I_body * R^T * omega) contributions at cached frame `index`.
 bool MeasureClothRigid(const IReadOnlyCacheSnapshot& sheet, const IReadOnlyCacheSnapshot& body, std::int64_t index,
 	const ClothRigidScenario& sc, ClothRigidTotals& t, std::string& error)
 {
@@ -224,6 +248,8 @@ const CaseSpec Specs[] = {
 	{"zero-g-angular-momentum", "the same: max |L(t) - L(0)| / |L(0)| about the origin (includes backward Euler's own rotational damping)", 5e-4},
 	{"zero-g-energy", "the same: largest rise of the kinetic energy over its start, / KE(0)", 1e-6}};
 
+// Runs (or loads persisted) zero-g-spin-9 coupling evidence under implicit Gauss-Seidel
+// with Aitken relaxation and checks linear/angular momentum drift and KE non-growth.
 bool ComputeEvidence(Evidence& e, std::string& error)
 {
 	ClothRigidScenario sc;

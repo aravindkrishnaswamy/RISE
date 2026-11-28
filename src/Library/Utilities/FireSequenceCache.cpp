@@ -1,3 +1,16 @@
+//////////////////////////////////////////////////////////////////////
+//
+//  FireSequenceCache.cpp - Sealed fire sequence to native cache bridge
+//
+//  Implements process-wide fire cache resolver lookup, POSIX helper
+//  spawning, sealed-sequence import into Simulation::CacheSnapshot
+//  (grid.v1) with CBOR receipts, native solver-cache attachment, and
+//  dense renderer frame projection with physical channel checks.
+//
+//  License Information: Please see the attached LICENSE.TXT file
+//
+//////////////////////////////////////////////////////////////////////
+
 #include "pch.h"
 #include "FireSequenceCache.h"
 #include "FireSequence.h"
@@ -30,6 +43,9 @@ namespace {
 namespace fs = std::filesystem;
 using namespace Simulation;
 using Value = RISECBOR64::Value;
+// ------------------------------------------------------------------
+// Budgets, converter constants, and default platform resolver lookup
+// ------------------------------------------------------------------
 constexpr std::size_t manifestBudget = 64u * 1024 * 1024;
 constexpr std::size_t frameBudget = 1024u * 1024 * 1024;
 constexpr char converter[] = "rise.fire.vdb-import";
@@ -99,6 +115,9 @@ FireCacheResolver GetResolver()
 #endif
 }
 
+// ------------------------------------------------------------------
+// Sealed envelope I/O, cache description mapping, and import receipts
+// ------------------------------------------------------------------
 bool ReadEnvelope(const fs::path& path, Bytes& data, std::string& error)
 {
 	std::ifstream file(path,std::ios::binary | std::ios::ate);
@@ -173,6 +192,8 @@ bool Receipt(const std::string& envelopeDigest, const std::string& sequenceId,
 	}),receipt,&error);
 }
 
+// Verifies that every entry in the native snapshot matches the sealed manifest's
+// frame cadence and reproduces the deterministic CBOR import receipt.
 bool MatchesEntries(const CacheSnapshot& snap, const FireSequenceManifest& source,
 	const std::string& envelopeDigest, std::string& error)
 {
@@ -187,6 +208,9 @@ bool MatchesEntries(const CacheSnapshot& snap, const FireSequenceManifest& sourc
 	return true;
 }
 
+// ------------------------------------------------------------------
+// Native GridFrame lattice validation and dense renderer projection
+// ------------------------------------------------------------------
 float FromBits(std::uint32_t bits)
 {
 	float value;
@@ -215,6 +239,9 @@ bool CheckLattice(const GridChannel& grid, const FireSequenceChannelDescriptor& 
 	return true;
 }
 
+// Expands a native sparse GridFrame (or background-only frame when grid == nullptr)
+// into dense double channels under frameBudget, enforcing bit-exact inactive
+// background values, certified temperature bounds, and non-negativity.
 bool Project(const FireSequenceManifest& source,const GridFrame* grid,
 	FireSequencePreparedFrame& result,std::string& error)
 {
@@ -272,6 +299,11 @@ bool Project(const FireSequenceManifest& source,const GridFrame* grid,
 }
 } // namespace
 
+// ==================================================================
+// Out-of-process import helper and resolver registration
+// ==================================================================
+// Spawns the external import helper on desktop POSIX with a sanitized PATH and
+// parses its trailing 64-hex verified cache generation digest from stdout/stderr.
 bool ResolveFireCacheWithHelper(const std::string& helperPath,const std::string& directory,
 	const std::string& manifest,const std::string& digest,std::optional<std::int64_t> index,
 	std::string& verified,std::string& error)
@@ -327,6 +359,11 @@ void SetFireCacheResolver(FireCacheResolver resolver)
 	registeredResolver=std::move(resolver);
 }
 
+// ==================================================================
+// FireSequenceManifest native-cache attachment and playback methods
+// ==================================================================
+// Loads either a sealed sequence manifest (auto-importing its first frame when a
+// resolver exists) or falls back to attaching a native cache manifest.cbor.
 bool FireSequenceManifest::LoadPlaybackFile(const std::string& path,std::string& error)
 {
 	*this=FireSequenceManifest();
@@ -346,6 +383,8 @@ bool FireSequenceManifest::LoadPlaybackFile(const std::string& path,std::string&
 	return true;
 }
 
+// Attaches either a solver-baked cache (FireMethaneSolverId) or an imported
+// vdb-import cache, verifying description/receipt integrity and source digest.
 bool FireSequenceManifest::AttachCache(const std::string& directory,std::string& error)
 {
 	auto snap=std::make_shared<Simulation::CacheSnapshot>();
@@ -491,6 +530,8 @@ bool FireSequenceManifest::LoadFrame(std::int64_t index,FireSequencePreparedFram
 	return ReadVDBFrame(index,&frame,nullptr,error);
 }
 
+// Decodes a native grid.v1 frame into dense renderer channels; for incomplete
+// caches an Unavailable frame yields a background-filled frame with available=false.
 bool FireSequenceManifest::LoadNativeFrame(std::int64_t index,FireSequencePreparedFrame& frame,
 	std::string& error) const
 {
@@ -553,6 +594,12 @@ bool FireSequenceManifest::PreflightPredictive(std::string& error)
 	return true;
 }
 
+// ==================================================================
+// Sealed OpenVDB-to-native-cache importer
+// ==================================================================
+// Materializes one ordinal or all frames from a sealed manifest into grid.v1
+// cache entries with receipts; re-verifies existing bytes on already-sealed caches
+// and seals once all authored frames are present.
 bool ImportFireSequenceCache(const std::string& sourceManifest,const std::string& cacheDirectory,
 	std::string& error,std::optional<std::int64_t> requestedOrdinal,const std::string& expectedEnvelopeDigest,
 	std::string* verifiedGenerationDigest)

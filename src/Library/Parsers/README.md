@@ -458,6 +458,49 @@ results' Known limits): a layer resting on a sheet needs about 2.5 cells; very l
 with a free edge at a waterline on a coarse grid is kicked at the edge, which the progress detail flags as a rotation
 stretch or linearisation correction above 1%: use heavier cloth, pin the edge, or refine the grid.
 
+### Liquid inflow sources and drains (M9, preview)
+
+`source <name> box cx cy cz sx sy sz |
+cylinder cx cy cz ax ay az r h | sphere cx cy cz r` (centre and size; a cylinder is a nozzle: centre, axis, radius,
+length) then `speed s` (m/s, default 1), `direction dx dy dz` (default the cylinder's axis, else `0 -1 0`),
+`orientation w x y z` (box), `start t`, `end t` (the window `[start, end)`), `schedule t f [t f ...]` (a piecewise-linear
+factor on the speed, held outside the table) and, for a box, `drops nx nz r period` (rain: nx x nz columns along the
+box's local x and z each release a drop of radius r once per period at a phase and position hashed from the source,
+column and period index, so no random state; the schedule is then the chance of a release).  The region is filled
+with liquid at the end of every step of the window (after reinitialisation, particles, volume correction and the
+sheets' guards; not beyond its exit plane) and its open faces take the velocity at the step's start, so the flux is
+its exit area (seen along the direction) times the speed, plus its own volume at the first fill.  `drain <name> <shape>
+[orientation ..] [start t] [end t]` removes the liquid inside its region (an overflow, a plughole).  The volume
+correction's target gains the first fill and then the nominal flux (exact integral of the schedule; or each drop's
+4/3 pi r^3) and loses what a drain measured; the level set's own refills are reported but not counted (they also
+replace what the transport erodes inside the region: +41% / +33% / +21% of the added volume at 2 / 2.6 / 4 cells of
+nozzle radius).  The progress detail (printed by a single-solver `rise-sim` bake when it finishes) reports `source <name>
+added X L (the level set's refills Y L)`, `drain <name> removed Z L` and the liquid's volume against the target.  The
+time step takes each source's speed times its largest factor.  Per-source state is in the checkpoint member `sources`
+(only with sources).  Solver parameters `sources` / `drains` (lists of maps: `name`, `shape`, `center`, `size`,
+`orientation`, `axis`, `radius`, `height`, `direction`, `speed`, `start`, `end`, `schedule`, `drops`) are written back
+only when present; refused: unknown keys, a drain with a speed, direction, schedule or drops, drops on a non-box, a
+schedule whose times do not increase or whose factors are negative, `end <= start`, duplicate names.  Always preview
+(evidence condition `sources`).  Limits: emit into air (inside liquid a source adds only what flows out of it); keep a
+region two cells or more from sheets and bodies (the refill does not know their sides); a jet narrower than about
+three cells thins with its fall and its tip erodes, and drops below about two cells evaporate into the volume
+correction; a drain removes everything inside it, so a basin's level is set by where the drain sits.  Not built: a
+source inside liquid adding a set flux (needs a mass source in the pressure solve), drains with a rate.  Works with
+viscosity, bodies and sheets (`LiquidSourceTest`: nominal volume exact, jets against free fall and continuity, rain
+counts, a floating box rising with the level, rain on an implicitly coupled sheet without leakage, 1 vs 3 threads and
+checkpoint restore identical).  Sample: `scenes/Tests/Simulation/liquid_inflow.RISEscene`:
+
+```text
+liquid_simulation
+{
+    name            basin
+    liquid          fill 0.03
+    source          tap cylinder -0.08 0.25 0 0 -1 0 0.02 0.04 speed 0.8 end 1.2 schedule 0 0.1 0.2 1
+    source          shower box 0.09 0.27 0 0.18 0.03 0.26 speed 1.2 start 0.2 end 0.8 drops 3 4 0.022 0.15
+    drain           overflow box 0.18 0.08 -0.13 0.04 0.04 0.04
+}
+```
+
 ## Coupling (M6)
 
 docs/SIMULATION_SOLVER_CONTRACT.md.  `rigid_simulation` (solver `rigid.bodies`, chunk generated from its schema) and
@@ -474,6 +517,9 @@ rigid_simulation
     plane           0 0 0 0 1 0 restitution 0.5 friction 0.4               # impulse contact (preview)
 }
 cloth_simulation { ...  collider_port ball }  # the object's geometry as a collider moved by port collider_surface
+# M9: an analytic body coupled to cloth that also collides with other bodies and planes: `body ball sphere 0.1 mass 0.1
+# at 0 0.36 0 surface ball` takes its coupling surface from object `ball` (world space at t = 0, the body at its initial
+# pose), so `collider_port ball` has that surface's topology; the body keeps its sphere for mass and contact.
 simulation_group
 {
     name            trampoline
@@ -490,6 +536,17 @@ simulation_group
 }
 standard_object { name ball ... transform_source drop.bodies[ball] }   # follows the body (keyframes)
 ```
+
+Analytic bodies on cloth with body-body contact (M9): a `sphere`, `box` or `cylinder` body takes an optional
+coupling surface, `surface <object>` in the chunk (solver: `surface_input <scene input>`, or inline
+`surface_vertices` + `surface_triangles`), world space at t = 0 with the body at its initial pose.  The record's
+surface (what `rigid_surface` places) is then that mesh in the body frame, so a cloth `collider_port <object>` made
+from the same object has its topology and the adapter drives it, while the body keeps its analytic shape for mass
+properties, plane contact and body-body contact.  A mesh body (`body_object`) with a surface is refused; written back
+only when given (the scene input then enters the key).  A body resting on another on cloth may need
+`on_non_convergence halve` under `policy implicit`.  `ClothRigidPrimitiveTest`: momentum of sheet and two bodies
+conserved to 5e-6 in a zero-gravity collision, a box resting on a sphere on a trampoline.  Cloth-body contact inside a
+liquid group is not built (docs/SIMULATION_IN_RISE_PROPOSAL.md §5 lists what is missing).
 
 One-way from another simulation's cache, on the downstream (any solver chunk):
 `port_source <port> from <simulation>.<output> [via <adapter> [key=value ...]] [aux <member>.<port>] [time_offset s]`,

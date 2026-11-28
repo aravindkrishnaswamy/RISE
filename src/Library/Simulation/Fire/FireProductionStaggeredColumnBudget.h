@@ -1,3 +1,16 @@
+//////////////////////////////////////////////////////////////////////
+//
+//  FireProductionStaggeredColumnBudget.h - Per-column MAC staggered-face
+//  momentum budget diagnostic builder and CSV writer.
+//
+//  Units: momentum in kg/(m^2*s), rates and closure residual in
+//  kg/(m^2*s^2), Vreman eddy viscosity in m^2/s.
+//
+//  Tabs: 4
+//
+//  License Information: Please see the attached LICENSE.TXT file
+//
+//////////////////////////////////////////////////////////////////////
 #ifndef FIRE_PRODUCTION_STAGGERED_COLUMN_BUDGET_H
 #define FIRE_PRODUCTION_STAGGERED_COLUMN_BUDGET_H
 
@@ -15,6 +28,7 @@ namespace FireProductionStaggeredColumn
 {
 	using FaceFields=std::array<std::vector<float>,3>;
 	using FaceRates64=std::array<std::vector<double>,3>;
+	// Non-owning view over per-axis face rates in either binary32 (production) or binary64 (legacy).
 	struct RateView
 	{
 		const FaceFields* binary32;
@@ -34,6 +48,8 @@ namespace FireProductionStaggeredColumn
 		RateView stress,buoyancy,advection,source;
 		const std::vector<float>& eddyViscosity;
 	};
+	// Single staggered-face momentum budget row, including combined projection rate
+	// (terminal - provisional)/dt, closure residual, and adjacent Vreman viscosities.
 	struct Row
 	{
 		unsigned int axis;
@@ -78,6 +94,8 @@ namespace FireProductionStaggeredColumn
 		columnY=std::min(y,dimensions[1]-1u);return true;
 	}
 
+	// Builds momentum budget rows for all 4 lateral faces per z-level plus nz+1
+	// vertical faces around column (columnX, columnY), refusing non-finite or truncated inputs.
 	inline bool Build(const std::array<std::size_t,3>& dimensions,
 		const std::size_t columnX,const std::size_t columnY,const double dt,
 		const Inputs& input,std::vector<Row>& result)
@@ -128,6 +146,7 @@ namespace FireProductionStaggeredColumn
 		return true;
 	}
 
+	// Serializes column budget rows as 17-digit CSV with optional header row.
 	inline bool Write(std::ostream& output,const bool header,const double beginningTime,
 		const unsigned int candidate,const double dt,const std::vector<Row>& rows)
 	{
@@ -144,6 +163,7 @@ namespace FireProductionStaggeredColumn
 		return static_cast<bool>(output);
 	}
 
+	// Self-test verifying face decoding, open-boundary clamping, f64 rate preservation, and truncation refusal.
 	inline bool Fixture()
 	{
 		const std::array<std::size_t,3> dimensions={{3u,4u,2u}};

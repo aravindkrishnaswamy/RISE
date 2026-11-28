@@ -1,79 +1,23 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  LightSampler.h - Unified light source sampling with explicit
-//  PDFs for path tracing and bidirectional path tracing.
+//  LightSampler.h - Unified light source sampling with explicit PDFs
+//  for PT, BDPT, VCM, and MLT.  Call Prepare() once after attaching
+//  the scene to build the Vose alias table (O(1) draw/PDF) and
+//  optional LightBVH.
 //
-//  Provides two services:
-//
-//  1. EMISSION SAMPLING (SampleLight) — used by BDPT to start
-//     light subpaths.  Selects a light proportional to exitance,
-//     samples position and direction, returns explicit PDFs.
-//
-//  2. DIRECT LIGHTING (EvaluateDirectLighting) — used by both PT
-//     and BDPT for next-event estimation (NEE).  Selects one light
-//     (non-mesh or mesh) proportional to exitance, evaluates shadow
-//     visibility and BRDF, and applies MIS weights against BSDF
-//     sampling.  Lights with zero exitance (ambient, directional)
-//     are evaluated deterministically since they cannot participate
-//     in proportional selection.
-//
-//  LIGHT SELECTION:
-//  An alias table (Vose's algorithm) is built during Prepare()
-//  over all lights weighted by radiant exitance.  This gives O(1)
-//  selection and O(1) PDF lookup regardless of light count.
-//
-//  SPATIAL RESAMPLING (RIS):
-//  When SetRISCandidates(M) is called with M>0, direct lighting
-//  evaluation uses Resampled Importance Sampling: M candidates are
-//  drawn from the global alias table and reweighted by
-//  exitance/distance^2 at the shading point.  One candidate is
-//  then selected proportional to these spatially-aware weights.
-//  This concentrates samples on lights that contribute most from
-//  the current shading position, dramatically reducing variance
-//  in many-light scenes where distant lights dominate the global
-//  distribution but contribute negligibly to local illumination.
-//
-//  EMISSION SAMPLING:
-//  - Non-mesh lights (point/spot): delta position (pdfPosition=1),
-//    uniform solid angle sampling (point=sphere, spot=cone),
-//    pdfDirection queried from the light via pdfDirection().
-//  - Mesh luminaries: uniform position on surface (pdfPos=1/area),
-//    cosine-weighted hemisphere direction (pdfDir=cos/pi).
-//
-//  MIS FOR DIRECT LIGHTING:
-//  - Delta lights (point/spot): no MIS needed (only one sampling
-//    strategy can reach a delta position).
-//  - Area lights (mesh luminaries), RIS OFF: power heuristic MIS
-//    weight using the selection PMF the draw used (the light BVH's
-//    when built, else the alias table's) converted to solid angle vs
-//    the BSDF sampling PDF.
-//  - Area lights (mesh luminaries), RIS ON: MIS is disabled
-//    (w_nee = 1).  The exact finite-M RIS technique density is
-//    intractable (it requires marginalizing over all possible
-//    M-candidate sets), so no closed-form MIS weight is available.
-//    The BSDF-hit emitter contribution is suppressed on the hit side
-//    (PathTracingIntegrator; EmissionShaderOp for a path-tracer
-//    continuation) for every luminary RIS can select, to avoid
-//    double-counting; a hit light sampling could not have made keeps
-//    full weight (DL-633).
-//
-//  SELF-EXCLUSION:
-//  When the shading object is itself an emitter in the light table,
-//  it is excluded from selection (self-illumination is zero for
-//  convex/flat surfaces).  For RIS, the self entry's resampling
-//  weight is zeroed.  For the alias table and the light BVH one
-//  draw is made and a self draw contributes nothing: no retry and
-//  no correction factor, so the selection pmf of every OTHER light
-//  is unchanged.  A non-convex emitter does light itself; that
-//  light is estimated only by the scattered ray that returns to
-//  the same object.  The path tracer gives that hit full weight
-//  (`pNEESelfObject` in its loops; RAY_STATE::pNEESelfObject across a
-//  RayCaster hand-off; DL-633).  The frozen legacy shader-op chain
-//  does not carry the object and keeps its old weight.
-//
-//  Call Prepare() once after the scene is attached to cache the
-//  light list, luminaries list, and build the alias table.  All
-//  query methods then use the cached state.
+//  Services:
+//  - SampleLight(): exitance-proportional emission sampling (delta
+//    point/spot: pdfPos=1; mesh luminaries: uniform area + cosine
+//    hemisphere; env map: bounding-sphere disk emission).
+//  - EvaluateDirectLighting{,NM}(): NEE with shadow visibility, medium
+//    transmittance, and MIS.  Zero-exitance lights (ambient/directional)
+//    are evaluated deterministically.  Area lights use power-heuristic
+//    (or optimal) MIS against BSDF sampling when RIS is off; with RIS
+//    (SetRISCandidates(M>0)) MIS is disabled (w_nee=1) and BSDF-hit
+//    emission is suppressed for selectable luminaries.
+//  - Self-exclusion: RIS zeroes self weight; alias/BVH discards a self
+//    draw without retry so other lights' PMFs stay unchanged; return
+//    hits onto non-convex emitters keep full weight (pNEESelfObject).
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: March 20, 2026
@@ -120,55 +64,17 @@ namespace RISE
 
 	class IORStack;
 
-	/// Optional per-call hook (DL-74, docs/DEBT_LEDGER.md)
-	/// letting a caller replace the density `EvaluateDirectLighting{,NM}`'s
-	/// NEE arms use as the BSDF-SAMPLING technique's MIS-PARTNER for a given
-	/// shadow-ray direction.
-	///
-	/// Why this exists.  A guided path tracer's continuation is drawn from a
-	/// mixture of the material and a learned guide, so the density it divides
-	/// its throughput by (`alpha*guide + (1-alpha)*material`, or the RIS
-	/// equivalent) is NOT the material's own pdf.  MIS only partitions to one
-	/// when BOTH sides evaluate the SAME function of direction, so the NEE
-	/// side has to see the same mixture.  Note the partner density need not be
-	/// the density either side actually SAMPLED from: MIS is unbiased for any
-	/// weights with `sum_s w_s(w) == 1`, so a shared NOMINAL density is both
-	/// legal and sufficient -- which is what lets one hook serve every lobe,
-	/// every guiding mode, and both MIS arms below.
-	///
-	/// Deliberately NOT specific to OpenPGL types (no dependency on
-	/// PathGuidingField here) so this header stays buildable without
-	/// RISE_ENABLE_OPENPGL; the concrete implementation lives behind that
-	/// guard in PathTracingIntegrator.cpp.  Passing null (the default at every
-	/// call site that does not guide) reproduces the raw-material-pdf
-	/// behaviour exactly.
+	/// Optional per-call hook replacing the BSDF-sampling MIS-partner density
+	/// in EvaluateDirectLighting{,NM} (used by guided PT so NEE sees the same
+	/// mixture density as the guided continuation).  Null = use raw material pdf.
 	class IGuidedNEEPdfBlend
 	{
 	public:
 		virtual ~IGuidedNEEPdfBlend() {}
 
-		/// \param wo      The NEE-sampled direction being weighted.
-		/// \param rawPdf  The material's own AGGREGATE pdf for `wo`, which
-		///                the caller has already computed.  MAY BE ZERO,
-		///                and the implementation -- not the caller --
-		///                decides what that means (DL-74 P2-2, round-4
-		///                review; the earlier contract wrongly declared
-		///                a `> 0` precondition and the four NEE arms
-		///                enforced it).  A zero aggregate pdf does NOT
-		///                imply "the BSDF-sampling technique never
-		///                generates `wo`" while guiding is active: the
-		///                continuation is drawn from a MIXTURE, and the
-		///                guide term reaches directions the material's
-		///                own sampling support does not.  Skipping the
-		///                hook there gave weight 1 to this arm AND to the
-		///                escape/emitter-hit arm for the same direction,
-		///                so its energy was counted twice.
-		/// \return The nominal density to use in place of `rawPdf` as the
-		///         BSDF-sampling technique's MIS partner for `wo`.  An
-		///         implementation that is not guiding this vertex returns
-		///         `rawPdf` unchanged, zero included -- which is then the
-		///         true "no partner exists" statement, since the material
-		///         is the only sampler.
+		/// \param rawPdf  Material aggregate pdf for `wo`; MAY BE ZERO (do NOT
+		///                skip calling Blend when rawPdf == 0, as a guide term
+		///                can still cover `wo`; an unguided impl returns rawPdf).
 		virtual Scalar Blend(
 			const Vector3& wo,
 			Scalar rawPdf
@@ -177,12 +83,9 @@ namespace RISE
 
 	namespace Implementation
 	{
-		/// Evaluate attenuation along a shadow segment using the medium that is
-		/// active on each boundary-delimited subsegment.  These are shared by
-		/// ordinary light NEE and emissive-volume NEE.  False means the scene's
-		/// boundary topology did not permit an unambiguous complete walk; @a outTr
-		/// is then zero and an error is logged rather than returning a partial
-		/// transmittance.
+		/// Boundary-delimited shadow-segment medium transmittance (shared by
+		/// ordinary NEE and volume-emission NEE).  Returns false with outTr = 0
+		/// and logs an error if boundary topology is ambiguous.
 		bool EvaluateShadowMediumTransmittance(
 			const Ray& ray,
 			const Scalar maxDist,
@@ -206,205 +109,33 @@ namespace RISE
 			const IORStack* pOriginStack = 0
 			);
 
-		//! THE EMITTER PROBE'S SCALE-RELATIVE CONSTANTS, expressed as a
-		//! fraction of the luminary's WORLD bounding-box diagonal `D` --
-		//! the same "no absolute length may appear in a geometric gate"
-		//! convention `IGeometry::SelfHitRootFloor` and `scaleHint` follow,
-		//! and for the same reason: a constant that is right for a 1-unit
-		//! lamp is wrong for a 1000-unit sky panel.
-		//!
-		//! ACCEPT: 1 % of D.  UPPER bound: a hit on a genuinely DIFFERENT
-		//! part of a non-convex luminary is O(D) away, so 1 % rejects it
-		//! with two orders of margin.  LOWER bound: what the tolerance has
-		//! to absorb, now that there is ONE probe and it is NORMAL-ALIGNED
-		//! (round-2 transport review, H2 P1-1), is only
-		//!
-		//!   (a) the PROJECTION RESIDUAL -- `UniformRandomPoint` returns a
-		//!       point that is on the true surface only to its own
-		//!       accuracy.  `SDFGeometry`'s Newton-projects onto the
-		//!       ray-marched zero set; the residual measured during S3 is
-		//!       ~3e-5 of the diagonal (LightSampler.cpp quotes the same
-		//!       number at the acceptance test, and that is the only place
-		//!       it is stated).  An earlier draft of this comment gave 5e-5
-		//!       here and 3e-5 there, which is the default `m_epsFrac`
-		//!       confused with a measurement.
-		//!   (b) the intersector's own perpendicular surface band AT NORMAL
-		//!       INCIDENCE -- for an SDF, its hit epsilon over the field's
-		//!       Lipschitz shrink; for every analytic primitive, ulp-scale.
-		//!
-		//! THERE IS NO `delta / cos(theta)` TERM ANY MORE, and that is the
-		//! whole point of the unification: the probe stands off along the
-		//! sampled point's OWN normal and fires back along it, so the probe
-		//! line passes through the sampled point exactly and meets the
-		//! surface at incidence 1 by construction.  On a mesh luminary
-		//! `UniformRandomPoint`'s normal is the INTERPOLATED vertex normal,
-		//! which is not the face normal -- but the probe line still passes
-		//! through the sampled point, and a triangle sample has no
-		//! projection residual at all, so the two effects multiply to zero
-		//! there rather than adding a lateral offset.
-		//!
-		//! (The pre-unification NEE probe fired along `vToLight`, whose only
-		//! guarantee is `cosLight > 0`, and DID carry a `delta / cos(theta)`
-		//! term.  Measured on tests/SignalEmitterRecordTest's SDF sphere it
-		//! never came close to this tolerance -- family E is green at
-		//! `epsilon 0.002`, and an exploratory sweep to `epsilon 0.05` left
-		//! it green as well, so that term was far smaller in practice than
-		//! the review's arithmetic suggested.  What the along-`vToLight`
-		//! probe DID fail at is the wrong-surface window, which is what
-		//! family F now witnesses.)
+		//! Scale-relative emitter-probe constants (fractions of luminary world
+		//! AABB diagonal D; see ProbeEmitterSurface):
+		//!   standoff = max(kEmitterProbeStandoffFraction * D,
+		//!                  kEmitterProbeStandoffMargin * floorWorld
+		//!                    + kEmitterProbeStandoffCushionFraction * D)
 		static const Scalar kEmitterProbeAcceptFraction = Scalar( 0.01 );
-
-		//! STANDOFF FLOOR: 0.1 % of D.  The formula the probe actually uses
-		//! is
-		//!
-		//!   standoff = max( kEmitterProbeStandoffFraction * D,
-		//!                   kEmitterProbeStandoffMargin * floorWorld
-		//!                     + kEmitterProbeStandoffCushionFraction * D )
-		//!
-		//! and THIS constant is the first argument: the standoff when the
-		//! luminary's own `SelfHitRootFloor` is unavailable (a degenerate
-		//! transform, the one branch that cannot ask for it), and the
-		//! guarantee that a geometry which UNDER-states its floor -- the
-		//! contract permits an ulp-scale answer -- never gets a
-		//! zero-length probe ray.
-		//!
-		//! It has to be a floor rather than the whole standoff because
-		//! `IGeometry::SelfHitRootFloor` is virtual with eleven in-tree
-		//! overrides and several are far above any fixed fraction of D.
-		//! `SDFGeometry`'s, the worst, is
-		//! `min( 2 * m_eps / shrink / cosI, 0.5 * diagonal )` with
-		//! `m_eps = max( D * m_epsFrac, 1e-6 )`: 1e-4 * D at the 5e-5 scene
-		//! default with a uniform field, but 4e-3 * D at `epsilon 0.002`,
-		//! 1e-3 * D -- exactly this constant's own fraction, not "far
-		//! above" it -- for a part authored `scale 0.1 1 1` (shrink 0.1) at
-		//! the default epsilon, and up to 0.5 * D at its documented
-		//! grazing/shrink worst case.  Below those the geometry marches the
-		//! probe straight past the face it was aimed at and the probe
-		//! REFUSES.
 		static const Scalar kEmitterProbeStandoffFraction = Scalar( 0.001 );
-
-		//! THE CUSHION ADDED ON TOP OF THE GEOMETRY'S OWN FLOOR, and the
-		//! reason it exists: the floor is a bound measured from the TRUE
-		//! surface, while what the caller holds is a SAMPLED point that may
-		//! sit slightly to either side of it.  `SDFGeometry::March` steps
-		//! off when `|Map(o)| <= surfBand`, and `Map` is positive OUTSIDE:
-		//! with `o = ptOnLum + s * n` and the sample's true displacement a
-		//! signed `delta` (positive = outside), `Map(o) = s + delta`, so a
-		//! sample whose projection landed INSIDE (`delta < 0`) LOWERS the
-		//! clearance to `s - |delta|` and is the half `kEmitterProbeStandoffMargin
-		//! * floor` alone under-shoots on -- a sample that landed OUTSIDE
-		//! raises it instead and is the safe half -- and the probe refuses
-		//! on those (measured: SignalEmitterRecordTest's family E sat 37 % /
-		//! 35 % off its baked control on the BDPT and VCM rows at
-		//! `1.01 * floor` with no cushion at all).
-		//!
-		//! 0.1 % of D -- the smaller of the two values TRIED (0 fails; see
-		//! the cushion-0 measurement above).  The first
-		//! implementation used `kEmitterProbeAcceptFraction * D` here -- 1 %
-		//! -- which is ten times larger than it needs to be and, being
-		//! unconditionally above `kEmitterProbeStandoffFraction * D`, made
-		//! that constant dead code outside the degenerate-transform branch
-		//! (round-2 transport review, H2 P2-3).
-		//!
-		//! WHAT THE CUSHION COSTS, stated rather than hidden: the probe
-		//! takes the CLOSEST hit from `ptOnLum + standoff * n` back along
-		//! `-n`, so a SECOND surface of the same luminary lying in the
-		//! `(0, standoff]` band directly above the sampled point is
-		//! intercepted instead -- and since `standoff` is normally well
-		//! under `kEmitterProbeAcceptFraction * D`, that interception is
-		//! ACCEPTED rather than refused.  A louvred or stacked
-		//! single-object fixture whose blades are within
-		//! `max( 0.001 * D, 1.01 * floor + 0.001 * D )` of each other along
-		//! the blade normal therefore reads its neighbour's signals.  The
-		//! band is a tenth of what it was before this constant was split
-		//! out, and no smaller band is available: below the geometry's own
-		//! floor the probe cannot be fired at all.
 		static const Scalar kEmitterProbeStandoffCushionFraction = Scalar( 0.001 );
-
-		//! How far PAST `SelfHitRootFloor` the standoff stands.  The
-		//! published contract (IGeometry.h, "Contract for overriders") is
-		//! "the return must be an UPPER bound on the geometry's own gate
-		//! along `localDir` -- a caller standing off by more than this and
-		//! firing back must get the hit", so ANY strictly-greater
-		//! multiplier satisfies it and 1 % is simply a small one.  (An
-		//! earlier draft called it "the smallest that also clears the
-		//! rounding of the two frame transforms" the floor is carried
-		//! through.  Nothing measures that rounding, and nothing here
-		//! bounds it; the cushion above, not this multiplier, is what was
-		//! actually measured.)
 		static const Scalar kEmitterProbeStandoffMargin = Scalar( 1.01 );
 
-		//! THE SHADING PAYLOAD A SAMPLED EMISSION POINT CANNOT CARRY BY
-		//! ITSELF (docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md §5, slice S3).
-		//!
-		//! `IObject::UniformRandomPoint` returns a position, a normal and a UV
-		//! -- and nothing else.  Every emitter record built from one of those
-		//! samples (the two NEE sites in LightSampler.cpp, `SampleLight`'s
-		//! own emission record, and the four records BDPT / VCM rebuild
-		//! beside it -- the NM hero `Le`, its HWSS companion, the BDPT
-		//! `type == LIGHT` root vertex, and VCM's light-vertex NEE record;
-		//! seven record sites in all) therefore left `derivatives`,
-		//! `signals` and `txFootprint`
-		//! DEFAULT, so an emissive material whose radiance keys on `curv`,
-		//! `occlusion(r)`, `proximity(r)` -- any of the six geometry signals --
-		//! read the documented neutral there while the SAME material read the
-		//! live value when a camera ray hit the emitter directly.  That is a
-		//! within-scene inconsistency, and it reaches plain PT (NEE), not just
-		//! the bidirectional families.
-		//!
-		//! These three fields are recovered from a REAL intersection --
-		//! `LightSampler::ProbeEmitterSurface` fires one object-level
-		//! closest-hit at the luminary and keeps the record only if it lands
-		//! on the sampled point -- never fabricated.  `valid` false means the
-		//! probe was gated off or refused and every consumer must leave its
-		//! hand-built record exactly as it was.
-		//!
-		//! WHY ONLY THESE THREE.  They are precisely the fields the hand-built
-		//! records leave DEFAULT *and* that only a signal consumer reads.
-		//! Everything the sampled point already determines --
-		//! `ptIntersection`, `vNormal`, `vGeomNormal`, `onb`, `ptCoord` -- is
-		//! deliberately NOT carried on this payload, so the emission geometry
-		//! and every pdf derived from it (`cosLight`, `pdfPosition`,
-		//! `pdfDirection`) cannot be moved by the PROBE -- the only thing it
-		//! can move is a signal read.  Those fields are filled, at every
-		//! record, by `LightSampler::FillEmitterRecord` (DL-298), which is
-		//! ungated and ray-free and carries the physical world position too.
-		//!
-		//! SIZE: 416 bytes (168 + 136 + 104 + a bool, measured at this
-		//! tree's HEAD; an earlier comment said 440).  That is why the call
-		//! sites construct one only INSIDE the probe gate rather than once
-		//! per light sample unconditionally.
-		//!
-		//! `ptObjIntersec` DELIBERATELY DOES NOT RIDE HERE, and that is a
-		//! correction to this slice's first draft (transport review, P1-1).
-		//! `Po` is not signal state: `expression_painter`'s `Po`,
-		//! `voronoi3d_painter` and `mapping_painter` all read it, none of
-		//! them registers a signal demand, and the probe's gate is
-		//! PROCESS-WIDE -- so an emissive material keyed on `Po` would have
-		//! rendered 2.94x differently depending on whether some UNRELATED
-		//! painter elsewhere in the process happened to keep a signal demand
-		//! alive.  It is instead computed UNGATED and WITHOUT a ray at every
-		//! emitter-record site by `LightSampler::EmitterObjectPoint`, and
-		//! carried on `LightSample::ptObjIntersec` for the consumers
-		//! that rebuild their own record.
-		//!
-		//! `pObjectInfo`, `pmxObjectToWorld`, `pmxWorldToObject`, and `pCamera`
-		//! are likewise NOT part of the gated signal probe payload: they are
-		//! filled ungated and ray-free by `LightSampler::FillEmitterRecord`
-		//! from the luminary (`pLum->GetObjectInfo()`, `pLum->GetFinal*TransformMatrixPtr()`)
-		//! and the scene camera, so emissive meshes reading `ShaderNodeObjectInfo`
-		//! or Group 7 space transforms agree between direct hits, NEE, and BDPT/VCM.
+		//! Gated signal payload recovered by ProbeEmitterSurface for a sampled
+		//! luminary point (docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md §5).
+		//! Only carries fields hand-built records leave default (416 B: construct
+		//! only inside EmitterProbeWanted()).  Ungated fields (ptIntersection,
+		//! ptObjIntersec, ptCoord, pObjectInfo, transforms, pCamera) are filled
+		//! ray-free via FillEmitterRecord / EmitterObjectPoint.
 		struct EmitterSurfacePayload
 		{
-			SurfaceDerivativesInfo	derivatives;	///< dpdu/dpdv/dndu/dndv + scaleHint + the direct SDF curvature -- drives `curv` / `curvR`
-			SurfaceSignalInfo		channel;		///< the geometry-signal channel: own-surface half from the geometry, cross-object triple stamped exactly as ObjectManager::IntersectRay does
-			TextureFootprint		txFootprint;	///< pixel footprint; all-zero for a probe ray (no differentials) but carried so a future landing cannot silently reopen the gap
-			bool					valid;			///< false = probe gated off or refused; consumers must not apply this
+			SurfaceDerivativesInfo	derivatives;	///< drives `curv` / `curvR`
+			SurfaceSignalInfo		channel;		///< geometry-signal channel
+			TextureFootprint		txFootprint;
+			bool					valid;			///< false = gated off or refused; do not apply
 
 			EmitterSurfacePayload() : valid( false ) {}
 		};
 
-		/// Describes a sampled emission event from a light or mesh luminary
+		/// Sampled emission event from a light, mesh luminary, or environment map.
 		struct LightSample
 		{
 			Point3			position;		///< Emission point
@@ -417,81 +148,16 @@ namespace RISE
 			bool			isDelta;		///< True for point/spot lights (delta position)
 			const ILight*	pLight;			///< Non-null for non-mesh lights
 			const IObject*	pLuminary;		///< Non-null for mesh lights
-			/// Non-null when this sample comes from
-			/// `SampleEnvLightEmission` (environment-map emission).
-			/// The spectral integrators (`GenerateLightSubpathNM`,
-			/// NM s=1 NEE / connect) use this to recover wavelength-
-			/// resolved emission via `pEnvLight->GetRadianceNM(...)`,
-			/// since `Le` only carries RGB.  NULL for explicit lights
-			/// and mesh luminaries — they use their own pLight /
-			/// pLuminary emitter for NM.
-			const IRadianceMap*	pEnvLight;
-			/// The shading payload `SampleLight` recovered for `position` by
-			/// probing the luminary (see EmitterSurfacePayload above).  Rides
-			/// on the sample because consumers rebuild their own record
-			/// from this one point and must all see the same channel:
-			/// `SampleLight`'s own `Le` record, `GenerateLightSubpathImpl`'s
-			/// NM hero `Le` rebuild AND its HWSS companion-wavelength twin,
-			/// the BDPT `type == LIGHT` root vertex (a direct field copy,
-			/// not through `ApplyEmitterSurface`), `VCMIntegrator`'s
-			/// light-vertex NEE record, and SMS's solved-chain emission queries
-			/// (DL-347). Apply it with
-			/// `LightSampler::ApplyEmitterSurface`.  `valid` false on every
-			/// delta light and every env sample (no surface exists) and
-			/// whenever the probe was gated off or refused.
-			EmitterSurfacePayload	surface;
-			/// `position` mapped into the luminary's own object frame -- the
-			/// expression VM's `Po`.  UNGATED and ray-free (one matrix
-			/// multiply through `IObject::GetFinalInverseTransformMatrix`),
-			/// unlike everything on `surface`: `Po` is read by painters that
-			/// register no signal demand, so it must not depend on the
-			/// process-wide probe gate.  See `EmitterSurfacePayload`'s note.
-			/// `(0,0,0)` -- the value every hand-built record used to carry
-			/// unconditionally -- for a delta light, an env sample, and a
-			/// luminary with no single object frame (a CSG composite).
-			Point3					ptObjIntersec;
-			/// The surface (u,v) `IObject::UniformRandomPoint` returned for
-			/// `position` on a mesh luminary (DL-44).  UNGATED -- unlike
-			/// `surface` it costs no probe ray, it is simply the coordinate
-			/// the sampler already computed to place `position` -- and, like
-			/// `ptObjIntersec`, not part of the signal-demand contract, so a
-			/// UV-keyed emission painter (`checker_painter`, an image-based
-			/// exitance map, `expression_painter`'s `u`/`v`) must not depend
-			/// on the probe gate.  Before this field existed, every
-			/// consumer that rebuilds an `EmitterSurfacePayload`-style
-			/// record from a `LightSample` rather than from `SampleLight`'s
-			/// own local `coord` variable left `RayIntersectionGeometric`'s
-			/// default-constructed `ptCoord` (0,0) in place: BDPT's light-
-			/// subpath NM hero and HWSS companion rebuilds, the BDPT
-			/// `type == LIGHT` root vertex (and therefore every
-			/// `PathVertexEval::PopulateRIGFromVertex` consumer of it --
-			/// `LuminaryRadiance`'s s=0/t=1 splat and s=1 connections; VCM
-			/// never rebuilds from the LIGHT root), and VCM's
-			/// `EvaluateNEEImpl` light-vertex record (VCM's only affected site).
-			/// `SampleLight`'s own RGB emission evaluation and the two
-			/// direct-lighting NEE sites in `EvaluateDirectLighting{,NM}`
-			/// (PT's and BDPT's shared NEE strategy) already sampled their
-			/// own local UV and were never affected.  `(0,0)` -- the value
-			/// every one of those rebuilds carried before -- for a delta
-			/// light and an env sample, neither of which has a surface UV.
-			Point2					ptCoord;
+			const IRadianceMap*	pEnvLight;	///< Non-null for SampleEnvLightEmission (for spectral GetRadianceNM)
+			EmitterSurfacePayload	surface;	///< Probed signal payload (valid=false on delta/env or when gated off)
+			Point3					ptObjIntersec;	///< Ungated object-space emission point (`Po`); (0,0,0) on delta/env/CSG
+			Point2					ptCoord;		///< Ungated sampled surface UV; (0,0) on delta/env
 		};
 
-		/// Unified light sampling utility shared by PT and BDPT.
-		///
-		/// Wraps existing light/luminaire sampling with explicit PDF
-		/// computation and provides a single-call NEE evaluator that
-		/// handles both non-mesh lights and mesh luminaries with
-		/// correct MIS weights.
-		///
-		/// Uses an alias table for O(1) light selection and PDF queries.
-		/// A single entry in the combined light table.
-		/// Public so LightBVH and tests can reference it.
+		/// Single entry in the combined light table (public for LightBVH and tests).
 		struct LightEntry
 		{
 			const ILightPriv*	pLight;		///< Non-null for non-mesh lights
-            // Exact built-in physical source bound once at Prepare. No RTTI,
-            // shared ownership copy, or ILight vtable change on a NEE query.
             const void* physicalLight = nullptr;
             using PhysicalProductNM = Scalar (*)(const void*,const Vector3&,Scalar,
                 std::initializer_list<PhysicalLightSpectrum::ProductTerm>,
@@ -500,15 +166,11 @@ namespace RISE
 			unsigned int		lumIndex;	///< Index into luminaries list (valid when pLight==0)
 			Scalar				exitance;	///< MaxValue of radiant exitance
 			Point3				position;	///< Representative position for distance estimates
-			bool				twoSided;	///< DL-320: mesh luminary on double-sided geometry (emits from both faces); false for delta lights
+			bool				twoSided;	///< Double-sided mesh luminary (emits both faces); false for delta lights
 
-			/// DL-463: under motion blur the light BVH bounds this entry over
-			/// the whole shutter, not at the frame time alone (see
-			/// LightSampler::AccumulateMotionSample).  False: the BVH reads
-			/// the light's current bounds and cone.
-			bool				hasMotionBounds = false;
-			BoundingBox			motionBounds;			///< Union of the entry's bounds over the shutter samples
-			Vector3				motionConeAxis;			///< Orientation cone bounding every sample's emission cone
+			bool				hasMotionBounds = false;	///< True when BVH bounds cover the full shutter sweep
+			BoundingBox			motionBounds;
+			Vector3				motionConeAxis;
 			Scalar				motionConeHalfAngle = 0;
 		};
 
@@ -636,357 +298,96 @@ namespace RISE
 			const EnvironmentSampler*	pEnvSampler;
 			const IRadianceMap*			pEnvironmentMap;
 
-			/// Pre-computed probability that `SampleLight()` selects env
-			/// (vs an alias-table light) on the next call.  Set during
-			/// `Prepare()` and `SetEnvironmentSampler()` from env
-			/// totalLuminance × disc area vs the alias table's total
-			/// weight, with 5% uniform support across present classes in
-			/// legacy mixed roots. A zero midpoint estimate cannot disable
-			/// a present environment. Zero when env is absent, zero-scale,
-			/// or vertex placement is infeasible; one in env-only scenes.
-			/// Explicit spectral domains use their separate support policy.
+			/// Probability SampleLight() selects env vs alias table (5% uniform class
+			/// support in legacy mixed scenes; 0 when env absent/infeasible; 1 in env-only).
 			Scalar						cachedEnvSelectProb;
-
-			/// Recomputes `cachedEnvSelectProb` from current env +
-			/// alias-table state.  Called from both `Prepare` and
-			/// `SetEnvironmentSampler` so the cache is correct
-			/// regardless of which is invoked first.
 			void RecomputeEnvSelectProbability();
 
-			/// Scene bounding sphere — cached during `Prepare()` by
-			/// enumerating every visible object's AABB.  Used by env-
-			/// light emission sampling (PBRT-style infinite-area-light
-			/// disk emission) so BDPT / VCM / MLT light subpaths can
-			/// originate from the environment map on IBL-only scenes
-			/// (no explicit luminaries).  Radius 0 means "no geometry
-			/// or Prepare() not yet called"; env emission falls back
-			/// to false-return from `SampleLight`.
+			/// Scene bounding sphere cached in Prepare() for env-light disk emission
+			/// (radius 0 = no visible geometry / env emission infeasible).
 			Point3						cachedSceneCenter;
 			Scalar						cachedSceneRadius;
 
-			/// Optimal MIS accumulator — set by the rasterizer before
-			/// rendering.  When non-null and solved, EvaluateDirectLighting
-			/// uses OptimalMIS2Weight instead of PowerHeuristic.
-			/// Lifetime managed by the rasterizer, not owned by LightSampler.
+			/// Non-owning optimal MIS accumulator (replaces PowerHeuristic when solved).
 			mutable const OptimalMISAccumulator*	pOptimalMIS;
 
 		public:
-			/// LIGHT-SOLO (docs/gui/RENDER_MODES.md §3 "light solo"):
-			/// identifies which kind of solo target is active.  `None`
-			/// (default) is byte-identical to pre-light-solo behaviour —
-			/// every light/luminary/env participates normally.
+			/// Light-solo target kind (docs/gui/RENDER_MODES.md §3).
 			enum class SoloKind { None, Light, Luminary, Environment };
 
 		protected:
-			SoloKind				soloKind;				///< Active solo target kind (None = disabled)
-			const ILightPriv*		soloLight;				///< Valid when soloKind==Light
-			const IObject*			soloLuminaryObject;		///< Valid when soloKind==Luminary — compares by identity against LuminaryManager::LUM_ELEM::pLum / PathTracingIntegrator's ri.pObject
+			SoloKind				soloKind;
+			const ILightPriv*		soloLight;
+			const IObject*			soloLuminaryObject;
 
 		public:
 			LightSampler();
 
-			//
-			// THE EMITTER-RECORD PROBE (slice S3 of
-			// docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md §5).
-			//
-			// Recovers the shading payload (`derivatives` / the signal
-			// channel / `txFootprint` / `ptObjIntersec`) for a point that was
-			// SAMPLED on a luminary rather than HIT, by firing one
-			// object-level closest-hit at that luminary and keeping the
-			// resulting record only if it landed on the sampled point.
-			//
-			// STATIC, and public, for two reasons: the same payload has to
-			// reach five hand-built records that live in three different
-			// translation units (LightSampler.cpp's two NEE sites,
-			// BDPTIntegrator.cpp's NM hero + HWSS companion rebuilds,
-			// VCMIntegrator.cpp's light-vertex NEE record), and RGB and NM
-			// must share ONE implementation so they cannot drift -- the
-			// spectral form of the defect this slice closes.
-			//
-
-			//! IS THE PROBE WANTED AT ALL?  `SurfaceCurvatureDemand::Any()
-			//! || SurfaceSignalDemand::Any()` -- two relaxed atomic loads.
-			//!
-			//! `ProbeEmitterSurface` asks this ITSELF and returns false
-			//! immediately when it is false, so a call site can never
-			//! forget the gate.  It is public only so a site on a hot loop
-			//! can ALSO skip the 416-byte `EmitterSurfacePayload` it would
-			//! otherwise default-construct per light sample, and skip
-			//! fetching the scene's object manager, with the gate closed
-			//! (round-2 transport review, H2 P2-6).  Skipping the payload
-			//! is the only thing this may be used for; it is not a licence
-			//! to build a record from anything but an accepted probe.
+			//! Fast atomic gate (`SurfaceCurvatureDemand::Any() || SurfaceSignalDemand::Any()`).
+			//! Callers on hot loops may check this to avoid constructing the 416 B payload.
 			static bool EmitterProbeWanted();
 
-			//! PROBE `pLum` FOR THE SHADING PAYLOAD AT `ptOnLum` -- the ONE
-			//! probe, shared by all seven emitter-record sites so that PT,
-			//! BDPT and VCM refuse in exactly the same places.
-			//!
-			//! Stands off from `ptOnLum` along `+normal` and fires back
-			//! along `-normal`.  Until the round-2 transport review (H2
-			//! P1-1) the two NEE sites instead fired along `vToLight` --
-			//! from the shading point toward the sampled point -- through a
-			//! SECOND public entry point with its own acceptance behaviour,
-			//! so PT and the bidirectional families could and did disagree
-			//! about whether a given emitter read its signals live.  That
-			//! entry point is gone; `tests/SignalEmitterRecordTest`'s
-			//! family F is the witness (PT 23 % off its baked control while
-			//! BDPT and VCM were within 0.1 % of theirs, on one scene in one
-			//! frame).
-			//!
-			//! GATED: returns false immediately unless
-			//! `EmitterProbeWanted()`.  With the gate closed the rendered
-			//! output is unchanged, no ray is cast and no bounding box is
-			//! read -- which is the claim that matters and is checkable; an
-			//! earlier draft said "byte-for-byte", which overclaims (the
-			//! sites still fill `ptObjIntersec`, which is ungated by
-			//! design).  The gate lives HERE rather than at the call sites
-			//! so a future site cannot forget it.
-			//!
-			//! THE STANDOFF IS DERIVED FROM THE GEOMETRY, not from a fixed
-			//! fraction of the luminary's diagonal `D`:
-			//!
-			//!   standoff = max( kEmitterProbeStandoffFraction * D,
-			//!                   kEmitterProbeStandoffMargin * floorWorld
-			//!                     + kEmitterProbeStandoffCushionFraction * D )
-			//!
-			//! where `floorWorld` is `IObject::SelfHitRootFloor` asked in
-			//! the luminary's own local frame and mapped back to world units
-			//! by dividing by the direction stretch `|M_inv * dir|` --
-			//! exactly the conversion `CSGObject::SelfHitRootFloor` performs
-			//! on each operand.  The published contract (IGeometry.h,
-			//! "Contract for overriders") is that a caller standing off by
-			//! MORE than the returned floor and firing back must get the
-			//! hit, so this standoff is the smallest one the engine
-			//! guarantees works.  See the three constants above for what
-			//! each term is for and what the cushion costs.
-			//!
-			//! ACCEPTANCE RULE, in full: accepted iff (a) the gate is open,
-			//! (b) `pLum` is non-null and its world bounding box has a
-			//! finite, strictly-positive diagonal `D`, (c) `normal` is
-			//! usable, (d) the derived standoff is finite and no wider than
-			//! `D`, (e) the probe ray hits `pLum`, and (f) the hit is within
-			//! `kEmitterProbeAcceptFraction * D` of `ptOnLum`.
-			//!
-			//! THE REFUSAL MODES THAT SURVIVE, and they are now the SAME
-			//! THREE for PT, BDPT, VCM and MLT:
-			//!
-			//!   (a) a non-finite `SelfHitRootFloor`, or one so wide that
-			//!       the standoff would exceed `D` -- a geometry whose
-			//!       self-hit gate is wider than the whole luminary cannot
-			//!       be probed from outside it, and "change nothing" is the
-			//!       honest answer.  See the note at that check for which
-			//!       geometry can actually reach it.
-			//!   (b) a SECOND SURFACE OF THE SAME LUMINARY within the
-			//!       standoff band along `+normal` and further than the
-			//!       acceptance tolerance from `ptOnLum` -- a louvred or
-			//!       stacked single-object fixture.  (Inside the tolerance
-			//!       it is accepted instead, which the cushion constant's
-			//!       note states.)
-			//!   (c) a BSSRDF entry vertex, which is not an emitter record
-			//!       at all but is listed with these because it is the
-			//!       other place `SurfaceSignalInfo` reads neutral under
-			//!       every integrator.
-			//!
-			//! WHY A DISTANCE TEST AND NOT "any hit on the right object":
-			//! for a CONVEX luminary the near-side hit along the normal IS
-			//! the sampled point, so the test passes by construction; for a
-			//! concave one (a torus, a mesh shell, a two-lobe SDF) some
-			//! other part of the same surface can intercept, and its
-			//! curvature / occlusion / proximity are a different material
-			//! state entirely.  Reading THAT would be a fabrication with
-			//! extra steps.
-			//!
-			//! \return TRUE and fills @a outPayload (with `valid` true);
-			//!         FALSE leaves @a outPayload untouched.
+			//! Probes `pLum` along `-normal` from `ptOnLum + standoff * normal` to
+			//! recover geometry signals/derivatives (docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md §5).
+			//! Gated on EmitterProbeWanted(); accepted iff the hit lands within
+			//! `kEmitterProbeAcceptFraction * D` of `ptOnLum`.  Leaves outPayload untouched on false.
 			static bool ProbeEmitterSurface(
-				const IObject*			pLum,			///< [in] the luminary the point was sampled on
-				const IObjectManager*	pObjects,		///< [in] the scene's object manager -- becomes `signals.pScene`, exactly as ObjectManager::IntersectRay stamps it
-				const Point3&			ptOnLum,		///< [in] the sampled point, in world space
-				const Vector3&			normal,			///< [in] unit outward normal at @a ptOnLum, as `UniformRandomPoint` returned it
-				EmitterSurfacePayload&	outPayload		///< [out] written only on acceptance
+				const IObject*			pLum,
+				const IObjectManager*	pObjects,
+				const Point3&			ptOnLum,
+				const Vector3&			normal,
+				EmitterSurfacePayload&	outPayload
 				);
 
-			//! Copy an accepted payload onto a hand-built emitter record.  A
-			//! no-op when `payload.valid` is false, which is what makes every
-			//! call site's fallback "do nothing" rather than "build a second
-			//! record".
-			//!
-			//! Deliberately OUT OF LINE (not an inline in this header): the
-			//! `signals` assignment it performs is the one SourceHygieneTest
-			//! pins at file granularity, and keeping it in LightSampler.cpp
-			//! keeps the sanctioned writer set at ONE new file for this slice
-			//! instead of four.
+			//! Applies an accepted payload to `rig` (no-op if !payload.valid).
+			//! Kept out-of-line so SourceHygieneTest tracks `signals` writers in one TU.
 			static void ApplyEmitterSurface(
 				RayIntersectionGeometric&		rig,
 				const EmitterSurfacePayload&	payload
 				);
 
-			//! THE ONE EMITTER-EVALUATION RECORD FILL (DL-298).  Every site that
-			//! evaluates an emitter at a SAMPLED point -- `SampleLight`'s own
-			//! `Le`, PT's RGB/NM mesh NEE, BDPT's NM hero / HWSS companion
-			//! rebuilds, VCM's light-vertex NEE, and the legacy / spectral /
-			//! SMS photon-direction samplers -- builds a hand-made
-			//! `RayIntersectionGeometric` because no ray was traced to that
-			//! point.  Each used to fill its own subset, and the subsets
-			//! drifted: the BDPT/VCM rebuilds supplied the physical world
-			//! position `ptIntersection` (the expression VM's `P`) while
-			//! `SampleLight`'s RGB record, both NEE arms and the three photon
-			//! tracers left it at the default `(0,0,0)`, so an emission or
-			//! Phong-exponent painter keyed on `P` read the origin at a
-			//! nonzero sampled point under exactly those paths.  This helper
-			//! is the single place that knows what the sampled point
-			//! determines -- world position, normals, shading basis, UV and
-			//! the object-space point -- so the paths cannot drift again.
-			//! The probed signal payload is deliberately NOT part of it (it
-			//! is gated and carried separately; see `ApplyEmitterSurface`).
+			//! Single ungated, ray-free filler for sampled-emitter records (position,
+			//! normals, ONB, UV, ptObjIntersec, ObjectInfo, transforms, pCamera).
 			static void FillEmitterRecord(
 				RayIntersectionGeometric&	rig,
-				const Point3&				position,		///< [in] the sampled point, world space
-				const Vector3&				normal,			///< [in] unit emitting-face normal (mirrored into `vGeomNormal`)
-				const Point2&				coord,			///< [in] sampled surface UV
-				const Point3&				ptObjIntersec,	///< [in] object-space point (`EmitterObjectPoint`)
-				const IObject*				pLum = 0,		///< [in] optional luminary for ObjectInfo & world/object matrices
-				const ICamera*				pCamera = 0		///< [in] optional live scene camera for camera-space transforms
+				const Point3&				position,
+				const Vector3&				normal,
+				const Point2&				coord,
+				const Point3&				ptObjIntersec,
+				const IObject*				pLum = 0,
+				const ICamera*				pCamera = 0
 				);
 
-            //! Coverage-only context for sampled emitter endpoints. Known scene,
-            //! self and world position never depend on optional signal probes.
-            //! NEE can supply its receiver raster; emission has no camera pixel.
-            //! Leaves the existing emitted-radiance record unchanged.
+            //! Alpha-coverage test for sampled emitter endpoints (ungated; leaves radiance record intact).
             static bool AcceptEmitterAlpha(
                 const IObject* luminary, const IObjectManager* objects,
                 const Point3& position, const RayIntersectionGeometric& context,
                 ISampler& sampler, const RasterizerState* raster = nullptr );
 
-			//! THE OBJECT-SPACE EMISSION POINT -- `Po` to the expression VM.
-			//!
-			//! UNGATED, RAY-FREE, and deliberately NOT part of the probe
-			//! payload (transport review P1-1).  `Po` is read by painters
-			//! that register no signal demand at all -- `expression_painter`
-			//! exposes it directly, `voronoi3d_painter` and
-			//! `mapping_painter` key on it -- so carrying it on the
-			//! PROCESS-WIDE-gated `EmitterSurfacePayload` made an emissive
-			//! material keyed on `Po` render differently depending on
-			//! whether some unrelated painter elsewhere in the process
-			//! happened to keep a signal demand alive (measured at 2.94x on
-			//! the S3 review's repro).
-			//!
-			//! It also closes a PRE-EXISTING inconsistency that predates
-			//! this slice entirely and reaches plain PT: a camera ray that
-			//! HIT the emitter got a live `Po` from `Object::IntersectRay`,
-			//! while every NEE / light-root record built from the same
-			//! sampled point carried `(0,0,0)`.  CLOSED FOR AN `Object`,
-			//! NOT FOR A CSG COMPOSITE: a composite returns @a fallback
-			//! here (see below), so its NEE `Po` is still `(0,0,0)` while a
-			//! direct hit on it gets the WINNING OPERAND's object point
-			//! through `CSGObject::AdoptCsgSurfacePayload`.  That gap is
-			//! unchanged by this slice and is stated wherever the closure
-			//! is claimed (round-2 transport review, H2 P2-7).
-			//!
-			//! HOW: one multiply through the luminary's own
-			//! `GetFinalInverseTransformMatrix()` -- the very matrix
-			//! `Object::IntersectRay` transforms its ray with.  No
-			//! intersection is performed and nothing is estimated.
-			//!
-			//! IT IS NOT THE SAME NUMBER A DIRECT HIT PRODUCES, quite:
-			//! `Object::IntersectRay` writes
-			//! `localRay.PointAtLength( range - SURFACE_INTERSEC_ERROR )`,
-			//! i.e. it backs the object-space point off along the LOCAL ray
-			//! by the object's own self-hit epsilon, while this is the
-			//! EXACT inverse image of the world point.  The two therefore
-			//! agree to `SURFACE_INTERSEC_ERROR` (1e-12 by default,
-			//! author-settable per object), not bit-for-bit.
-			//!
-			//! \return the object-space point, or @a fallback when the
-			//!         luminary has no single object frame.  A CSG COMPOSITE
-			//!         is that case: `CSGObject::IntersectRay` leaves
-			//!         `ptObjIntersec` in the WINNING CHILD OPERAND's frame
-			//!         (see `AdoptCsgSurfacePayload`) and clears
-			//!         `pmxWorldToObject` for exactly this reason -- the map
-			//!         into that frame is the child's inverse composed with
-			//!         every enclosing composite's, and which child wins is
-			//!         a property of the hit, not of the point.  Detected as
-			//!         `GetGeometry() == 0`, which is true of `CSGObject`
-			//!         and of a container node and false of every concrete
-			//!         `Object`.  Passing the record's existing value as
-			//!         @a fallback makes the CSG case "change nothing".
+			//! Ungated, ray-free object-space emission point (`Po`) via
+			//! GetFinalInverseTransformMatrix().  Returns `fallback` for null or
+			//! CSG composites (`GetGeometry() == 0`, which have no single object frame).
 			static Point3 EmitterObjectPoint(
-				const IObject*	pLum,			///< [in] the luminary the point was sampled on; null yields @a fallback
-				const Point3&	ptWorld,		///< [in] the sampled point, in world space
-				const Point3&	fallback		///< [in] what to return when there is no single object frame
+				const IObject*	pLum,
+				const Point3&	ptWorld,
+				const Point3&	fallback
 				);
 
-			//! DL-320: does this luminary emit from BOTH faces?  True when
-			//! its geometry reports back-face hits with a ray-facing normal
-			//! (`IGeometry::IsDoubleSided()`), which is exactly when every
-			//! strategy that HITS it sees a two-sided emitter.  False for a
-			//! null luminary and for a luminary with no directly-owned
-			//! geometry (a CSG composite: `GetGeometry() == 0`, and it is
-			//! never NEE-sampled anyway).  See `EmitterSides` in IEmitter.h
-			//! and docs/DEBT_LEDGER.md.
+			//! True when luminary geometry is double-sided (emits from both faces); false for null/CSG.
 			static bool LuminaryIsTwoSided( const IObject* pLum );
 
-			//! DL-431: the surface-mean radiant exitance of ONE luminary.
-			//!
-			//! `IEmitter::averageRadiantExitance()` is estimated at emitter
-			//! CONSTRUCTION over a default-constructed record, i.e. at
-			//! `P = Po = (0,0,0)` with a 10x10 UV grid, because an emitter does
-			//! not know its geometry.  That is wrong for any emission keyed on
-			//! world / object position, and the average is the light-selection
-			//! importance weight (`Prepare`) and the photon power / budget
-			//! (PhotonTracer, SpectralPhotonTracer, SMSPhotonMap).  This
-			//! helper evaluates the emitter's LOCAL exitance
-			//! (`IEmitter::radiantExitanceAt`) at a deterministic 10x10
-			//! stratified set of `UniformRandomPoint` draws on the luminary
-			//! itself, each through `FillEmitterRecord` so the record carries
-			//! the physical `P` / `Po` / UV / normals.
-			//!
-			//! `uniform` is true when every sample read the identical value
-			//! (a constant, spectral or blackbody exitance -- every shipped
-			//! emitter): `average` is then the emitter's OWN cached average,
-			//! returned verbatim, so a P-independent emitter weights and
-			//! shoots bit for bit as before.  On a clipped plane the sample
-			//! points are exactly the old UV grid's cell centres, so a
-			//! UV-keyed painter averages to the same value as well.
-			//! \sa docs/DEBT_LEDGER.md
+			//! Surface-mean radiant exitance via 10x10 stratified UniformRandomPoint
+			//! samples through FillEmitterRecord (returns cached average verbatim if uniform).
 			struct LuminaryExitance
 			{
 				RISEPel	average;		///< surface-mean exitance (before area / face count)
-				bool	uniform;		///< true: constant over the surface, `average` is the emitter's cached one
+				bool	uniform;		///< true: constant over surface, `average` is emitter's cached value
 			};
 			static LuminaryExitance AverageLuminaryExitance( const IObject* pLum );
 
-			//
-			// LIGHT SOLO — render with exactly one light enabled.
-			//
-			// Designates exactly one light as the sole active light: every
-			// OTHER light contributes exactly zero direct lighting
-			// (EvaluateDirectLighting{,NM}'s three stages — the zero-
-			// exitance deterministic loop, the alias/BVH/RIS-table
-			// selection, and env-NEE — each admit ONLY the soloed
-			// identity), and CachedPdfSelectLuminary returns 1.0 for the
-			// soloed luminary so the integrator's BSDF-hit emission MIS
-			// partner (PathTracingIntegrator.cpp PART 1) agrees with NEE's
-			// own bypassed selection pdf of 1.0 — this is what keeps the
-			// combined NEE+BSDF-hit MIS estimator UNBIASED under solo
-			// (both strategies see the same, degenerate single-light
-			// selection distribution) rather than merely "mostly dark".
-			// Non-target emitters' BSDF-hit emission is suppressed
-			// entirely by the integrator (see PART 1's soloSuppressEmission
-			// gate), not left to a zero MIS weight — an unreachable-by-NEE
-			// emitter (CanBeAreaLight()==false) would otherwise leak
-			// unweighted energy through under solo exactly as it does
-			// today outside solo.
-			//
-			// Setting one target clears any other.  Single-threaded: set
-			// BEFORE a render, read-only during it — same discipline as
-			// PathTracingIntegrator::SetMaxPathDepth.  Default: no solo
-			// (SoloKind::None), byte-identical to today.
-			//
-
-			/// Designates a non-mesh (point/spot/ambient/directional)
-			/// light as the sole active light.
+			// Light solo (single-threaded, set before render): restricts direct lighting
+			// and emission to one target while CachedPdfSelectLuminary returns 1.0 for
+			// the soloed luminary (keeping NEE+BSDF MIS unbiased).
 			void SetSoloLight( const ILightPriv* pLight )
 			{
 				soloKind = SoloKind::Light;
@@ -994,10 +395,6 @@ namespace RISE
 				soloLuminaryObject = 0;
 			}
 
-			/// Designates a mesh luminary as the sole active light.
-			/// `pLuminaryObject` is the IObject* owning the emissive
-			/// material — the SAME identity LuminaryManager::LUM_ELEM::
-			/// pLum and a BSDF-sampled hit's `ri.pObject` compare against.
 			void SetSoloLuminary( const IObject* pLuminaryObject )
 			{
 				soloKind = SoloKind::Luminary;
@@ -1005,13 +402,6 @@ namespace RISE
 				soloLuminaryObject = pLuminaryObject;
 			}
 
-			/// Designates the environment map (global radiance map) as
-			/// the sole active light.  Structural completeness for the
-			/// solo mechanism's three EvaluateDirectLighting stages — not
-			/// yet reachable by name from the agent `render{light:}`
-			/// surface (P2b resolves ILightManager + mesh-luminary names
-			/// only; env-by-name is a possible future extension, see
-			/// docs/gui/RENDER_MODES.md).
 			void SetSoloEnvironment()
 			{
 				soloKind = SoloKind::Environment;
@@ -1019,8 +409,6 @@ namespace RISE
 				soloLuminaryObject = 0;
 			}
 
-			/// Clears any solo target — every light contributes normally
-			/// again.  Default state.
 			void ClearSolo()
 			{
 				soloKind = SoloKind::None;
@@ -1028,247 +416,130 @@ namespace RISE
 				soloLuminaryObject = 0;
 			}
 
-			/// \return True when a solo target is active.
 			bool IsSoloActive() const { return soloKind != SoloKind::None; }
-
-			/// \return The active solo kind (None when inactive).
 			SoloKind GetSoloKind() const { return soloKind; }
 
-			/// \return True when `pLight` IS the solo target.  Used by
-			/// EvaluateDirectLighting{,NM}'s Step-1 zero-exitance loop to
-			/// admit only the soloed light.
 			bool IsSoloTargetLight( const ILightPriv* pLight ) const
 			{
 				return soloKind == SoloKind::Light && soloLight == pLight;
 			}
 
-			/// \return True when `pLuminaryObject` IS the solo target.
-			/// Used by EvaluateDirectLighting{,NM}'s Step-2 bypass,
-			/// CachedPdfSelectLuminary's pdfSelect==1.0 branch, and
-			/// PathTracingIntegrator's PART-1 emission gate.
 			bool IsSoloTargetLuminary( const IObject* pLuminaryObject ) const
 			{
 				return soloKind == SoloKind::Luminary && soloLuminaryObject == pLuminaryObject;
 			}
 
-			/// \return True when the environment map IS the solo target.
 			bool IsSoloTargetEnvironment() const { return soloKind == SoloKind::Environment; }
 
-			/// Sets the optimal MIS accumulator for direct lighting.
-			/// The accumulator must outlive the LightSampler's use of it.
-			/// Pass NULL to disable optimal MIS and revert to PowerHeuristic.
 			void SetOptimalMIS( const OptimalMISAccumulator* pAccum ) const
 			{
 				pOptimalMIS = pAccum;
 			}
 
-            // Configure before Prepare; immutable during sampling. This concrete
-            // seam deliberately does not enable a radiometric rasterizer/API.
+            // Configure before Prepare; immutable during sampling.
             void SetSpectralSourceDomain(std::shared_ptr<const SpectralSourceDomain> domain);
             const SpectralSourceDomain* GetSpectralSourceDomain() const { return spectralDomain.get(); }
             Scalar LightSampleRRThreshold() const { return lightSampleRRThreshold; }
             bool IsPrepared() const { return pPreparedScene && pPreparedLuminaries; }
-            // Preparation-only transfer to a replacement sampler; source scene
-            // must be the same frozen attachment. No proposal tables are copied.
             void CopyMotionSweepFrom(const LightSampler& source, const IScene& scene);
 
-			/// Cache the scene and luminaries list for subsequent queries.
-			/// Builds the alias table for O(1) light selection.
-			/// Must be called once after the scene is fully attached and
-			/// the luminary list is built (e.g. in RayCaster::AttachScene).
+			/// Cache scene + luminaries and build alias table / optional LightBVH.
 			void Prepare(
-				const IScene& scene,								///< [in] The scene containing lights
-				const LuminaryManager::LuminariesList& luminaries	///< [in] List of mesh luminaries
+				const IScene& scene,
+				const LuminaryManager::LuminariesList& luminaries
 				);
 
-			/// DL-463: motion-blur sweep.  A motion-blurred frame moves the
-			/// scene to its own time at every pixel sample, but the selection
-			/// tables are built once per frame.  Any table both sides read is
-			/// an unbiased pmf, EXCEPT where it is zero for a light that emits
-			/// at some sample time: a light dark (or excluded) at the frame
-			/// time, or a light BVH cone / box that culls a light which has
-			/// since turned or moved.  The rasterizer moves the scene through
-			/// the shutter and calls AccumulateMotionSample at each time; the
-			/// next Prepare then weights each light by its mean power over the
-			/// samples (keeping it whenever any sample emits) and gives the
-			/// BVH the union of its boxes and cones.  Prepare consumes the
-			/// sweep (a later Prepare without a new sweep is a plain one).
-			/// Single-threaded, like Prepare.
+			/// Shutter-sweep accumulation for motion blur (single-threaded; consumed by next Prepare()).
+			/// Ensures lights/BVH cones active at any shutter sample retain positive PMF.
 			void ClearMotionSweep();
 			void AccumulateMotionSample(
 				const IScene& scene,
 				const LuminaryManager::LuminariesList& luminaries
 				);
 
-			/// DL-463: a luminary's selection weight as Prepare computes it
-			/// (total emitted power: DL-320 face count, DL-431 surface mean).
 			static Scalar LuminarySelectionWeight( const IObject* pLum );
-			/// DL-463: the weight Prepare gives a swept light (the shutter
-			/// mean; `nominal` when no sample emitted).
 			static Scalar SweptSelectionWeight( const MotionSweepRecord& rec, const Scalar nominal );
-			/// DL-463: hands the swept box / cone to the light BVH.
 			static void ApplySweptBounds( LightEntry& entry, const MotionSweepRecord& rec );
 
-			/// Selects a light proportional to exitance, samples an emission
-			/// position and direction, and fills the LightSample struct.
-			/// \return True if a valid sample was generated, false if no lights exist
 			bool SampleLight(
-				const IScene& scene,								///< [in] The scene containing lights
-				const LuminaryManager::LuminariesList& luminaries,	///< [in] List of mesh luminaries
-				ISampler& sampler,									///< [in] Low-discrepancy sampler
-				LightSample& sample									///< [out] The generated light sample
+				const IScene& scene,
+				const LuminaryManager::LuminariesList& luminaries,
+				ISampler& sampler,
+				LightSample& sample
 				) const;
 
-			/// Returns the probability that SampleLight() selects a given
-			/// non-mesh light: (1 - envSelectProb) * alias pmf.  Never the
-			/// light BVH's pmf -- SampleLight() does not use it (DL-348).
-			/// \return Selection probability proportional to exitance
+			/// SampleLight() selection PMF = (1 - envSelectProb) * alias pmf (never BVH; BDPT/VCM/MLT MIS partner).
 			Scalar PdfSelectLight(
-				const IScene& scene,								///< [in] The scene containing lights
-				const LuminaryManager::LuminariesList& luminaries,	///< [in] List of mesh luminaries
-				const ILight& light,								///< [in] The light to query
-				const Point3& shadingPoint,							///< [in] Unused (SampleLight's pmf is shading-point independent)
-				const Vector3& shadingNormal						///< [in] Unused
+				const IScene& scene,
+				const LuminaryManager::LuminariesList& luminaries,
+				const ILight& light,
+				const Point3& shadingPoint,
+				const Vector3& shadingNormal
 				) const;
 
-			/// Returns the probability that SampleLight() selects a given
-			/// mesh luminary: (1 - envSelectProb) * alias pmf.  The MIS
-			/// partner of BDPT/VCM/MLT's light-rooted strategies; never the
-			/// light BVH's pmf (DL-348).  PT's own NEE partner is
-			/// CachedPdfSelectLuminary.
-			/// \return Selection probability proportional to exitance
+			/// SampleLight() selection PMF for a mesh luminary = (1 - envSelectProb) * alias pmf (never BVH).
+			/// PT's NEE partner is CachedPdfSelectLuminary().
 			Scalar PdfSelectLuminary(
-				const IScene& scene,								///< [in] The scene containing lights
-				const LuminaryManager::LuminariesList& luminaries,	///< [in] List of mesh luminaries
-				const IObject& luminary,							///< [in] The luminary to query
-				const Point3& shadingPoint,							///< [in] Unused (SampleLight's pmf is shading-point independent)
-				const Vector3& shadingNormal						///< [in] Unused
+				const IScene& scene,
+				const LuminaryManager::LuminariesList& luminaries,
+				const IObject& luminary,
+				const Point3& shadingPoint,
+				const Vector3& shadingNormal
 				) const;
 
-			/// Is this luminary in the light table, so that SampleLight()
-			/// and what roots on it (NEE, SMS, BDPT / VCM / MLT light
-			/// subpaths) can draw it?  False for a luminary Prepare() left
-			/// out because its average exitance read zero -- 100 stratified
-			/// samples, or the emitter's own construction-time average when
-			/// those all agree, so emission confined to the gaps between
-			/// the samples still lights the scene, through scattered rays
-			/// only -- for any emitter never admitted to the luminaries
-			/// list (no geometry, CanBeAreaLight() false), and before
-			/// Prepare().  (Under a motion sweep a zero-reading luminary is
-			/// kept at a floor weight, and is in the table.)  The photon
-			/// tracers do not use the table but
-			/// weight luminaries by the same average, so they shoot nothing
-			/// from such a luminary either.
+			/// True iff luminary is in the light table (selectable by SampleLight/NEE/SMS/BDPT/VCM/MLT).
 			bool IsLuminaryInLightTable(
-				const IObject* pLuminary							///< [in] The luminary to query
+				const IObject* pLuminary
 				) const
 			{
 				return FindLuminaryIndex( pLuminary ) >= 0;
 			}
 
-			//
-			// Unified direct lighting evaluation (NEE)
-			//
-
-			/// Evaluates direct lighting at a shading point by selecting
-			/// one light source proportional to exitance and computing
-			/// the shadowed, BRDF-weighted, MIS-weighted contribution.
-			///
-			/// Lights with zero exitance (ambient, directional) are
-			/// evaluated deterministically outside the stochastic
-			/// selection to preserve backward compatibility.
-			///
-			/// `neeTrainingScale` (DL-72 P2-3) multiplies the integrand
-			/// this call feeds to `OptimalMISAccumulator` -- and NOTHING
-			/// else; the returned radiance is unaffected at any value.
-			/// It exists because a caller may apply a further factor to
-			/// the returned contribution before it reaches the image, and
-			/// the accumulator's moment is of the INTEGRAND (see
-			/// OptimalMISAccumulator.h): the ONE caller that needs it is
-			/// PathTracingIntegrator's BSSRDF/random-walk entry NEE, whose
-			/// result is scaled by the area-measure `weightSpatial` on
-			/// return, so without it that arm would train `f/weightSpatial`
-			/// while its own MIS partner -- the BSSRDF exit continuation --
-			/// trains the full `f`.  Default 1 = every other call site,
-			/// where the returned value IS the contribution.
-			///
-			/// \return Direct lighting contribution (RGB)
+			/// Unified direct lighting (NEE).  Zero-exitance lights are evaluated
+			/// deterministically.  `neeTrainingScale` scales OptimalMIS training only
+			/// (never returned radiance); `bBsdfSamplingPartnerExists` disables MIS
+			/// when no BSDF-sampling sibling exists; `pGradedIndexStack` (separate
+			/// from `pMisIorStack`) prices `(top/n(light))^2` only for graded-index
+			/// advancing walks; `bSMSCoversDeltaLights` keeps binary shadows on delta
+			/// lights when SMS estimates their specular transmission.
 			RISEPel EvaluateDirectLighting(
-				const RayIntersectionGeometric& ri,					///< [in] Geometric intersection at shading point
-				const IBSDF& brdf,									///< [in] BRDF at the shading point
-				const IMaterial* pMaterial,							///< [in] Material at shading point (for BSDF PDF query)
-				const IRayCaster& caster,							///< [in] Ray caster for shadow tests
-				ISampler& sampler,									///< [in] Low-discrepancy sampler
-				const IObject* pShadingObject,						///< [in] Object being shaded (to skip self-illumination)
-				const IMedium* pMedium,								///< [in] Current participating medium for transmittance (NULL = vacuum)
-				const bool isVolumeScatter,							///< [in] True for volume scatter points — skips cosine weighting and hemisphere rejection
-				const IObject* pMediumObject,						///< [in] Object enclosing the medium (NULL = unbounded/global medium)
-				const IGuidedNEEPdfBlend* pGuidedBlend = 0,			///< [in] DL-74: optional MIS-partner pdf override for the NEE arms (see IGuidedNEEPdfBlend)
-				const IORStack* pMisIorStack = 0,					///< [in] DL-74 P2: IOR stack to evaluate the MIS-partner aggregate pdf under (NULL = the historical IORStack(1.0) sentinel)
-				const Scalar neeTrainingScale = 1,					///< [in] DL-72 P2-3: scales the OPTIMAL-MIS TRAINING integrand only (see the RGB overload's note); never the returned radiance
-				//! DL-171/DL-209: does a competing BSDF-SAMPLED strategy
-				//! actually exist in the caller's shader (a chain-aware
-				//! fact only the OWNING StandardShader/AdvancedShader can
-				//! resolve -- see RAY_STATE::chainHasBsdfContinuationOp)?
-				//! Default TRUE preserves every pre-existing caller's
-				//! behaviour (PT/BDPT/volume NEE always pair with a real
-				//! BSDF-sampling strategy).  FALSE suppresses ONLY the
-				//! weight computation below (this NEE sample takes the
-				//! full, unweighted contribution) while `pMaterial` is
-				//! still used for `bFullSphere`/the BRDF value -- there is
-				//! no BSDF-sampled sibling to partition against.
+				const RayIntersectionGeometric& ri,
+				const IBSDF& brdf,
+				const IMaterial* pMaterial,
+				const IRayCaster& caster,
+				ISampler& sampler,
+				const IObject* pShadingObject,
+				const IMedium* pMedium,
+				const bool isVolumeScatter,
+				const IObject* pMediumObject,
+				const IGuidedNEEPdfBlend* pGuidedBlend = 0,
+				const IORStack* pMisIorStack = 0,
+				const Scalar neeTrainingScale = 1,
 				const bool bBsdfSamplingPartnerExists = true,
-				//! DL-09: the IOR stack of a caller whose walk ADVANCES
-				//! through graded-index media (GradedIndexMedium::Advance at
-				//! every vertex), so that its top is the index the caller's
-				//! throughput was priced to.  Only then is the NEE
-				//! connection segment priced `(top/n(light point))^2`
-				//! (docs/DEBT_LEDGER.md §3(ii)).
-				//! Default NULL: a walk that does not advance (the legacy
-				//! shader-op chain, RayCaster's own volume walk) keeps its
-				//! pre-DL-09 accounting on BOTH its NEE and its
-				//! BSDF-sampled side, which is what keeps its own MIS
-				//! partition consistent.  Kept separate from
-				//! `pMisIorStack` on purpose: a volume vertex prices its
-				//! partner pdf stacklessly yet still sits in a graded
-				//! medium.  Exactly no effect unless the stack's innermost
-				//! medium is graded.
 				const IORStack* pGradedIndexStack = 0,
-				//! DL-344: SMS IS evaluated at THIS point (PT's PART-2
-				//! surface NEE with a manifold solver).  Only then is a
-				//! delta light's light through a specular caster SMS's to
-				//! estimate, so the delta arm keeps a binary shadow there
-				//! instead of the `transparent_shadows` walk.  Default
-				//! false: every other caller (volume in-scattering, the
-				//! BSSRDF entry NEE, the legacy chain, BDPT) has no SMS at
-				//! its point, and the walk is the light's only estimator.
 				const bool bSMSCoversDeltaLights = false,
-				const IORStack* pMediumStack = 0					///< [in] Full outer-to-inner medium state when available
+				const IORStack* pMediumStack = 0
 				) const;
 
 			/// Spectral variant of EvaluateDirectLighting.
-			/// \return Direct lighting contribution for a single wavelength
 			Scalar EvaluateDirectLightingNM(
-				const RayIntersectionGeometric& ri,					///< [in] Geometric intersection at shading point
-				const IBSDF& brdf,									///< [in] BRDF at the shading point
-				const IMaterial* pMaterial,							///< [in] Material at shading point (for BSDF PDF query)
-				const Scalar nm,									///< [in] Wavelength in nanometers
-				const IRayCaster& caster,							///< [in] Ray caster for shadow tests
-				ISampler& sampler,									///< [in] Low-discrepancy sampler
-				const IObject* pShadingObject,						///< [in] Object being shaded (to skip self-illumination)
-				const IMedium* pMedium,								///< [in] Current participating medium for transmittance (NULL = vacuum)
-				const bool isVolumeScatter,							///< [in] True for volume scatter points — skips cosine weighting and hemisphere rejection
-				const IObject* pMediumObject,						///< [in] Object enclosing the medium (NULL = unbounded/global medium)
-				const IGuidedNEEPdfBlend* pGuidedBlend = 0,			///< [in] DL-74: optional MIS-partner pdf override for the NEE arms (see IGuidedNEEPdfBlend)
-				const IORStack* pMisIorStack = 0,					///< [in] DL-74 P2: IOR stack to evaluate the MIS-partner aggregate pdf under (NULL = the historical IORStack(1.0) sentinel)
-				const Scalar neeTrainingScale = 1,					///< [in] DL-72 P2-3: scales the OPTIMAL-MIS TRAINING integrand only (see the RGB overload's note); never the returned radiance
-				//! DL-171/DL-209 -- see the RGB overload's doc.
+				const RayIntersectionGeometric& ri,
+				const IBSDF& brdf,
+				const IMaterial* pMaterial,
+				const Scalar nm,
+				const IRayCaster& caster,
+				ISampler& sampler,
+				const IObject* pShadingObject,
+				const IMedium* pMedium,
+				const bool isVolumeScatter,
+				const IObject* pMediumObject,
+				const IGuidedNEEPdfBlend* pGuidedBlend = 0,
+				const IORStack* pMisIorStack = 0,
+				const Scalar neeTrainingScale = 1,
 				const bool bBsdfSamplingPartnerExists = true,
-				//! DL-09 -- see the RGB overload's doc.
 				const IORStack* pGradedIndexStack = 0,
-				//! DL-344 -- see the RGB overload's doc.
 				const bool bSMSCoversDeltaLights = false,
-				const IORStack* pMediumStack = 0					///< [in] Full outer-to-inner medium state when available
+				const IORStack* pMediumStack = 0
 				) const;
 
 			/// Draw a labeled thermal-emission endpoint using q_m^V p_m(y).
@@ -1438,231 +709,88 @@ namespace RISE
 				return volumeEmissionDistributionValid;
 			}
 
-			/// Returns the probability PT's own NEE gives a mesh luminary
-			/// from a shading point: the light BVH's pmf when the BVH is
-			/// built, else the alias-table pmf.  The "other strategy"
-			/// density when a BSDF-sampled ray hits an emitter.  Under RIS
-			/// the value is not an MIS density: a positive one tells the
-			/// caller RIS can select the luminary, so the hit is suppressed.
-			/// Under light solo it is 1 for the target (0 if the target is
-			/// not in the table, as NEE's solo bypass then finds nothing) and
-			/// 0 for any other.
-			/// \return Selection probability; 0 when light sampling cannot
-			/// select this luminary (it is not in the table; the light BVH
-			/// gives every mesh luminary a full-sphere orientation cone, so
-			/// its pmf is never zero for one that is), in which case the
-			/// caller gives the hit full weight (DL-633)
+			/// PT NEE selection PMF for a mesh luminary (LightBVH when built, else alias;
+			/// under RIS >0 flags selectability for hit suppression; under solo returns 1
+			/// for soloed target in table, 0 otherwise; 0 => caller gives hit full weight).
 			Scalar CachedPdfSelectLuminary(
-				const IObject& luminary,							///< [in] The luminary to query
-				const Point3& shadingPoint,							///< [in] Shading point (used for BVH PDF; ignored when BVH inactive)
-				const Vector3& shadingNormal						///< [in] Shading normal (used for BVH PDF; ignored when BVH inactive)
+				const IObject& luminary,
+				const Point3& shadingPoint,
+				const Vector3& shadingNormal
 				) const;
 
-			/// Returns whether RIS spatial resampling is active.
 			bool IsRISActive() const { return risCandidates > 0 && !IsLightBVHActive(); }
-
-			/// Returns whether the light BVH is built and active.
 			bool IsLightBVHActive() const { return pLightBVH && pLightBVH->IsBuilt(); }
-
-			/// Enables or disables the light BVH.  When enabled, the BVH
-			/// is built during Prepare() and used for spatially-aware light
-			/// selection with full MIS support.  When disabled (default),
-			/// the alias table + optional RIS is used.
 			void SetUseLightBVH(
-				const bool enable									///< [in] True to enable light BVH
+				const bool enable
 				);
 
-			/// Returns whether the scene has any participating media
-			/// (per-object or global).  Used to gate shadow transmittance
-			/// evaluation — when false, all shadow transmittance calls
-			/// are skipped.
 			bool SceneHasAlphaCoverage() const { return bSceneHasAlphaCoverage; }
             bool SceneHasMedia() const { return bSceneHasObjectMedia || (pPreparedScene && pPreparedScene->GetGlobalMedium()); }
-            /// True if any object carries an interior medium (cached during
-            /// Prepare).  DL-419: SMS's chain transmittance walks segment
-            /// boundaries only when this is set.
             bool SceneHasObjectMedia() const { return bSceneHasObjectMedia; }
-
-			/// Root transport stacks need containment seeding only when an exact
-			/// null boundary exists. Keeping this cached preserves legacy camera
-			/// stack initialization byte-for-byte for all other scenes.
 			bool SceneHasNullBoundaries() const { return bSceneHasNullBoundaries; }
-
-			/// Fire disables hero-wavelength medium transport until Phase D.
-			/// Cached during Prepare so HWSS routing never scans objects per sample.
 			bool SceneHasFireMedia() const
 			{
 				const IMedium* global = pPreparedScene ? pPreparedScene->GetGlobalMedium() : 0;
 				return bSceneHasObjectFireMedia || ( global && global->IsFireMedium() );
 			}
 
-			/// Sets the number of RIS candidates for spatially-aware
-			/// light selection.  When M>0, EvaluateDirectLighting draws
-			/// M candidates from the global alias table and resamples
-			/// one proportional to exitance/distance^2.  When M=0
-			/// (default), plain alias-table selection is used.
 			void SetRISCandidates(
-				const unsigned int M								///< [in] Number of RIS candidates (0=disabled)
+				const unsigned int M
 				);
-
-			/// Sets the environment map and its importance sampler for
-			/// environment NEE.  The EnvironmentSampler must already be
-			/// built (Build() called).  Ownership is NOT transferred.
+			/// Sets env map + built EnvironmentSampler (non-owning).
 			void SetEnvironmentSampler(
-				const IRadianceMap* pEnvMap,							///< [in] The radiance map (for radiance queries)
-				const EnvironmentSampler* pSampler					///< [in] The importance sampler (for direction sampling/PDF)
+				const IRadianceMap* pEnvMap,
+				const EnvironmentSampler* pSampler
 				);
 
-			/// \return The environment importance sampler, or NULL
 			const EnvironmentSampler* GetEnvironmentSampler() const { return pEnvSampler; }
-
-			/// \return The cached scene bounding-sphere centre (set by
-			/// Prepare()).  Used by BDPT Path B (eye-subpath escape) to
-			/// place the synthetic env-light vertex on the disc that
-			/// SampleEnvLightEmission would have produced — keeps the
-			/// vertex's distance and pdfFwd numerically consistent with
-			/// the area-measure conventions the BDPT MIS walk expects.
 			const Point3& GetCachedSceneCenter() const { return cachedSceneCenter; }
-
-			/// \return The cached scene bounding-sphere radius.  Zero
-			/// before Prepare() completes or on degenerate scenes (no
-			/// visible geometry).  Callers should treat zero as "env
-			/// vertex placement infeasible" and skip the synthetic
-			/// vertex push.
 			Scalar GetCachedSceneRadius() const { return cachedSceneRadius; }
 
-			/// \return Probability that `SampleLight()` produces an
-			/// env-light sample (one with `pEnvLight != NULL`) on the
-			/// next call.  Continuous in (0, 1] when env exists, by
-			/// the env-vs-alias selection roll in `SampleLight()` —
-			/// computed during `Prepare()` from env totalLuminance ×
-			/// disc area vs the alias table's total weight, including the
-			/// legacy 5% uniform class-support mixture. Matches
-			/// PBRT-v4's `LightSampler::PMF(env)` semantics so MIS at
-			/// the Path B s=0 site has a non-zero pdfRev in mixed
-			/// scenes (env + other lights), which closes the MIS
-			/// partition-of-unity that the previous binary 0-or-1
-			/// formulation broke — see `docs/IMPROVEMENTS.md` #12 and
-			/// `docs/VCM_ENV_MIS_PARTITION_INVESTIGATION.md` Session 9 for the rationale
-			/// (continuous-PMF refactor 2026-05-29).
+			/// Probability SampleLight() draws an env sample (docs/IMPROVEMENTS.md #12,
+			/// docs/VCM_ENV_MIS_PARTITION_INVESTIGATION.md).
 			Scalar EnvSelectProbability() const
 			{
 				return cachedEnvSelectProb;
 			}
 
-			/// \return Number of positional (point/spot) lights suitable for equiangular sampling
 			unsigned int GetPositionalLightCount() const { return (unsigned int)positionalLightIndices.size(); }
-
-			/// Get position of a positional light by index [0, GetPositionalLightCount())
 			const Point3& GetPositionalLightPosition(
-				const unsigned int idx							///< [in] Index into positional light list
+				const unsigned int idx
 				) const { return lightEntries[positionalLightIndices[idx]].position; }
-
-			/// Get exitance of a positional light by index [0, GetPositionalLightCount())
 			Scalar GetPositionalLightExitance(
-				const unsigned int idx							///< [in] Index into positional light list
+				const unsigned int idx
 				) const { return lightEntries[positionalLightIndices[idx]].exitance; }
-
-			/// Get total exitance of all positional lights
 			Scalar GetPositionalLightTotalExitance() const { return positionalLightTotalExitance; }
 
-			/// Sets the threshold for light-sample Russian roulette.
-			/// When > 0, mesh luminary shadow samples whose estimated
-			/// geometric contribution (exitance * cos_surface * area *
-			/// cos_light / dist^2) falls below this threshold are
-			/// probabilistically terminated.  Survivors are divided
-			/// by the survival probability to maintain unbiasedness.
-			/// When 0 (default), all shadow samples are evaluated.
+			/// Light-sample Russian roulette threshold (0 = disabled).
 			void SetLightSampleRRThreshold(
-				const Scalar threshold								///< [in] RR threshold (0=disabled)
+				const Scalar threshold
 				);
 
 		protected:
-			/// Selects one light using RIS: draws M candidates from the
-			/// alias table, reweights by exitance/dist^2, and returns
-			/// the selected index.
-			///
-			/// When selfIdx >= 0, that entry's resampling weight is
-			/// forced to zero so self-illumination is excluded from the
-			/// candidate pool without wasting the sample.
-			///
-			/// Returns two values:
-			///   pdfAlias   = alias-table PDF q(j) of the selected light
-			///   risWeight  = RIS correction: (1/M) * sum(W_i) / W_j
-			///
-			/// The caller's estimator should be:
-			///   result = integrand * risWeight / pdfAlias
-			///
-			/// When RIS is active, MIS with BSDF sampling is disabled
-			/// (w_nee = 1) because the exact finite-M technique density
-			/// is intractable.
-			///
-			/// \return Selected lightEntries index
+			/// RIS light selection (M candidates reweighted by exitance/dist^2; selfIdx
+			/// weight zeroed; estimator = integrand * risWeight / pdfAlias, w_nee = 1).
 			unsigned int SelectLightRIS(
-				const Point3& shadingPoint,							///< [in] World-space shading position
-				ISampler& sampler,									///< [in] Sampler for candidate draws
-				Scalar& pdfAlias,									///< [out] Alias-table PDF (for estimator weight)
-				Scalar& risWeight,									///< [out] RIS correction factor
-				const int selfIdx									///< [in] Index to exclude (-1 = none)
+				const Point3& shadingPoint,
+				ISampler& sampler,
+				Scalar& pdfAlias,
+				Scalar& risWeight,
+				const int selfIdx
 				) const;
 
-			/// Finds the lightEntries index for a given luminary object.
-			/// \return Index into lightEntries, or -1 if not found
 			int FindLuminaryIndex(
-				const IObject* pLuminary							///< [in] The luminary to search for
+				const IObject* pLuminary
 				) const;
 
-			/// PBRT-style infinite-area-light emission sampling for
-			/// scenes whose only light source is the environment map.
-			///
-			/// Geometry: importance-sample a sky direction `wi` from
-			/// the env map; place the emission vertex on a disk of
-			/// radius `cachedSceneRadius` perpendicular to `wi`,
-			/// pushed `cachedSceneRadius` along `wi` away from the
-			/// scene centre so the disk lies entirely outside the
-			/// scene bounding sphere.  The disk normal points back
-			/// INTO the scene (= -wi), so `cosAtLight = 1.0`
-			/// uniformly and the disk emits parallel rays in the
-			/// direction `-wi` (= sky → scene).
-			///
-			/// PDFs:
-			///   pdfPosition  = 1 / (π · r²)           — uniform on disk
-			///   pdfDirection = pEnvSampler->Pdf(wi)   — solid angle
-			///   pdfSelect    = 1.0                   — env is the only light
-			///
-			/// Caveats: the resulting `LightSample.pLight` and
-			/// `.pLuminary` are both NULL.  BDPT connection strategies
-			/// (s=1 NEE from eye to light vertex 0) currently fall
-			/// through their `if (pLight) ... else if (pLuminary) ...`
-			/// chains and contribute 0 for env-light vertex 0 — direct
-			/// env-NEE on eye vertices still flows through the standard
-			/// env-sampler path so there is no double-loss.  s>=2
-			/// strategies (light-subpath bounces from the env-light into
-			/// the scene and connects to the eye via geometry vertices)
-			/// work fully and are what unblocks the IBL-only render
-			/// from showing as fully-black.
-			///
-			/// \return True on success (env sampler must be valid +
-			/// scene radius > 0).  False when env or scene info is
-			/// missing — caller's `SampleLight` returns false too.
-			///
-			/// `u1` is the first uniform random for env-direction
-			/// importance sampling (the second one is drawn from
-			/// `sampler` internally).  Passing `u1` externally lets
-			/// `SampleLight` re-use its env-vs-alias selection roll
-			/// as `u1` after re-mapping into `[0, 1)` — keeps the
-			/// total `Get1D()` consumption per `SampleLight` call
-			/// identical to the prior binary-PMF flow (no Sobol /
-			/// QMC dimension shift; see Prepare()'s continuous-PMF
-			/// block for the 2026-05-26 dimension-shift regression
-			/// that motivated this signature).  `pdfSelect` is left
-			/// at its computed env-only value (1.0); callers in
-			/// mixed scenes should overwrite `sample.pdfSelect`
-			/// with the actual env-vs-alias selection probability.
+			/// Infinite-area-light disk emission from the env map (pdfPos = 1/(pi*r^2),
+			/// pdfDir = pEnvSampler->Pdf(wi), pdfSelect = 1.0 — mixed-scene callers
+			/// overwrite pdfSelect).  External `u1` reuses the env-vs-alias roll to
+			/// avoid shifting QMC dimensions.
 			bool SampleEnvLightEmission(
-				const Scalar u1,									///< [in] First uniform random for direction sampling
-				ISampler& sampler,									///< [in] Low-discrepancy sampler (for remaining randoms)
-				LightSample& sample									///< [out] Populated env-light emission sample
+				const Scalar u1,
+				ISampler& sampler,
+				LightSample& sample
 				) const;
 		};
 	}

@@ -1,86 +1,26 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  OslColor.h - Cycles' RGB/HSV/HSL colour-space conversions and the
-//    Mix Color node's 19 blend modes.
+//  OslColor.h - Ports of Blender Cycles' RGB/HSV/HSL colour-space
+//    conversions and Mix Color node (19 blend modes).
 //
-//  A PORT, not new colour math.  It reproduces the CPU kernel of
-//  Blender's Cycles renderer -- intern/cycles/util/color.h (rgb_to_hsv,
-//  hsv_to_rgb, rgb_to_hsl, hsl_to_rgb), intern/cycles/kernel/svm/
-//  color_util.h (svm_mix and its 19 blend helpers), and intern/cycles/
-//  kernel/svm/mix.h (svm_node_mix_color's factor and result clamps) --
-//  so that a Blender material translated into a RISE expression
-//  evaluates Separate/Combine Color, Hue/Saturation/Value and Mix
-//  (Color) the same way Cycles does.  Cycles' legacy MixRGB node
-//  (svm_node_mix) is identical to MixColor with clampFactor = true and
-//  clampResult = use_clamp.
+//  Ported from Blender commit afc6d7a4 (5.2 alpha, 2026-03-17):
+//    intern/cycles/util/color.h (rgb_to_hsv, hsv_to_rgb, rgb_to_hsl,
+//    hsl_to_rgb), kernel/svm/color_util.h (svm_mix), and kernel/svm/mix.h
+//    (svm_node_mix_color; legacy MixRGB is clampFactor=true, clampResult=
+//    use_clamp).  Verified against tests/data/osl_color_golden.inc by
+//    OslColorTest.
 //
-//  Ported from Blender commit afc6d7a4 (5.2 alpha, 2026-03-17), as
-//  OslNoise.h and OslVoronoi.h are.  The golden values,
-//  tests/data/osl_color_golden.inc, were dumped by
-//  tools/osl_golden/dump_color_golden.sh, which runs Cycles' own
-//  svm_node_separate_color, svm_node_combine_color and
-//  svm_node_mix_color compiled three ways (the SIMD path as Blender's
-//  arm64 build compiles it, the scalar path with Blender's math flags,
-//  and the scalar path as strict IEEE); tests/OslColorTest.cpp gates on
-//  the strict column.
+//  PRECISION.  Evaluates in strict IEEE 32-bit float in Cycles' scalar
+//  order of operations (no FMA, reassociation, or reciprocal math;
+//  OslColor.cpp is compiled with -fno-fast-math -ffp-contract=off or
+//  /fp:strict), multiplying by `1.0f / cdelta` in RgbToHsv as Cycles
+//  does; double `Scalar` only at the interface.  Pure IEEE arithmetic
+//  (no libm transcendentals), bit-identical across IEEE platforms.
 //
-//  PRECISION.  As OslNoise.h and OslVoronoi.h: 32-bit float in the
-//  order of Cycles' scalar path ("standard implementation"), strict
-//  IEEE (no reassociation, no reciprocal substitution, no fused
-//  multiply-add; OslColor.cpp is compiled that way by every build),
-//  double only at the interface.  Where Cycles' scalar path divides a
-//  float3 by a scalar -- `(cmax3 - rgb) / cdelta` in rgb_to_hsv -- it
-//  multiplies by `1.0f / cdelta`, and so does the port.  Every
-//  operation is a correctly rounded IEEE 754 operation (no libm
-//  transcendentals), so the strict column is bit-identical on every
-//  IEEE platform (built and run so far on macOS arm64 only).
-//
-//  The port equals the strict build bit for bit (sign of zero included)
-//  on all 1098 rows of tests/data/osl_color_golden.inc (300 conversion
-//  rows and 798 Mix Color rows).  Against Cycles as Blender builds it
-//  (the SIMD and scalar columns: Cycles' sources rebuilt with Blender's
-//  CYCLES_MATH_FLAGS, not a shipped binary; on this arm64 build those
-//  two columns are bit-identical to each other on every row), Tests 1a
-//  and 1b of tests/OslColorTest.cpp measure only float rounding (from
-//  -ffp-contract=on FMA and -freciprocal-math on scalar divides such as
-//  `/ 6.0f`), with 0 sign-of-zero-only rows, 0 non-finite
-//  disagreements, and 0 departures above 1e-5 relative to max(1, |v|):
-//    * Colour conversions (300 rows): 251 bit-exact, 49 rounding rows,
-//      max relative error 1.24e-7 (conv row 139, hsl2rgb).
-//    * Mix Color (798 rows): 761 bit-exact, 37 rounding rows, max
-//      relative error 5.07e-7 (mix_edge row 241, sat, cf=0, cr=0).
-//  (Counts and maxima are of this table, not bounds: on adversarial
-//  inputs near a discontinuous branch -- e.g. Burn's `tm + t*b <= 0`
-//  or Dodge's `1 - t*b <= 0` with unclamped or out-of-gamut values --
-//  FMA rounding could flip the branch.)
-//
-//  COST.  Straight float arithmetic with no loops, hashes or
-//  transcendentals (not memo-worthy in the expression VM).  Measured by
-//  tools/osl_golden/bench_color.cpp (Apple M1 Max, Apple clang 21, -O3
-//  with this file's strict flags, one thread, two runs after a warm-up
-//  agreeing within ~9%, 2e6 calls each; 9 of the 19 Mix modes timed
-//  with clampFactor = true, clampResult = false on in-gamut [0.05..0.95]
-//  inputs), in nanoseconds per call:
-//    RgbToHsv 5.1, HsvToRgb 3.1, RgbToHsl 4.5, HslToRgb 3.6;
-//    MixColor: Blend 2.7, Soft 4.2, Overlay 5.5, Dodge 5.5, Burn 6.6,
-//              Val 10.4, Sat 11.2, Color 12.0, Hue 12.2.
-//  For scale, 3D Noise Texture at detail 2 is ~100 ns on the same
-//  machine (tools/osl_golden/bench_voronoi.cpp).
-//
-//  WHERE THE PORT DEPARTS FROM CYCLES.  Almost nowhere: none of these
-//  functions converts float to int or invokes undefined behaviour on
-//  non-finite inputs, so even NaN and +/-inf inputs match Cycles'
-//  macOS/Linux strict IEEE build bit for bit (except that Cycles'
-//  Windows build overrides fmaxf with `(a > b) ? a : b`, whereas this
-//  port uses IEEE std::fmax everywhere).  The only departure is an
-//  unknown `mode` passed to MixColor: Cycles' svm_mix switch also
-//  handles the internal sentinel NODE_MIX_CLAMP (19), returning
-//  saturate(a), whereas MixColor treats any `mode` outside 0..18 as
-//  invalid and returns (0, 0, 0).  The expression builtin checks `mode`
-//  in 0..18 as a compile-time integer literal, so only a direct C++
-//  caller can pass 19.  At the expression-VM boundary
-//  (ExpressionOslBuiltins.cpp), any non-finite output channel reads 0,
-//  as for the other osl_ builtins.
+//  DEPARTURES.  Uses IEEE std::fmax everywhere (Cycles' Windows build
+//  overrides fmaxf).  MixColor rejects `mode` outside 0..18 (including
+//  Cycles' internal NODE_MIX_CLAMP = 19) and writes (0, 0, 0).  Non-
+//  finite channels follow strict Cycles here; VM builtins map them to 0.
 //
 //  LICENCES.  RISE's own licence is BSD-style (LICENSE.TXT).  The ported
 //  code carries its sources' licences, reproduced here as they require:
@@ -164,10 +104,9 @@ namespace RISE
 		//! util/color.h `hsl_to_rgb`.  May alias `hsl` and `out`.
 		void HslToRgb( const Scalar hsl[3], Scalar out[3] );
 
-		//! kernel/svm/mix.h `svm_node_mix_color`: optionally clamps `t`
-		//! to [0, 1] (`clampFactor`), applies Cycles' `svm_mix` for
-		//! `mode` in 0..18, then optionally clamps each output channel to
-		//! [0, 1] (`clampResult`).  `mode` outside 0..18 writes (0, 0, 0).
+		//! Cycles' svm_node_mix_color: optionally clamps `t` (`clampFactor`),
+		//! blends with `mode` in 0..18, and optionally clamps output channels
+		//! to [0, 1] (`clampResult`). Out-of-range `mode` writes (0, 0, 0).
 		//! May alias `a` or `b` with `out`.
 		void MixColor( int mode, Scalar t, const Scalar a[3], const Scalar b[3],
 			bool clampFactor, bool clampResult, Scalar out[3] );

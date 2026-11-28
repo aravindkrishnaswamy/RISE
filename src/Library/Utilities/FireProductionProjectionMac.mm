@@ -2,6 +2,13 @@
 //
 //  FireProductionProjectionMac.mm - Metal-resident fixed P2 projection
 //
+//  Apple Metal compute implementation of the strict-fp32 MAC pressure
+//  projection solver, mirroring FireProductionProjection.cpp stage-for-
+//  stage under MTLMathModeSafe. Keeps full-grid multigrid levels, face
+//  momenta/velocities, and lineage identities in Private device memory
+//  with zero interstage device-to-host transfers and 16-KiB-aligned
+//  working-set certification. Non-Apple builds link the unsupported stub.
+//
 //  License Information: Please see the attached LICENSE.TXT file
 //
 //////////////////////////////////////////////////////////////////////
@@ -58,6 +65,8 @@ namespace RISE
 
 	namespace
 	{
+		// --- Transfer/allocation audit counters and Metal parameter structs ---
+
 		enum ProjectionHostAccessKind
 		{
 			ProjectionMetadataAccess,
@@ -170,6 +179,10 @@ namespace RISE
 			return result;
 		}
 
+		// --- Embedded Metal shading source (hashed verbatim by KernelSourceSHA256) ---
+		// Kernels mirror FireProductionProjection.cpp: face beta/diagonal assembly,
+		// open-boundary Bernoulli head, Poisson RHS, 2/3-Jacobi V-cycle, power-of-2
+		// Blelloch sum/max reductions, MAC face correction, and device FNV-1a sealing.
 		const char* ProjectionSource()
 		{
 			return R"METAL(
@@ -512,6 +525,8 @@ kernel void identify_resident_projection(device const float* target [[buffer(0)]
 )METAL";
 		}
 
+		// --- Cached Metal pipeline context and multigrid command encoders ---
+
 		std::atomic<std::uint64_t> ProjectionContextConstructionAttempts{0u};
 
 		struct MetalProjectionContext
@@ -688,6 +703,8 @@ kernel void identify_resident_projection(device const float* target [[buffer(0)]
 			return false;
 		}
 
+		// Encodes a power-of-2 binary tree sum or max reduction on device scratch
+		// matching BlellochSum() in FireProductionProjection.cpp.
 		bool EncodeReduction( MetalProjectionContext& context,id<MTLCommandBuffer> command,
 			id<MTLBuffer> values,std::size_t count,id<MTLBuffer> scratch,id<MTLBuffer> diagnostics,
 			std::uint32_t diagnosticIndex,bool maximum,std::string* error,bool magnitude=false )
@@ -755,6 +772,8 @@ kernel void identify_resident_projection(device const float* target [[buffer(0)]
 			return true;
 		}
 
+		// Encodes one recursive geometric V-cycle (3 pre-sweeps, residual restriction,
+		// 32 coarsest sweeps, trilinear prolongation, 3 post-sweeps) with zero host sync.
 		bool EncodeVCycle( MetalProjectionContext& context,id<MTLCommandBuffer> command,
 			std::vector<MetalLevel>& hierarchy,std::size_t index,id<MTLBuffer> scratch,
 			id<MTLBuffer> diagnostics,std::uint64_t& executedSweeps,std::string* error )
@@ -791,6 +810,13 @@ kernel void identify_resident_projection(device const float* target [[buffer(0)]
 		}
 	}
 
+	// --- Unified Metal projection execution and public/resident entry points ---
+
+	// Executes standalone, resident-physical, or restoration MAC projection on
+	// Metal: validates Private buffer ownership and 2 GiB certificate, builds
+	// coarse levels, runs V-cycles + face correction + metrics in one command
+	// (or adaptive fast-mode checkpoints), and either retains Private state or
+	// stages terminal outputs once.
 	bool ProjectFireProductionMetalImpl( const FireProductionProjectionRequest& request,
 		const FireProductionMetalProjectionResidentInput* residentInput,
 		ProjectionExecutionKind execution,
