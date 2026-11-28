@@ -55,7 +55,8 @@ scripts/simulation_showcase.sh proof all
 **Idea.** An unveiling. Crimson silk hangs from a brass rod just behind a black marble plinth and falls over the
 crystal orb on it; after 1.8 s the rod rises and draws back, the silk's hem slides over the orb and lifts away.
 
-**Demonstrates.** cloth.shell alone: silk-lightweight (0.07 kg/m²), barrier contact with three analytic colliders
+**Demonstrates.** cloth.shell alone: a heavy silk satin (0.14 kg/m², overrides on silk-lightweight) in still air
+(`drag_coefficient 1.0`), gathered onto the rod (1.11 m on 1.0 m, so it hangs in folds), barrier contact with three analytic colliders
 (the floor plane, the plinth box, the orb sphere), self-collision, friction, a pinned edge that follows a keyframed
 scene object (`pin v0 follow rod`, the rod's `timeline`). Renderer: `weave_material` silk with thin transmission, a
 dielectric orb with per-channel IOR (1.50 / 1.53 / 1.57: exaggerated dispersion), coated black marble, a brass collar.
@@ -66,13 +67,16 @@ edges and the translucency read); both kept out of frame; the camera aimed a lit
 The hero is the moment the hem is halfway across the orb, chosen on the final bake (the finer mesh runs a few frames
 later than the proof: 86 at proof, **85** at final).
 
-**Proof.** 31 × 31 vertices: **24 s**, 0.18 GB. Frames `rendered/showcase/unveiling/proof/unveiling_denoised00{20,60,86,110,150}.png`.
+**Proof.** 31 × 31 vertices (cloth-weight round): **30 s**, 0.18 GB, 1 step halving, none unconverged; the proof frames
+listed are the round-2 ones (silk-lightweight, no air), not re-rendered. Frames `rendered/showcase/unveiling/proof/unveiling_denoised00{20,60,86,110,150}.png`.
 
-**Final (measured).** 61 × 61 vertices, 151 frames: **119 s** wall, **0.55 GB** RSS, no Newton failure (cloth has no
-liquid warnings to give). Hero 1920 × 1080, 512 spp: 7 min 40 s →
-**`rendered/showcase/unveiling/final/unveiling_denoised0085.png`**. Animation 960 × 540, 64 spp, 151 frames: 40 min
-(2,384 s) → `rendered/showcase/unveiling/final/anim/unveiling_denoised0000-0150.png` (no MP4: `ffmpeg` is not
-installed). Improve: the orb's dispersion shows as colour in its body but the caustic on the plinth stays faint.
+**Final (measured).** 61 × 61 vertices, 151 frames: **370 s** wall, **0.55 GB** RSS, 13 step halvings (the gathered
+start), none unconverged, no warning. Hero 1920 × 1080, 512 spp: 5 min 49 s (349 s) →
+**`rendered/showcase/unveiling/final/unveiling_denoised0085.png`**. Animation 960 × 540, 64 spp, 151 frames: 30 min (1,823 s)
+→ `rendered/showcase/unveiling/final/anim/`, `rendered/showcase/movies/unveiling.mp4`. The first final (silk-lightweight,
+no air, flat on the rod: 119 s) is kept in `rendered/showcase/unveiling/final_previous/` and
+`rendered/showcase/movies/previous/unveiling.mp4`; why it changed: "Cloth weight and shimmer" below. Improve: the
+orb's dispersion shows as colour in its body but the caustic on the plinth stays faint.
 
 ## conjurer (cloth + rigid) — final
 
@@ -85,29 +89,34 @@ curtain.
 halving on non-convergence): each prop is an **analytic** body (sphere, box: its own mass, plane contact and
 **body-body contact**) whose coupling surface is its scene object's mesh (M9: `body ... surface <object>` with the
 cloth's `collider_port <object>`), moved as a mesh collider of the cloth (`rigid_surface`); the cloth's contact
-reaction is the bodies' load (`contact_reaction targets=ball,cube`). Renderer: translucent silk weave, a metallic
+reaction is the bodies' load (`contact_reaction targets=ball,cube`). The silk is a heavy satin (0.14 kg/m²) in
+still air (`drag_coefficient 1.0`). Renderer: translucent silk weave, a metallic
 gold GGX (Schlick, dark diffuse), coated emerald.
 
 **Art direction (round 2).** The first final was too dark and read as a dark-blue shape on a dark-red backdrop
 (`rendered/showcase/conjurer/final_v1/`, mesh bodies, no body-body contact). Now: champagne silk that separates from
-the curtain, a visible warm spotlight pool from the front (it no longer passes through the canopy), stronger
+the curtain, a visible warm spotlight pool from the front, stronger
 footlights and a cool rim on the silk, larger props (ball 10.5 cm, cube 17 cm), the camera in so the canopy spans
 about half the frame; the props tossed toward each other so they meet under the silk; a livelier stage (restitution
 0.45). Hero: just after the props rebound, both in the air under the sagging silk (frame 22 on the final bake).
+Round 3 ("Cloth weight and shimmer" below): the spot came from above the front through the canopy and skimmed the
+silk, so its hard shadows drew stepped patches that flickered; it now comes from the front below the canopy (its pool
+on the boards and the curtain base) and a soft box keys the silk.
 
 **Design history.** (1) Before M9 a body on cloth had to be a mesh body without body-body contact (Engine requests,
 1, now built). (2) A *free* silk dropped through which the props were tossed failed the cloth's Newton solve in five
 attempts when it was pinched between a landing prop and the stage ("prescribed motion is infeasible ... pinched", then
 "cloth Newton did not reach its tolerance" at t = 0.93-1.27 s); the canopy keeps the silk above the props.
 
-**Proof.** Silk 31 × 31, 91 frames: **365 s**, 0.22 GB; no halving, none unconverged. Frames
+**Proof.** Silk 31 × 31, 91 frames (cloth-weight round): **153 s**, 0.21 GB; no halving, none unconverged (the proof frames listed are
+round 2's, not re-rendered). Frames
 `rendered/showcase/conjurer/proof/conjurer_denoised00{08,11,18,24}.png`.
 
-**Final (measured).** Silk 49 × 49: **402 s** wall, **0.52 GB** RSS; no halving, none unconverged. Hero 1920 × 1080,
-512 spp → **`rendered/showcase/conjurer/final/conjurer_denoised0022.png`**; animation 960 × 540, 64 spp, 91 frames →
-`rendered/showcase/conjurer/final/anim/`. Render times: hero 7 min 55 s (475 s), animation 38 min (2,273 s). Improve: thin dark
-triangles appear in the silk where it folds onto itself at 49 × 49 (two layers a contact offset apart under the thin
-weave; visible in the first final's hero), worth a look with a thicker silk or `face_normals`.
+**Final (measured).** Silk 61 × 61 (was 49 × 49): **528 s** wall, **0.64 GB** RSS; no halving, none unconverged.
+Hero 1920 × 1080, 512 spp, 6 min 31 s (391 s) → **`rendered/showcase/conjurer/final/conjurer_denoised0022.png`**;
+animation 960 × 540, 64 spp, 91 frames, 21 min (1,256 s) → `rendered/showcase/conjurer/final/anim/`,
+`rendered/showcase/movies/conjurer.mp4`. The round-2 final (silk-lightweight, no air, 49 × 49, the spot through the
+canopy: 402 s) is kept in `rendered/showcase/conjurer/final_previous/` and `rendered/showcase/movies/previous/`.
 
 ## tide (liquid + rigid) — final
 
@@ -280,6 +289,58 @@ animation 960 × 540, spectral, 32 spp, 64 frames (play at 16 fps for the quarte
 reads only faintly; the pennant is small in frame; a longer pilot window (or a continuous pilot, solver work) would
 give a longer shot without slow motion.
 
+## Cloth weight and shimmer (2026-11-28)
+
+**The complaint.** Watching the six movies, the owner: the cloth "seems to shimmer a lot like it has instability",
+then "actually not instability, it's like it has no weight". In `unveiling` the silk, once off the orb, swung as a
+flat panel up toward horizontal; in `conjurer` the canopy showed blocky light and dark patches that flickered.
+
+**Measured (scratch tests and the shipped caches; tools: a cache reader over `manifest.cbor` and the `RISEMESH`
+frames).**
+
+| Candidate | Measurement | Verdict |
+|---|---|---|
+| Gravity, mass, the drag law | a 1.0 x 0.9 m silk-lightweight sheet dropped flat: free fall 9.569 m/s at 1 s against 9.81 (the 0.05/s mass damping exactly: g/alpha (1 - e^-alpha t)); with `drag_coefficient 1.2` terminal 0.980 m/s against sqrt(2 m'' g / (rho C_d)) = 0.977; dropped edge-on with drag it falls at the vacuum rate (the drag is along the normal only); hung from an edge it comes to rest vertical (centre of mass 0.450 m below the pins) | correct; not the cause |
+| Rayleigh damping | alpha 0.05/s: time constant 20 s against a 1.5 s pendulum; with damping off the same swing peaks at 80, 74, 67 degrees instead of 77, 65, 61 | negligible (it does damp rigid motion, 2.5% of a free fall at 1 s, harmless at this size) |
+| **No air** | `drag_coefficient` defaults to 0 and none of the showcase cloth set it (only `hearth`'s pennant has drag, from the fire through `aerodynamic_drag`). Hung from an edge and released level, silk-lightweight swings to 77 degrees past vertical, then 65, 61, 61, 58, 53 (period 1.7 s: the rigid-plate pendulum, 2 pi sqrt(2L/3g) = 1.55 s, lengthened by the amplitude), a flat panel the whole time. In the `unveiling` cache the hem slid off the orb at 3.1 s and the sheet then swung between +46 and -36 degrees for the rest of the shot; the `conjurer` canopy's centre bounced between 0.77 and 1.0 m at 2 Hz and was still bouncing 0.16 m peak to peak at 3 s | **the cause of "no weight"**: fabric is dominated by air broadside (at 1.5 m/s the drag pressure on a sheet, 1.6 Pa, is 2.4 times the weight of 70 g/m^2), so a vacuum swing reads as a stiff, massless board |
+| Choreography (`unveiling`) | the rod moves at a constant 0.46 m/s (1.8-3.4 s) then 0.27 m/s: the big swing was not the rod but the hem's release from the orb, undamped | the rod is fine; the release needs air |
+| Shimmer in the simulation | pinned silk draped over the orb, nominally at rest (frames 41-49): median normal change 2-3 degrees per frame, median second difference of position 0.7-1.1 mm (about 0.9 m/s^2), no frame-to-frame sign flips; `conjurer` frames 61-65 (2 s after the toss): 6-7.5 degrees, 7-16 mm (the trampoline bounce) | a slow crawl and the undamped bounce, not buckling that pops between two states |
+| Shimmer in rendering (`conjurer`) | frame 22 at 960 x 540, 256 spp, no denoiser: the patches are the same with `face_normals TRUE`, with a Lambertian in place of the weave and at 128 and 256 spp, and vanish when the spot light is removed. The spot (0.3 2.2 2.6, aimed through the canopy) met 19% of the canopy's triangles at under 10 degrees; 0.9% had a facet and smooth normal on opposite sides of it (the shadow-terminator case) | **grazing hard light**: the spot's shadows of the mesh-scale undulations (median neighbour-normal angle 2.4 degrees, 2 cm triangles) have triangle-stepped edges, and they move with every undulation. Not normals, not the weave's tangent frame, not the denoiser |
+| Playback | caches are 30 Hz for 30 fps (`hearth` 60 Hz for its 1/60 s frames); the mesh plays the nearest frame | not a source |
+
+**Changes (scene level only; the solver was not touched).**
+
+- `unveiling`: a heavy silk satin, `material_density 0.14` (about 32 momme charmeuse) with `material_bend_warp 3e-6`,
+  `material_bend_weft 2.5e-6`; `drag_coefficient 1.0`; the silk gathered onto the rod (`size_u 1.111`, `stretch_u 0.9`:
+  1.11 m of silk on 1.0 m, so it hangs in vertical folds rather than as a flat sheet); `substeps 16`,
+  `newton_iterations 100` (a gathered start is a compressed sheet: at 0.8 the Newton solve failed at once, at 0.9 with
+  the default 8 substeps it failed at 61 x 61). In a scratch test the same weight and drag (0.15 kg/m^2, C_d 1.0)
+  released from level reaches vertical in 0.7 s, overshoots by 16 degrees, then 9 and 5: falls, swings and settles.
+- `conjurer`: the same satin and drag; the silk mesh 49 x 49 to 61 x 61; relit: the spot comes from the front low
+  enough that its cone passes under the canopy (its pool now lies on the boards and the curtain base behind the
+  props), and a soft box above the front (`canopy_key`, 1.2 x 0.8 m) keys the silk. Footlights and rim unchanged.
+- `hearth`, `honey`, `monsoon`: unchanged. `hearth`'s chiffon pennant already has air (the fire's gas through
+  `aerodynamic_drag`, normal coefficient 1.2) and is meant to be tossed; `honey`'s linen and `monsoon`'s awning are
+  pinned all round and loaded by liquid, and are still (median normal change 0.01 and 0.1 degrees per frame).
+
+**Result (final caches).** `unveiling`: after the hem leaves the orb (3.0 s) the silk reaches vertical in 0.4 s, overshoots by
+6.5 degrees and swings back by 6 (was +46 / -36 degrees); draped at rest the median normal change per frame is
+0.9-1.1 degrees (was 2.2-2.8), the second difference 0.5-0.66 mm (was 0.72-1.15). `conjurer`: the canopy centre's bounce,
+peak to peak over each half second from 1 s, is 0.13, 0.08, 0.05, 0.04 m (was 0.26, 0.23, 0.19, 0.16 m); frames 61-65: 1.3-2.3 degrees and 2-3.4 mm
+per frame (was 6-7.5 degrees and 7-16 mm); at the hero frame the median neighbour-normal angle is 1.4 degrees (was 2.4)
+and the old spot would meet 8.8% of the triangles under 10 degrees (was 19%); the new key leaves no stepped patches.
+In the movies (960 x 540, 8-bit luma), the mean frame-to-frame change over the canopy in frames 50-88 is 2.95 levels
+(was 11.1); `unveiling` draped at rest (frames 30-50), whole frame, 0.27 (was 0.36). Contact sheets before and after:
+`rendered/showcase/movies/sheets/{before,after}_{unveiling,conjurer}.png` (every 6th frame).
+
+**Recommended solver changes (not made: each changes `cloth.shell` bytes, so it needs a version bump and re-recorded
+pins).** (1) Default `drag_coefficient` to about 1.0 (air at 1.2 kg/m^3) rather than 0, so a cloth in open air is
+in air unless the author says otherwise; the drag law already matches the terminal-velocity check above, so it could
+also lose its "explicit and unvalidated: preview only" note (the predictive conditions would then need drag on their
+list). (2) A heavier silk record beside silk-lightweight (e.g. `silk-charmeuse`: 0.14 kg/m^2, bending 3e-6 / 2.5e-6
+N m, stretch and shear as silk-lightweight), since a heavy drape is the common use. (3) Optionally drop the mass
+term of the default Rayleigh damping (alpha 0.05/s slows a free fall); it is too small to matter here.
+
 ## Engine requests
 
 1. **Cloth-rigid coupling for analytic bodies (blocks body-body contact under cloth).** `rigid_surface` requires the
@@ -318,15 +379,16 @@ give a longer shot without slow motion.
 
 ## Final round: measured (summary)
 
-All on the 16-core machine, binaries of `1b4f924db` (unveiling) and `cc746ac42` (M9: the rest), liquid bakes with
-`threads 8`; RSS is `/usr/bin/time -l`'s peak. No `ffmpeg` on the machine: every animation is numbered PNG frames
-(`<scene>_denoisedNNNN.png`) in `rendered/showcase/<scene>/final/anim/`; the driver writes `<scene>.mp4` when ffmpeg
-exists.
+All on the 16-core machine, binaries of `cc746ac42` (M9) and, for `unveiling` and `conjurer` after the cloth-weight
+round, `0e911fac8`; liquid bakes with `threads 8`; RSS is `/usr/bin/time -l`'s peak. Every animation is numbered PNG
+frames (`<scene>_denoisedNNNN.png`) in `rendered/showcase/<scene>/final/anim/` and an MP4 in
+`rendered/showcase/movies/` (`ffmpeg -framerate 30 ... -c:v libx264 -pix_fmt yuv420p -crf 16 -preset slow -movflags
++faststart`; `hearth` at 16 fps); the movies before the cloth-weight round are in `rendered/showcase/movies/previous/`.
 
 | Scene | Final simulation | Bake (wall) | Peak RSS | Progress detail | Hero (1920 × 1080, 512 spp) | Animation (960 × 540, 64 spp) |
 |---|---|---|---|---|---|---|
-| `unveiling` | silk 61 × 61, 151 frames | 119 s | 0.55 GB | (cloth: no warnings; no Newton failure) | frame 85, 7 min 40 s | 151 frames, 40 min |
-| `conjurer` | silk 49 × 49, 91 frames | 402 s | 0.52 GB | no halving, none unconverged | frame 22, 7 min 55 s | 91 frames, 38 min |
+| `unveiling` | satin 0.14 kg/m², drag 1.0, gathered, 61 × 61, 151 frames | 370 s | 0.55 GB | 13 halvings, none unconverged, no warning | frame 85, 5 min 49 s | 151 frames, 30 min |
+| `conjurer` | satin 0.14 kg/m², drag 1.0, 61 × 61, 91 frames | 528 s | 0.64 GB | no halving, none unconverged | frame 22, 6 min 31 s | 91 frames, 21 min |
 | `tide` | 128 cells, 121 frames | 3,106 s | 4.97 GB | no warning, no clamped faces; rim drain 0.21 L | frame 10, 12 min | 121 frames, 47 min |
 | `monsoon` | 128 cells, awning 41 × 35, 121 frames | 3,247 s | 2.75 GB | rotation 0.44%, linearisation 0.18%, holes 0 | frame 75, 9 min 29 s | 121 frames, 42 min |
 | `honey` | 96 cells, linen 33 × 33 at 1.0 kg/m², 151 frames | 2,982 s | 1.16 GB | rotation 0.18%, linearisation 0.18% (the 128-cell bake warned at 1.8%: not shipped) | frame 70, 6 min 5 s | 151 frames, 36 min |
@@ -347,9 +409,14 @@ exists.
   the progress-detail lines quoted per scene; every hero frame looked at at full size; the candidate frames for each
   hero re-picked on the final caches (the finer meshes and grids shift the timing by a few frames); the golden lines
   (only the six Showcase lines move) and `run_all_tests.sh --tier fast --filter 'CstDerive*,Scene*'` (17 passed).
-- **Inferred.** That the `tide` corner film is a numerical wall jet rather than physics (from its thinness and its
+  Cloth-weight round (2026-11-28): the scratch physics tests and cache measurements quoted in "Cloth weight and
+  shimmer"; the `unveiling` and `conjurer` final bakes, heroes and animations, their MP4s rebuilt with the encoding
+  above and watched as contact sheets; the lighting diagnosis at 960 x 540 without the denoiser; the two golden lines
+  regenerated (only they moved) and the same 17 tests passed.
+- **Inferred.** That a heavy satin with C_d 1.0 is the right look for the owner's "no weight" (judged from the
+  contact sheets, not by the owner); that the `tide` corner film is a numerical wall jet rather than physics (from its thinness and its
   appearance only at 128 cells); that the `honey` warning at 128 cells comes from the rope's landing (the only impact).
-- **Not done.** MP4s (no `ffmpeg` on the machine: numbered frames only); a `honey` rope that coils (needs a finer grid
+- **Not done.** A `honey` rope that coils (needs a finer grid
   than a warning-free bake allowed); a sustained tall flame for `hearth` (solver work: a continuous pilot or a larger
   burner); the proof frames of `hearth` show the pennant at its earlier 1.22 m rod height.
 - **Builds.** Proof and final caches were baked with four binary copies (`cc071c604`, `1b4f924db`, `cc746ac42` for

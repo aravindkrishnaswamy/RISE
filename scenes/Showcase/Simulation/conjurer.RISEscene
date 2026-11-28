@@ -9,7 +9,8 @@ RISE ASCII SCENE 7
 #                   footlights, a cool rim behind.                                                          #
 #   Simulations:    rigid.bodies `props` (a sphere and a box: analytic shapes for their mass, their         #
 #                   contact with each other and with the stage; tossed with velocity and spin) and          #
-#                   cloth.shell `silk` (silk pinned at its corners, barrier contact, self-collision) in one #
+#                   cloth.shell `silk` (a heavy silk satin in still air, pinned at its corners, barrier     #
+#                   contact, self-collision) in one                                                         #
 #                   simulation_group `flourish`, coupled implicitly and sub-iterated: each prop's coupling  #
 #                   surface is its scene object's mesh (`surface <object>`, M9), a mesh collider of the     #
 #                   cloth moved by the body's state (`rigid_surface`), and the cloth's contact reaction     #
@@ -98,8 +99,8 @@ cloth_simulation
 	frames			91
 	size_u			1.0
 	size_v			1.0
-	vertices_u		49		# proof 31
-	vertices_v		49		# proof 31
+	vertices_u		61		# proof 31
+	vertices_v		61		# proof 31
 	origin			-0.5 1.0 -0.5
 	axis_u			1 0 0
 	axis_v			0 0 1
@@ -108,6 +109,12 @@ cloth_simulation
 	pin				u0v1
 	pin				u1v1
 	material		silk-lightweight
+	material_name	silk-charmeuse
+	material_source	scene override: a heavy silk satin, about 32 momme; bending in the Kawabata range for satin
+	material_density	0.14
+	material_bend_warp	3e-6
+	material_bend_weft	2.5e-6
+	drag_coefficient	1.0
 	substeps		16
 	newton_iterations	100
 	self_collision	TRUE
@@ -318,16 +325,30 @@ standard_object
 	material		mat_curtain
 }
 
-# A hard spotlight from above front, footlights, and a cool rim from behind.
+# A spotlight from the front, low enough that its cone passes under the canopy: its pool lies on the boards
+# and the curtain behind the props.  It used to come from above the front (0.3 2.2 2.6) through the canopy,
+# skimming the silk at under 10 degrees on a fifth of its triangles: the hard shadows of the mesh-scale
+# undulations made blocky, triangle-edged patches that jumped from frame to frame (docs/SIMULATION_SHOWCASE.md,
+# "Cloth weight and shimmer").  The silk is keyed instead by a soft box above the front (`canopy_key`).
 spot_light
 {
 	name			spot
-	position		0.3 2.2 2.6
-	target			0 0.2 -0.2
+	position		0.3 0.8 3.0
+	target			0 0.1 -0.2
 	color			1.0 0.9 0.75
-	power			110
-	inner			16
-	outer			26
+	power			140
+	inner			9
+	outer			14
+}
+
+rect_light
+{
+	name			canopy_key
+	center			0.4 2.6 2.0
+	size			1.2 0.8
+	facing			-0.4 -1.7 -2.0
+	color			1.0 0.9 0.75
+	exitance		70
 }
 
 # Footlights: a warm strip at the stage's front edge, lighting the props and the canopy's underside.

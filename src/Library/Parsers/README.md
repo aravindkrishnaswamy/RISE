@@ -326,6 +326,39 @@ fire_medium { name flame   fidelity_mode preview   source campfire.volume   chan
 - **Incremental edits.** An edited producer chunk falls back to a full re-derive (the incremental path
   does not yet capture and restore a simulation record); its consumers are re-derived with it.
 
+### Cloth that reads as fabric (weight, air, light)
+
+Measured on the showcase scenes (docs/SIMULATION_SHOWCASE.md, "Cloth weight and shimmer"); gravity, mass
+and the drag law of `cloth.shell` check out (a sheet dropped flat with `drag_coefficient 1.2` reaches
+0.980 m/s against the predicted sqrt(2 m'' g / (rho C_d)) = 0.977 m/s; edge-on it falls at g; a sheet
+hung from an edge comes to rest vertical).  What made cloth look weightless was the authoring:
+
+- **`drag_coefficient` defaults to 0: the cloth swings in a vacuum.**  With no air a released sheet is a
+  rigid-looking pendulum: hung from an edge and let go from level it swings to 77 degrees on the far side and
+  keeps swinging at about 60 degrees for seconds (the Rayleigh mass damping, 0.05/s, has a 20 s time
+  constant), and stays a flat panel because nothing pushes on its face.  Real fabric is dominated by air
+  broadside (the drag pressure at 1.5 m/s, 1.6 Pa, is more than twice the weight of a 70 g/m^2 silk).  Set
+  `drag_coefficient` (about 1.0-1.2, a flat plate broadside; the model pushes only along the normal, so a
+  sheet still slices edge-on) for any cloth that moves through open air.  Drag marks the cache preview.
+- **Weight is mass relative to drag.**  Without drag the areal density cancels out of the motion; with it,
+  light fabric is genuinely floaty (70 g/m^2 at C_d 1.2: falls from level to hanging in 1 s with no
+  overshoot).  For a "heavy, swinging" drape use 0.1-0.2 kg/m^2 (charmeuse, satin, crepe; `material_density`
+  with `material_bend_*` around 2-4e-6 N m): at 0.15 kg/m^2 and C_d 1.0 the same sheet reaches vertical in 0.7 s,
+  overshoots by 16 degrees and settles in two swings.  Keep the Rayleigh damping small: it damps rigid
+  motion too (free fall is 2.5% slow after 1 s at 0.05/s), so a larger `material_damping_mass` reads as syrup.
+- **A corner-pinned canopy bounces like a trampoline without drag** (`conjurer` before: the centre rose and
+  fell at 2 Hz, still 0.16 m peak to peak after 3 s; with `drag_coefficient 1.0` and a 0.14 kg/m^2 satin,
+  0.04 m).
+- **A sheet pinned flat along a straight edge hangs as a flat panel.**  Curtains and banners hang in folds
+  because their heading is gathered: author the sheet wider than the rod and gather it (`size_u 1.111`,
+  `stretch_u 0.9` holds 1.11 m of fabric on 1.0 m; the pinned edge stays gathered).  The start is then a
+  compressed sheet that must buckle: at 0.8 the Newton solve failed at once, at 0.9 it needed `substeps 16`
+  and `newton_iterations 100` at 61 x 61 (13 step halvings, none unconverged).  Gather lightly.
+- **Grazing hard light shows the mesh.**  A point or spot light skimming a gently undulating sheet (under
+  10 degrees on a fifth of the triangles) casts shadows of the mesh-scale undulations whose edges follow the
+  triangles: blocky light and dark patches that jump from frame to frame.  Light cloth with area lights,
+  or from well above the surface's tangent plane; a finer mesh shrinks the steps.
+
 `realistic_camera` is intentionally **not** registered — the keyword is reserved for the future multi-element lens-system camera (see [docs/CAMERAS_ROADMAP.md](../../../docs/CAMERAS_ROADMAP.md) Phase 4). Until that lands, scenes that want photographic depth-of-field use `thinlens_camera`.
 
 ## Liquid (M7)

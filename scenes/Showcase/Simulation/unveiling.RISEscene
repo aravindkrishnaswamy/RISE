@@ -6,9 +6,10 @@ RISE ASCII SCENE 7
 #                   and falls forward over the crystal orb on it; then the rod rises and draws back, and    #
 #                   the silk slides over the orb, folds on itself and lifts away, revealing the crystal,    #
 #                   which throws a dispersed caustic onto the plinth.  Backlit, so the silk glows.          #
-#   Simulations:    cloth.shell `silk` alone: silk-lightweight, barrier contact with the plinth, the orb    #
-#                   and the floor (analytic colliders), self-collision on, its back edge pinned to the rod  #
-#                   (`pin v0 follow rod`: the rod's keyframed transform drives the pinned edge).            #
+#   Simulations:    cloth.shell `silk` alone: a heavy silk satin (0.14 kg/m^2) in still air (quadratic      #
+#                   drag), barrier contact with the plinth, the orb and the floor (analytic colliders),     #
+#                   self-collision on, its back edge gathered onto the rod (1.11 m of silk on 1.0 m) and    #
+#                   pinned to it (`pin v0 follow rod`: the rod's keyframed transform drives the edge).      #
 #   Frame:          y up, metres.                                                                           #
 #   Time:           5 s at 30 fps (151 frames).                                                             #
 #   Proof/final:    a value followed by `# proof <value>` is the final setting; scripts/                    #
@@ -71,13 +72,19 @@ pinhole_camera
 }
 
 #############################################################################################################
-# The silk: 1.0 m by 0.9 m, starting level 0.70 m up (just above the orb), its back edge (v0) on the rod.
+# The silk: 1.11 m by 0.9 m, gathered to 1.0 m along the rod (`stretch_u 0.9`: the pinned edge stays gathered,
+# so the silk hangs in vertical folds), starting level 0.70 m up (just above the orb), its back edge (v0) on
+# the rod.  A heavy satin with air drag, so it falls, drapes and swings with weight: the built-in
+# silk-lightweight (0.07 kg/m^2) with no drag (the default) swung as a flat panel in a vacuum, up to 46 degrees
+# past vertical (docs/SIMULATION_SHOWCASE.md, "Cloth weight and shimmer").  The gathered start needs the
+# smaller substep and more Newton iterations (13 step halvings at 61 x 61, none unconverged).
 
 cloth_simulation
 {
 	name			silk
 	frames			151
-	size_u			1.0
+	size_u			1.111
+	stretch_u		0.9
 	size_v			0.9
 	vertices_u		61		# proof 31
 	vertices_v		61		# proof 31
@@ -85,6 +92,14 @@ cloth_simulation
 	axis_u			1 0 0
 	axis_v			0 0 1
 	material		silk-lightweight
+	material_name	silk-charmeuse
+	material_source	scene override: a heavy silk satin, about 32 momme; bending in the Kawabata range for satin
+	material_density	0.14
+	material_bend_warp	3e-6
+	material_bend_weft	2.5e-6
+	drag_coefficient	1.0
+	substeps		16
+	newton_iterations	100
 	pin				v0 follow rod
 	follow_object	rod
 	self_collision	TRUE
