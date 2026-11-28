@@ -367,6 +367,13 @@ bool BDPTRasterizerBase::ValidateSceneForRasterizer( const IScene& pScene ) cons
 				offender.c_str(), pdMask );
 			return false;
 		}
+		if( pObjMgr->SceneHasHyLIoSMaterial( &offender ) ) {
+			GlobalLog()->PrintEx( eLog_Error,
+				"BDPTRasterizerBase:: Refusing scene containing HyLIoS hyperspectral skin material "
+				"(first object '%s'). Use pathtracing_spectral_rasterizer or pathtracing_pel_rasterizer.",
+				offender.c_str() );
+			return false;
+		}
 	}
 	return true;
 }

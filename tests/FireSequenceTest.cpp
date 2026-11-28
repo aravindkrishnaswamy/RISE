@@ -110,6 +110,7 @@ using namespace RISE::FireRun;
 
 namespace
 {
+#if defined(RISE_ENABLE_OPENVDB)
 	bool VerifyVisibleFireDisplayDerivative(const RISECBOR64::Bytes& artifact,
 		const RISECBOR64::Bytes& sidecar,const RISECBOR64::Value& primaryEnvelope,
 		std::string& error,const bool requireVisible=true,const bool requirePlume=false);
@@ -174,9 +175,11 @@ namespace
 		return maximumLit-minimumLit>=std::max<std::size_t>(16u,maximumLit/20u)&&
 			maximumCentroidDistanceSquared>=4.0;
 	}
+#endif
 
 	using CapturedPreviewPair=std::array<RISECBOR64::Bytes,4>;
 	using CapturedPreviewPairDigests=std::array<std::string,4>;
+#if defined(RISE_ENABLE_OPENVDB)
 	std::array<std::filesystem::path,4> PreviewPairPaths(
 		const std::filesystem::path& primary,const std::filesystem::path& display)
 	{
@@ -211,8 +214,10 @@ namespace
 		if(PreviewPairDigests(pair)!=expected){error="numbered preview pair changed after verification";return false;}
 		return true;
 	}
+#endif
 
 #if defined(__APPLE__)
+#if defined(RISE_ENABLE_OPENVDB)
 	bool DecodeFirstLightGIFFrame(CGImageSourceRef source,const std::size_t frame,
 		const unsigned int width,const unsigned int height,std::string& digest,
 		bool& visible,bool& structuredPlume,bool& blueDominant,std::size_t& litPixelCount,
@@ -749,9 +754,11 @@ namespace
 		if(authoredBytes)*authoredBytes=std::move(bytes);
 		return true;
 	}
+#endif
 
 #endif
 
+#if defined(RISE_ENABLE_OPENVDB)
 	int RunFirstLightPreviewChild(const std::filesystem::path& sourceDirectory,
 		const std::filesystem::path& outputDirectory)
 	{
@@ -979,33 +986,25 @@ namespace
 		return 0;
 #endif
 	}
+#endif
 
 	struct R246CapturedEventHistory {
 		const std::vector<double>& steps;
 		const std::vector<double>& frames;
 		double terminal;
 	};
+#if defined(RISE_ENABLE_OPENVDB)
 	bool R246AcceptedEventHistoryMatches(const std::vector<double>& steps,
 		const std::vector<double>& frames,const double manifestOrigin,const double terminal,std::string& error);
-#ifndef RISE_ENABLE_OPENVDB
-	bool R246AcceptedEventHistoryMatches(const std::vector<double>&,
-		const std::vector<double>&,const double,const double,std::string& error)
-	{
-		error="r246 captured history admission requires OpenVDB";return false;
-	}
 #endif
+#if defined(RISE_ENABLE_OPENVDB)
 	bool R246AcceptedSourceHistoryMatches(const std::filesystem::path& sourceDirectory,
 		const RISECBOR64::Bytes& candidateManifest,std::string& error,
 		const std::function<void()>* betweenReads=nullptr,
 		const RISECBOR64::Bytes* candidateCSV=nullptr);
-#ifndef RISE_ENABLE_OPENVDB
-	bool R246AcceptedSourceHistoryMatches(const std::filesystem::path&,
-		const RISECBOR64::Bytes&,std::string& error,const std::function<void()>*,const RISECBOR64::Bytes*)
-	{
-		error="r246 source history admission requires OpenVDB";return false;
-	}
 #endif
 
+#if defined(RISE_ENABLE_OPENVDB)
 	bool TemporalManifestDomainMatches(const RISECBOR64::Bytes& bytes,
 		const bool r244LateralDouble,std::string& error,const bool r246TopDouble=false,
 		const std::filesystem::path* acceptedSourceDirectory=nullptr,
@@ -1083,8 +1082,10 @@ namespace
 			<<"channel_velocity velocity\n}\n\nglobal_medium\n{\nmedium sequence_fire\n}\n";
 		return scene.str();
 	}
+#endif
 
 #if defined(__APPLE__)
+#if defined(RISE_ENABLE_OPENVDB)
 	std::string TemporalPreviewInventory(const std::filesystem::path& directory,const std::size_t frames)
 	{
 		std::ostringstream inventory;
@@ -1102,8 +1103,10 @@ namespace
 		}
 		return inventory.str();
 	}
+#endif
 
 #endif
+#if defined(RISE_ENABLE_OPENVDB)
 	bool R246RuntimeManifestMatches(const RISECBOR64::Value& envelope,
 		const FireSequenceManifest& manifest,const std::size_t frame)
 	{
@@ -1134,6 +1137,7 @@ namespace
 		}
 		return true;
 	}
+#endif
 
 	struct R246CapturedPreviewInputs {
 		const RISECBOR64::Bytes& manifest;
@@ -1141,6 +1145,7 @@ namespace
 		const R246CapturedEventHistory& history;
 		std::filesystem::path snapshotDirectory;
 	};
+#if defined(RISE_ENABLE_OPENVDB)
 	bool R246PreviewSnapshotMatches(const std::filesystem::path& sourceDirectory,
 		const R246CapturedPreviewInputs& input,std::string& error)
 	{
@@ -1200,11 +1205,15 @@ namespace
 		std::filesystem::remove(pending,createError);if(createError)return false;
 		return R246PreviewSnapshotMatches(sourceDirectory,input,error);
 	}
+#endif
 
 #if defined(__APPLE__)
+#if defined(RISE_ENABLE_OPENVDB)
 	bool R246MatchedRenderProfiles(const RISECBOR64::Value&,const RISECBOR64::Value&,
 		const FireSequenceManifest&,std::size_t,bool,std::string&);
 #endif
+#endif
+#if defined(RISE_ENABLE_OPENVDB)
 	int RunTemporalFirePreviewChild(const std::filesystem::path& sourceDirectory,
 		const std::filesystem::path& outputDirectory,const bool r244LateralDouble=false,const bool r246TopDouble=false,
 		const R246CapturedPreviewInputs* recovered=nullptr)
@@ -1404,6 +1413,7 @@ namespace
 		return 0;
 #endif
 	}
+#endif
 }
 
 #if defined(_WIN32)
@@ -1430,9 +1440,11 @@ namespace
 	int failures = 0;
 	// Test-only checkpoint mutations live behind the library's hook (installed in main).
 	FireRunCheckpointTestHooks checkpointTestHooks;
+#if defined(RISE_ENABLE_OPENVDB)
 	bool& forcePostRenameDirectorySyncFailureForTest=checkpointTestHooks.forcePostRenameDirectorySyncFailure;
 	bool& suppressExpectedCheckpointStateDiagnostic=checkpointTestHooks.suppressExpectedCheckpointStateDiagnostic;
 	bool& forceMalformedManifoldLifecycleWriteForTest=checkpointTestHooks.forceMalformedManifoldLifecycleWrite;
+#endif
 
 	class FrozenPainterProbe final : public Perlin3DPainter
 	{
@@ -1488,6 +1500,7 @@ namespace
 		}
 	}
 
+#if defined(RISE_ENABLE_OPENVDB)
 	float FloatFromBits( const std::uint32_t bits )
 	{
 		float value = 0.0f;
@@ -1503,6 +1516,7 @@ namespace
 	bool BuildResumeEquivalenceCertificate(const ResumeEquivalenceTrace& oldTrace,
 		const ResumeEquivalenceTrace& newTrace,const std::filesystem::path& path,
 		ResumeEquivalenceCertificate& certificate,std::string& error);
+#endif
 
 
 
@@ -1895,6 +1909,7 @@ static bool R248CallerSourceSeal(std::size_t nx,std::size_t ny,std::size_t nz,
 	}
 
 
+#if defined(RISE_ENABLE_OPENVDB)
 	bool CanonicalCapstoneGridForTier(const double resolutionTier,
 		std::array<std::size_t,3>& dimensions,double& cellWidthM,const bool r244LateralDouble=false,
 		const bool r246TopDouble=false)
@@ -1945,8 +1960,10 @@ static bool R248CallerSourceSeal(std::size_t nx,std::size_t ny,std::size_t nz,
 			<<"burner_cells_across "<<CapstonePoolDiameterM/checkpoint.cellWidthM<<"\n";
 		return static_cast<bool>(output);
 	}
+#endif
 
 #if defined(__APPLE__)
+#if defined(RISE_ENABLE_OPENVDB)
 	bool ReadDisplayLitAreaBytes(const RISECBOR64::Bytes& bytes,std::size_t& litPixels,
 		unsigned int& width,unsigned int& height)
 	{
@@ -2039,10 +2056,12 @@ static bool R248CallerSourceSeal(std::size_t nx,std::size_t ny,std::size_t nz,
 				(i&&!(probes[i]>probes[i-1u])))return false;
 		return true;
 	}
+#endif
 
 	// r244 pins the completed baseline recipe. See matched_render_profile.json
 	// for the full readable configs and input hashes. Camera/time are checked
 	// independently before normalization; every other member remains hash-bound.
+#if defined(RISE_ENABLE_OPENVDB)
 	bool SpectrumRenderProfileMatches(const RISECBOR64::Value& payload,
 		const FireSequenceManifest& manifest,const std::size_t frame,const bool display,const bool r246TopDouble=false)
 	{
@@ -2122,11 +2141,13 @@ static bool R248CallerSourceSeal(std::size_t nx,std::size_t ny,std::size_t nz,
 		}
 		return true;
 	}
+#endif
 
 	struct R246CapturedSceneInput {
 		std::filesystem::path manifestPath;
 		const RISECBOR64::Bytes& manifest;
 	};
+#if defined(RISE_ENABLE_OPENVDB)
 	bool SpectrumPreviewSceneMatches(const std::filesystem::path& directory,
 		const std::filesystem::path& manifestPath,const FireSequenceManifest& manifest,
 		const bool wide,std::string& error,const bool r246TopDouble=false,const std::string* consumedInventory=nullptr,
@@ -2271,7 +2292,9 @@ static bool R248CallerSourceSeal(std::size_t nx,std::size_t ny,std::size_t nz,
 			R246SyntheticGIFClockMatches(ReadFileBytes(path),frames.size(),fps);
 		if(!matches)error="synthetic GIF clock/container differs";return matches;
 	}
+#endif
 	struct R246SyntheticABAContext {const RISECBOR64::Bytes& a;const RISECBOR64::Bytes& b;bool substituted=false;};
+#if defined(RISE_ENABLE_OPENVDB)
 	thread_local R246SyntheticABAContext* r246SyntheticABAContext=nullptr;
 	bool R246SyntheticABAGIFValidator(const std::string& path,const FireFrameSequenceEncoding encoding,
 		const unsigned int width,const unsigned int height,const unsigned int fps,
@@ -2543,6 +2566,7 @@ static bool R248CallerSourceSeal(std::size_t nx,std::size_t ny,std::size_t nz,
 		}
 		stationCSV=rows.str();return true;
 	}
+#endif
 
 	struct R246RecoveredSpectrumInputs {
 		const MethaneRunCheckpoint& checkpoint;
@@ -2551,6 +2575,7 @@ static bool R248CallerSourceSeal(std::size_t nx,std::size_t ny,std::size_t nz,
 		const R246CapturedEventHistory& history;
 		std::filesystem::path previewSnapshotManifestPath;
 	};
+#if defined(RISE_ENABLE_OPENVDB)
 	int RunProductionPuffingSpectrumChild(const double resolutionTier,
 		const std::filesystem::path& checkpointPath,
 		const std::filesystem::path& simulationDirectory,
@@ -2740,10 +2765,12 @@ static bool R248CallerSourceSeal(std::size_t nx,std::size_t ny,std::size_t nz,
 		return 0;
 	}
 #endif
+#endif
 
 
 	// The production driver lives in the library; the test keeps its historical
 	// entry point, which adds solver-failure injection through the test hooks.
+#if defined(RISE_ENABLE_OPENVDB)
 	SolverFrameValues RunMethaneFrameProbe( const unsigned int workerCount=1u,
 		const unsigned int minimumStepCount=1u,const double targetTimeS=0.0,
 		const double caseDurationS=1.0,const double caseFramesPerS=4.0,
@@ -2767,6 +2794,7 @@ static bool R248CallerSourceSeal(std::size_t nx,std::size_t ny,std::size_t nz,
 		}),bytes,&error),"synthetic embedded record encodes canonically");
 		return bytes;
 	}
+#endif
 
 
 	RISECBOR64::Value ReplaceMember( const RISECBOR64::Value& map,
@@ -2792,6 +2820,7 @@ static bool R248CallerSourceSeal(std::size_t nx,std::size_t ny,std::size_t nz,
 
 
 
+#if defined(RISE_ENABLE_OPENVDB)
 	RISECBOR64::Value UnsignedArrayValue(const std::vector<std::uint64_t>& values)
 	{
 		RISECBOR64::Value::Values encoded;encoded.reserve(values.size());
@@ -2969,6 +2998,7 @@ static bool R248CallerSourceSeal(std::size_t nx,std::size_t ny,std::size_t nz,
 		certificate.frameDigests=oldTrace.frameDigests;
 		return SaveResumeEquivalenceCertificate(path,certificate,error);
 	}
+#endif
 
 	template<typename T> std::vector<T> FinalEvidenceValues(const std::vector<T>& values,
 		const std::size_t count)
@@ -2979,6 +3009,7 @@ static bool R248CallerSourceSeal(std::size_t nx,std::size_t ny,std::size_t nz,
 
 	// Generic durable bytes for immutable frame/manifest exports. This does not
 	// import a v2 publication pair; resident mutable cursors use the helper above.
+#if defined(RISE_ENABLE_OPENVDB)
 	bool DurableCopyPublishedFile(const std::filesystem::path& source,
 		const std::filesystem::path& target,std::string& error)
 	{
@@ -3208,7 +3239,6 @@ static bool R248CallerSourceSeal(std::size_t nx,std::size_t ny,std::size_t nz,
 		}
 	}
 
-#if defined(RISE_ENABLE_OPENVDB)
 	struct FrameMutation
 	{
 		enum Kind { Valid, NegativeActiveCarbon, HotInactiveTemperature,
@@ -17289,9 +17319,9 @@ int main(int argc,char** argv)
 #if defined(RISE_ENABLE_OPENVDB)
 	if(argc==2 && std::strcmp(argv[1],"--fire-cache-playback-contract")==0)
 		return RunFireCachePlaybackContract();
-#endif
 	if(argc==2&&std::strcmp(argv[1],"--fire-fast-mode-conservation-child")==0)
 		return RunFastModeConservationChild();
+#endif
 	if(argc==2&&std::strcmp(argv[1],"--fire-production-event-step-test")==0)
 		return ProductionEventStepRegression()?0:1;
 	if(argc==2&&std::strcmp(argv[1],"--fire-r248-caller-ingress-fixture")==0)
@@ -17348,8 +17378,10 @@ int main(int argc,char** argv)
 		return RunProductionResidentTargetLineageMetalFP64Fixture(nullptr,false,false,false,true,true);
 	if(argc==2&&std::strcmp(argv[1],"--fire-production-burner-launcher-inputs")==0)
 		return RunProductionBurnerLauncherInputFixture();
+#if defined(RISE_ENABLE_OPENVDB)
 	if(argc==2&&std::strcmp(argv[1],"--fire-production-burner-launcher-gate")==0)
 		return RunProductionBurnerLauncherIntegrationFixture();
+#endif
 	if(argc==3&&std::strcmp(argv[1],"--fire-production-owner-convergence-fixture")==0)
 		return RunProductionResidentTargetLineageMetalFP64Fixture(argv[2]);
 	if(argc==2&&std::strcmp(argv[1],"--fire-production-metal-fp64-kernel-sweep")==0)
@@ -17385,10 +17417,12 @@ int main(int argc,char** argv)
 			passed?1:0,static_cast<unsigned long long>(certificate.schemaVersion),
 			static_cast<unsigned long long>(certificate.acceptedStepCount),error.c_str());return passed?0:98;
 	}
+#if defined(RISE_ENABLE_OPENVDB)
 	if(argc==6&&std::strcmp(argv[1],"--fire-r216-final-validate")==0){
 		const bool passed=R216FinalCheckpointMatches(argv[2],argv[3],argv[4],argv[5]);
 		std::fprintf(stdout,"R216_FINAL_VALIDATE passed=%d\n",passed?1:0);return passed?0:98;
 	}
+#endif
 	if(argc==2&&std::strcmp(argv[1],"--fire-production-flame-holder-red")==0){
 		const bool passed=ProductionEstablishedFlameHolderREDPasses();
 		std::fprintf(stdout,"PRODUCTION_FLAME_HOLDER_RED passed=%d\n",passed?1:0);
@@ -18206,13 +18240,12 @@ int main(int argc,char** argv)
 	}
 #endif
 #if !defined(RISE_ENABLE_OPENVDB)
-	if(argc==5&&std::strcmp(argv[1],"--fire-r80-golden-continuation")==0)
-		return RunR80GoldenContinuationFixture(argv[2],argv[3],argv[4]);
-	if(argc==4&&std::strcmp(argv[1],"--fire-production-golden-composition")==0)
-		return RunProductionGoldenCompositionFixture(argv[2],argv[3]);
-	if(argc==7&&std::strcmp(argv[1],"--fire-production-calibration-measure-subdominance")==0)
-		return FireProductionDyadicCalibration::MeasureProductionSubdominance(
-			argv[2],argv[3],argv[4],argv[5],argv[6]);
+    // Capability-independent fixture handlers above remain usable. Never turn
+    // an unavailable optional fixture request into a successful default run.
+    if (argc > 1 && std::strncmp(argv[1],"--fire-",7)==0) {
+        std::fprintf(stderr,"FireSequenceTest: unsupported fixture `%s` in this build (OpenVDB disabled)\n",argv[1]);
+        return 98;
+    }
 #endif
 	std::string identityFailure;
 	Check(!DiscontinuousThreadIdentityAccepted(false,true,identityFailure)&&

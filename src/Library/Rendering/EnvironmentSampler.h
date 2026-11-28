@@ -1,15 +1,13 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  EnvironmentSampler.h - Importance sampling for HDR environment
-//  maps using a 2D marginal/conditional CDF built from luminance.
+//  EnvironmentSampler.h - Environment importance proposals.
 //
-//  Supports the angular (light-probe) mapping used by RadianceMap:
-//    s = 0.5 + vx * r,  t = 0.5 - vy * r
-//    where r = acos(-vz) / (2*PI * sqrt(vx^2 + vy^2))
-//
-//  The Jacobian of this mapping is |d(s,t)/d(theta,phi)| =
-//  theta / (4*PI^2), so the solid-angle PDF is:
-//    pdf_omega = pdf_st * theta / (4*PI^2 * sin(theta))
+//  Legacy RGB weights are sampled at equal-solid-angle (z, phi) cell
+//  centres, querying the source painter through its angular-probe UV map.
+//  Each cell spans 4*pi/(width*height) steradians. Sampling is uniform
+//  inside the chosen cell; queried density is its PMF divided by that area.
+//  The normalized midpoint PMF includes a 5% uniform support component.
+//  The spectral-domain baseline remains uniform in WORLD solid angle.
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: March 30, 2026
@@ -29,6 +27,7 @@
 #include "../Utilities/Math3D/Math3D.h"
 #include "../Utilities/Reference.h"
 #include <vector>
+#include "SpectralSourceDomain.h"
 
 namespace RISE
 {
@@ -44,31 +43,24 @@ namespace RISE
 			Matrix4					mxtransform;	///< World-to-map transform
 			Matrix4					mxInvTransform;	///< Map-to-world transform (inverse)
 
-			unsigned int			width;			///< CDF resolution (columns)
-			unsigned int			height;			///< CDF resolution (rows)
+			std::shared_ptr<const SpectralSourceDomain> spectralDomain;
+			const IRadianceMap* spectralMap = nullptr;
+			SpectralSourceDomain::Mass spectralPower;
+
+			unsigned int			width;			///< Equal-area azimuth cells
+			unsigned int			height;			///< Equal-area z cells
 
 			// Marginal/conditional CDF for importance sampling.
-			// conditionalCDF[v] has (width+1) entries; conditionalCDF[v][width] = row total.
-			// marginalCDF has (height+1) entries; marginalCDF[height] = grand total.
+            // Normalized row/column CDFs, including uniform directional support.
+            // Solid-angle density uses their cell-probability differences.
 			std::vector< std::vector<Scalar> >	conditionalCDF;
 			std::vector<Scalar>					marginalCDF;
 
-			/// Total integrated luminance (for normalization)
+            /// Midpoint angular integral of max-channel source radiance.
 			Scalar					totalLuminance;
 
-			/// Converts a (theta, phi) to texture coordinates (s, t)
-			/// using the light-probe mapping.
-			static void DirectionToTexCoord(
-				const Vector3& dir,
-				Scalar& s,
-				Scalar& t
-				);
-
-			/// Converts texture coordinates (s, t) back to a direction vector.
-			static Vector3 TexCoordToDirection(
-				const Scalar s,
-				const Scalar t
-				);
+            static Vector3 EqualAreaToDirection(Scalar u, Scalar v);
+            static bool DirectionToEqualArea(const Vector3& direction, Scalar& u, Scalar& v);
 
 			/// Binary search for the CDF: finds the bin index such that
 			/// cdf[index] <= xi < cdf[index+1], returns the fractional
@@ -81,6 +73,9 @@ namespace RISE
 				);
 
 		public:
+            /// Proposal-policy fraction, never added to the physical power estimate.
+            static constexpr Scalar UniformSupportFraction() { return .05; }
+
 			EnvironmentSampler(
 				const IPainter& painter,
 				const Scalar scale,
@@ -88,11 +83,18 @@ namespace RISE
 				const unsigned int resolution
 				);
 
-			/// Build the 2D importance map from the HDR texture.
+            // Correctness baseline: uniform WORLD-SPHERE proposal. Estimate
+            // root-selection power through the actual NM map (scale/orientation
+            // and any current time adapter included). No spectral CDF claim.
+            EnvironmentSampler(const IRadianceMap& map,
+                std::shared_ptr<const SpectralSourceDomain> domain);
+            const SpectralSourceDomain::Mass& SpectralPower() const { return spectralPower; }
+
+			/// Build equal-solid-angle RGB weights (or spectral root-power estimate).
 			/// Must be called once before Sample() or Pdf().
 			void Build();
 
-			/// Sample a direction proportional to luminance.
+			/// Select an importance-weighted cell, then sample it uniformly in solid angle.
 			void Sample(
 				const Scalar u1,			///< [in] Uniform random [0,1)
 				const Scalar u2,			///< [in] Uniform random [0,1)
@@ -106,14 +108,15 @@ namespace RISE
 				) const;
 
 			/// \return True if the importance map has been built and is valid.
-			bool IsValid() const { return totalLuminance > 0; }
+			bool IsValid() const { return spectralDomain ? spectralMap != nullptr : !marginalCDF.empty(); }
 
-			/// \return The integrated luminance over the env map texels
-			/// (solid-angle-weighted).  Used by LightSampler to compute
-			/// env's relative selection weight against other lights in
-			/// mixed scenes — the continuous-PMF fix that lets env
-			/// participate in alias-table selection.  Zero when env is
-			/// black or Build() hasn't run.
+            /// Approximate integral over solid angle of the nonnegative
+            /// max-channel RGB source proxy, including scale (not CIE luminance).
+            /// A constant source C gives exactly 4*pi*C at every resolution.
+            /// LightSampler multiplies by scene-disc area for root-class power.
+            /// Zero can mean missed source features, black/unbuilt legacy maps,
+            /// or spectral-domain mode; it is not a blackness certificate.
+            /// Spectral root selection reads SpectralPower() instead.
 			Scalar TotalLuminance() const { return totalLuminance; }
 		};
 	}

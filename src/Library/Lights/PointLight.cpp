@@ -12,6 +12,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "../Utilities/FiniteMath.h"
 #include "../Utilities/Transformable.h"
 #include "../Utilities/IndependentSampler.h"
 #include "PointLight.h"
@@ -68,12 +69,14 @@ Scalar ILight::ComputeDirectLightingNM(
 PointLight::PointLight(
 	const Scalar radiantEnergy_,
 	const RISEPel& c,
-	const bool shootPhotons
+	const bool shootPhotons,
+	std::shared_ptr<const PhysicalLightSpectrum> physical
 	) :
   radiantEnergy( radiantEnergy_ ),
   ptPosition( Point3( 0, 0, 0 ) ),
   cColor( c ),
-  bShootPhotons( shootPhotons )
+  bShootPhotons( shootPhotons ),
+  physicalSpectrum( std::move(physical) )
 {
 	RefreshSpectrum();
 }
@@ -104,7 +107,14 @@ void PointLight::ComputeDirectLightingSampled(
 
 	// Vector to the light from the surface
 	Vector3	vToLight = Vector3Ops::mkVector3( ptPosition, ri.ptIntersection );
-	const Scalar fDistFromLight = Vector3Ops::NormalizeMag(vToLight);
+    PhysicalLightSpectrum::ProductTerm distance;
+    Scalar fDistFromLight;
+    if (physicalSpectrum) {
+        if (!PhysicalLightSpectrum::DirectionBetween(ptPosition,ri.ptIntersection,vToLight,distance,fDistFromLight)) {
+            GlobalLog()->PrintEasyError("physical PointLight: direct query has zero, nonfinite or unrepresentable light distance");
+            return;
+        }
+    } else fDistFromLight=Vector3Ops::NormalizeMag(vToLight);
 
 	// This dot product tells us the angle of incidence between the light ray
 	// and the surface normal.  This angle tells us what illumination this surface
@@ -148,9 +158,12 @@ void PointLight::ComputeDirectLightingSampled(
 	// Physically-based inverse-square falloff.
 	// emittedRadiance = cColor * radiantEnergy [watts/sr]
 	// Irradiance at surface = emittedRadiance * cos / d^2
-	const Scalar invDistSq = 1.0 / (fDistFromLight * fDistFromLight);
-
-	amount = (cColor * brdf.valueStateful( vToLight, ri , pIORStack)) * (invDistSq * fDot * radiantEnergy) * shadowT;
+	if (physicalSpectrum) {
+        amount=physicalSpectrum->VisibleProduct(brdf.valueStateful(vToLight,ri,pIORStack),{radiantEnergy,fDot},{distance,distance},shadowT);
+        return;
+    }
+    const Scalar invDistSq = 1.0 / (fDistFromLight * fDistFromLight);
+    amount = (cColor * brdf.valueStateful( vToLight, ri , pIORStack)) * (invDistSq * fDot * radiantEnergy) * shadowT;
 }
 
 Scalar PointLight::ComputeDirectLightingSampledNM(
@@ -174,7 +187,14 @@ Scalar PointLight::ComputeDirectLightingSampledNM(
 	// IOR rather than the representative RGB IOR.  VOLUME RECEIVER: see the
 	// RGB overload above.
 	Vector3 vToLight = Vector3Ops::mkVector3( ptPosition, ri.ptIntersection );
-	const Scalar fDistFromLight = Vector3Ops::NormalizeMag( vToLight );
+    PhysicalLightSpectrum::ProductTerm distance;
+    Scalar fDistFromLight;
+    if (physicalSpectrum) {
+        if (!PhysicalLightSpectrum::DirectionBetween(ptPosition,ri.ptIntersection,vToLight,distance,fDistFromLight)) {
+            GlobalLog()->PrintEasyError("physical PointLight: direct query has zero, nonfinite or unrepresentable light distance");
+            return Scalar(0);
+        }
+    } else fDistFromLight=Vector3Ops::NormalizeMag(vToLight);
 
 	const Scalar fDotSigned = ri.RayFacingShadingCosine( vToLight );
 	const Scalar fDot = bVolumeReceiver ? Scalar(1.0) : fDotSigned;
@@ -197,6 +217,7 @@ Scalar PointLight::ComputeDirectLightingSampledNM(
 		}
 	}
 
+	if (physicalSpectrum) return physicalSpectrum->EvalProduct(nm,{radiantEnergy,brdf.valueStatefulNM(vToLight,ri,nm,pIORStack),fDot,shadowT},{distance,distance});
 	const Scalar invDistSq = 1.0 / (fDistFromLight * fDistFromLight);
 	// Stage C slice 2: the light's own spectrum at `nm`, NOT a Rec.709 luma
 	// projection of its RGB colour used flat at every wavelength.  The luma
@@ -235,13 +256,14 @@ IKeyframeParameter* PointLight::KeyframeFromParameters( const String& name, cons
 
 	// Check the name and see if its something we recognize
 	if( name == "color" ) {
+		if( physicalSpectrum ) return nullptr;
 		double d[3];
 		if( ParseStrictVec3( value, d ) ) {
 			p = new Parameter<RISEPel>( RISEPel(d), COLOR_ID );
 		}
 	} else if( name == "energy" ) {
 		Scalar parsed;
-		if( !ParseStrictScalar( value, parsed ) ) {
+		if( !ParseStrictScalar( value, parsed ) || (physicalSpectrum && !physicalSpectrum->CanScale(parsed, FOUR_PI)) ) {
 			return 0;
 		}
 		p = new Parameter<Scalar>( parsed, ENERGY_ID );
@@ -260,13 +282,19 @@ void PointLight::SetIntermediateValue( const IKeyframeParameter& val )
 	{
 	case COLOR_ID:
 		{
+			if( physicalSpectrum ) return;
 			cColor = *(RISEPel*)val.getValue();
 			RefreshSpectrum();		// keep the cached illuminant spectrum in step
 		}
 		break;
 	case ENERGY_ID:
 		{
-			radiantEnergy = *(Scalar*)val.getValue();
+			const Scalar energy = *(const Scalar*)val.getValue();
+			if( physicalSpectrum && !physicalSpectrum->CanScale(energy, FOUR_PI) ) {
+                GlobalLog()->PrintEasyError("physical PointLight: invalid intensity scale; previous scale retained");
+                return;
+            }
+			radiantEnergy = energy;
 		}
 		break;
 	}

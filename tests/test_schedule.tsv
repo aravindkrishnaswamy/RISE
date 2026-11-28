@@ -31,6 +31,8 @@
 # The runner's summary lists tests that kept more cores busy than their
 # slots; give such a test a wide:N entry.  A new test that checks a timing
 # belongs here as exclusive.
+BeautyMomentsTest	pool	1	Scheduling estimate; deterministic numerical contracts, no renderer or timing assertion
+BeautyMomentsRasterizerTest	pool	1	Scheduling estimate; direct IntegratePixel trials, no image render or timing assertion
 AgentChunkCrudTest	wide:3	52	FinishElement MaterialLook studio renders (~2.1-3 cores)
 AgentEvalLiveTransportTest	pool	7
 AgentFixBlendScaleTest	wide:5	4	4.2 cores (measured)
@@ -95,6 +97,7 @@ OpenSheetHalfSpaceSeedingTest	pool	10
 OpenSheetIndexConventionTest	pool	26
 PTGuidingMISPartitionTest	pool	15
 PathTracingThermalEmissionTest	pool	7
+RadiometricPrimitivesTest	pool	10	Scheduling estimate; scalar primitive checks, no renderer or timing assertion
 RandomWalkFogEnergyTest	pool	50
 RefractiveRadianceScalingTest	single	78	one render thread so 10 tests share cores cleanly
 SMSDomainReplayTest	pool	11
@@ -129,3 +132,34 @@ VolumeAbsorptionAttenuationTest	pool	19
 VolumeEnvFurnaceTest	pool	10
 WeaveGapShadowTransmittanceTest	pool	34
 WetTextureDetailRenderTest	wide:2	1	1.9 cores (measured)
+HyLIoSOpticalDataTest	pool	2
+HyLIoSOpticsTest	pool	2
+HyLIoSSlabTransportTest	pool	2
+HyLIoSForwardTransportTest	pool	2
+HyLIoSForwardDirectionPrecisionTest	pool	2
+HyLIoSForwardFailureTest	pool	2
+HyLIoSParticleGeometryTest	pool	2
+HyLIoSGeometrySumTest	pool	2
+HyLIoSParticleOverlapTest	pool	2
+PhysicalLightSpectrumTest	pool	2
+SpectralSourceDomainTest	pool	2
+HyLIoSComplexLayoutTest	pool	30
+HyLIoSComplexForwardTransportTest	pool	5
+HyLIoSSurfaceBoundaryTest	pool	3
+HyLIoSLocalResponseTest	pool	2	Scheduling estimate; pure angular numeric core, no renderer or timing assertion
+HyLIoSLocalResponseAssetTest	pool	3	Scheduling estimate; bounded asset codec and atomic IO controls
+HyLIoSMeasurementStatisticsTest	pool	2
+EnvironmentSamplerDomainTest	pool	2
+HyLIoSAngularLineageTest	pool	3
+HyLIoSCoupledAngularLineageTest	pool	3	Scheduling estimate; deterministic support-certificate controls
+HyLIoSResolvedExperimentTest	pool	2	Scheduling estimate; deterministic resolver and driver controls
+AgentJsonLocaleTest	pool	2	Scheduling estimate; locale isolated to standalone process
+AgentJsonLifetimeTest	pool	1	Scheduling estimate; process teardown controls
+HyLIoSLocalBakeTest	pool	2	Scheduling estimate; bounded synthetic bake and artifact controls
+HyLIoSLocalBakeAllocationTest	pool	2	Scheduling estimate; bounded synthetic bake and artifact controls
+HyLIoSIntegrationTest	pool	5	Scheduling estimate; HyLIoS P5 material integration, CST, and capability guards
+HyLIoSSpectralTest	pool	5	Scheduling estimate; HyLIoS P5 NM vs HWSS per-lane spectral transport
+HyLIoSSourceAndFilmTest	pool	5	Scheduling estimate; P6b radiometric preflight and calibrated spectral radiance
+HyperspectralOutputTest	pool	5	Scheduling estimate; P6b EXR output, JSON manifest, checkpoint resume, CST chunk
+HyLIoSAdjointTest	pool	3	Scheduling estimate; P4/P7 reciprocal dielectric boundary reciprocity and sampling
+HyLIoSSpatialTest	pool	5	Scheduling estimate; P7 nonlocal spatial skin domains and iterative PT continuation

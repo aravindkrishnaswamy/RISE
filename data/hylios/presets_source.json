@@ -1,0 +1,300 @@
+{
+  "schema_version": 1,
+  "purpose": "Literal source-unit transcription of published parameter tables. These records are not resolved or executable presets.",
+  "sources": {
+    "table_iii": {
+      "source_id": "chen2015_appendix",
+      "citation": "Chen et al. 2015 online appendix, Table III, p. 2",
+      "sha256": "83ddcaf906c58280cfe585a57df235ff31b0fea530ea1e5174ed266f75b7ab38"
+    },
+    "table_iv": {
+      "source_id": "chen2015_appendix",
+      "citation": "Chen et al. 2015 online appendix, Table IV, p. 2",
+      "sha256": "83ddcaf906c58280cfe585a57df235ff31b0fea530ea1e5174ed266f75b7ab38"
+    },
+    "organization": {
+      "source_id": "chen2015_paper",
+      "citation": "Chen et al. 2015, Table I, p. 31:8 and accompanying note",
+      "sha256": "9b72cc0887fc931ea64a554faabb2705acef58d59935423365d37cba6c3e8637"
+    }
+  },
+  "layer_order_outer_to_inner": [
+    "stratum_corneum",
+    "stratum_granulosum",
+    "stratum_spinosum",
+    "stratum_basale",
+    "papillary_dermis",
+    "reticular_dermis"
+  ],
+  "table_iii_fields": {
+    "surface_fold_aspect_ratio": {
+      "unit": "dimensionless",
+      "values": {
+        "S1": 0.1,
+        "S2": 0.25,
+        "S3": 0.1,
+        "S4": 0.45
+      }
+    },
+    "thickness_cm_by_layer": {
+      "unit": "cm",
+      "layer_order": "layer_order_outer_to_inner",
+      "values": {
+        "S1": [
+          0.001,
+          0.0017,
+          0.0017,
+          0.0017,
+          0.02,
+          0.1
+        ],
+        "S2": [
+          0.001,
+          0.0033,
+          0.0033,
+          0.0033,
+          0.01,
+          0.1
+        ],
+        "S3": [
+          0.0004,
+          0.0033,
+          0.0033,
+          0.0033,
+          0.02,
+          0.125
+        ],
+        "S4": [
+          0.0002,
+          0.0007,
+          0.0007,
+          0.0007,
+          0.023,
+          0.2
+        ]
+      },
+      "note": "Each of granulosum, spinosum, and basale rows in Table III carries the listed epidermal thickness."
+    },
+    "melanosome_content_percent_by_epidermal_layer": {
+      "unit": "percent",
+      "layer_order": [
+        "stratum_granulosum",
+        "stratum_spinosum",
+        "stratum_basale"
+      ],
+      "values": {
+        "S1": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "S2": [
+          0.0,
+          0.0,
+          3.75
+        ],
+        "S3": [
+          0.0,
+          0.0,
+          3.0
+        ],
+        "S4": [
+          10.0,
+          10.0,
+          10.0
+        ]
+      }
+    },
+    "colloidal_melanin_content_percent_by_epidermal_layer": {
+      "unit": "percent",
+      "layer_order": [
+        "stratum_granulosum",
+        "stratum_spinosum",
+        "stratum_basale"
+      ],
+      "values": {
+        "S1": [
+          0.8,
+          0.8,
+          0.8
+        ],
+        "S2": [
+          1.25,
+          1.25,
+          1.25
+        ],
+        "S3": [
+          1.35,
+          1.35,
+          1.35
+        ],
+        "S4": [
+          15.0,
+          15.0,
+          15.0
+        ]
+      }
+    },
+    "melanosome_eumelanin_concentration_mg_per_ml": {
+      "unit": "mg/mL",
+      "values": {
+        "S1": 90.0,
+        "S2": 50.0,
+        "S3": 32.0,
+        "S4": 50.0
+      }
+    },
+    "melanosome_pheomelanin_concentration_mg_per_ml": {
+      "unit": "mg/mL",
+      "values": {
+        "S1": 4.0,
+        "S2": 2.0,
+        "S3": 2.0,
+        "S4": 4.0
+      }
+    },
+    "melanosome_dimensions_um": {
+      "unit": "\u00b5m \u00d7 \u00b5m",
+      "values": {
+        "S1": [
+          0.41,
+          0.17
+        ],
+        "S2": [
+          0.41,
+          0.17
+        ],
+        "S3": [
+          0.41,
+          0.17
+        ],
+        "S4": [
+          0.69,
+          0.28
+        ]
+      },
+      "interpretation_status": "unresolved_full_dimensions_vs_semiaxes"
+    },
+    "blood_content_percent_by_dermis_layer": {
+      "unit": "percent",
+      "layer_order": [
+        "papillary_dermis",
+        "reticular_dermis"
+      ],
+      "values": {
+        "S1": [
+          0.2,
+          0.2
+        ],
+        "S2": [
+          0.7,
+          0.7
+        ],
+        "S3": [
+          0.3,
+          0.3
+        ],
+        "S4": [
+          2.5,
+          2.5
+        ]
+      }
+    },
+    "oxygenated_blood_fraction_percent": {
+      "unit": "percent",
+      "values": {
+        "S1": 75.0,
+        "S2": 95.0,
+        "S3": 75.0,
+        "S4": 75.0
+      }
+    }
+  },
+  "table_iv_fixed_source_values": {
+    "skin_layer_refractive_index_at_1300_nm": {
+      "unit": "dimensionless",
+      "values": {
+        "stratum_corneum": 1.55,
+        "epidermis": 1.4,
+        "papillary_dermis": 1.39,
+        "reticular_dermis": 1.41
+      }
+    },
+    "melanin_refractive_index": {
+      "unit": "dimensionless",
+      "value": 1.7
+    },
+    "hemoglobin_concentration_whole_blood_mg_per_ml": {
+      "unit": "mg/mL",
+      "value": 147.0
+    },
+    "methemoglobin_concentration_mg_per_ml": {
+      "unit": "mg/mL",
+      "value": 1.5
+    },
+    "carboxyhemoglobin_concentration_mg_per_ml": {
+      "unit": "mg/mL",
+      "value": 1.5
+    },
+    "sulfhemoglobin_concentration_mg_per_ml": {
+      "unit": "mg/mL",
+      "value": 0.0
+    },
+    "whole_blood_bilirubin_concentration_mg_per_ml": {
+      "unit": "mg/mL",
+      "value": 0.003
+    },
+    "beta_carotene_concentration_mg_per_ml": {
+      "unit": "mg/mL",
+      "values": {
+        "stratum_corneum": 0.00021,
+        "epidermis": 0.00021,
+        "blood": 7e-05
+      }
+    },
+    "water_content_percent": {
+      "unit": "percent",
+      "values": {
+        "stratum_corneum": 35.0,
+        "epidermis": 60.0,
+        "papillary_dermis": 75.0,
+        "reticular_dermis": 75.0
+      }
+    },
+    "lipid_content_percent": {
+      "unit": "percent",
+      "values": {
+        "stratum_corneum": 20.0,
+        "epidermis": 15.1,
+        "papillary_dermis": 17.33,
+        "reticular_dermis": 17.33
+      }
+    },
+    "stratum_corneum_keratin_content_percent": {
+      "unit": "percent",
+      "value": 65.0
+    },
+    "stratum_corneum_urocanic_acid_density_mol_per_l": {
+      "unit": "mol/L",
+      "value": 0.01
+    },
+    "skin_dna_density_mg_per_ml": {
+      "unit": "mg/mL",
+      "value": 0.185
+    }
+  },
+  "organization_by_preset": {
+    "S1": "complexes",
+    "S2": "complexes",
+    "S3": "complexes",
+    "S4": "individually_dispersed_particles"
+  },
+  "unresolved": [
+    "No SI-converted or normalized values are authoritative in this source transcription; percentage-to-fraction and cm-to-m conversion belong in separately reviewed resolved data.",
+    "Melanosome dimensions: full dimensions versus semi-axes is unresolved.",
+    "S1-S3 organization is complexes; source does not fully define loose versus compact complex construction for these source-table presets.",
+    "S1-S3 organization is complexes; the exact complex packing mode is not asserted here.",
+    "These source table values do not resolve missing optical spectra, coefficient normalization, or boundary-law interpretation."
+  ],
+  "not_executable": true
+}

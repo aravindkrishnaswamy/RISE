@@ -9,7 +9,11 @@
 //     (Object::ClonePoseHolder) of the object and each of its ancestors,
 //     captured at Capture, posed per call through the animator's read-only
 //     IAnimator::EvaluateElementAtTimeInto, and composed parent first.  The
-//     shared scene objects are never written.
+//     shared scene objects are never written. The object and every ancestor
+//     must be exact built-in Objects; CSG and custom subclasses are refused
+//     before cloning because nonvirtual pose holders would slice them. CSG
+//     operands are refused too: their pose is composite-local and may have
+//     multiple world placements.
 //   * SampleTransform(name, t) is the rigid part of M(t): R from the polar
 //     decomposition of its linear part A = R S, translation as is.  A
 //     stretch S (scale) that changes over time is refused.

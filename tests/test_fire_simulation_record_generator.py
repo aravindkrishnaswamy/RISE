@@ -42,6 +42,15 @@ class MethaneRecordGeneratorTest(unittest.TestCase):
         cls.constants = records.load_methane_constants(cls.constants_path)
         cls.record = records.methane_payload(cls.snapshot,cls.constants)
 
+    def test_python_sum_order_preserves_binary64_fit(self) -> None:
+        # Exactly represented inputs make ordered cancellation observable. This
+        # pins the record generator's established binary64 reduction, rather
+        # than accepting whichever compensated sum the Python version supplies.
+        fit = records.linear_increment_fit([1e16, 1.0, -1e16, 1.0, 1.0])
+        self.assertEqual(float.fromhex("0x1.999999999999cp-3"), fit["r_squared"],
+                         "PYTHON_SUM_ORDER: fit must preserve sequential binary64 reduction")
+        print("PASS: PYTHON_SUM_ORDER preserves sequential binary64 fit")
+
     def test_physical_species_and_no_owner_gated_condensable(self) -> None:
         self.assertEqual(list(records.METHANE_SPECIES), self.record["species_order"])
         self.assertEqual("physical_fuel_preset", self.record["record_class"])

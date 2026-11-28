@@ -293,6 +293,12 @@ TEST_SAFE_FP32_OBJS += $(addprefix $(TESTOBJ_DIR)src/Library/, Simulation/Simula
 # M7: the liquid solver (strict IEEE arithmetic: thread-count-independent, reproducible checkpoints and evidence).
 TEST_SAFE_FP32_OBJS += $(addprefix $(TESTOBJ_DIR)src/Library/Simulation/Liquid/, \
 	LiquidGrid.o LiquidLevelSet.o LiquidFlow.o LiquidBodies.o LiquidViscosity.o LiquidSheets.o LiquidModel.o LiquidValidation.o LiquidSolver.o)
+# HYLIOS compensated geometry, certified overlap and normalized surface laws require strict arithmetic.
+TEST_SAFE_FP32_OBJS += $(addprefix $(TESTOBJ_DIR)src/Library/Materials/HyLIoS/, \
+	HyLIoSParticleGeometry.o HyLIoSParticleOverlap.o HyLIoSComplexLayout.o HyLIoSSurfaceBoundary.o HyLIoSLocalBake.o HyLIoSSkinMaterial.o HyLIoSReciprocalBoundary.o HyLIoSSpatialGeometry.o)
+# Compensated beauty moments and hyperspectral radiometric rasterizer preserve strict binary64 arithmetic.
+TEST_SAFE_FP32_OBJS += $(TESTOBJ_DIR)src/Library/Rendering/BeautyMoments.o \
+	$(TESTOBJ_DIR)src/Library/Rendering/HyperspectralRadiometricRasterizer.o
 TEST_SAFE_FP32_MM_OBJS = $(addprefix $(TESTOBJ_DIR)src/Library/Utilities/, \
 	FireProductionAdvectionMac.o FireProductionProjectionMac.o \
 	FireProductionForceMac.o)
@@ -471,6 +477,11 @@ $(PATHTESTS)FireSequenceTest.o : $(PATHTESTS)FireSequenceTest.cpp
 	@echo Compiling strict calibration owner: $<
 	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
 
+# The internal geometry-sum regression includes its strict implementation TU.
+$(PATHTESTS)HyLIoSGeometrySumTest.o : $(PATHTESTS)HyLIoSGeometrySumTest.cpp $(TEST_MODE_STAMP)
+	@echo "Compiling strict geometry sum regression: $<"
+	@$(CXX) $(call TEST_CPPFLAGS_FOR,HyLIoSGeometrySumTest) $(filter-out -ffast-math,$(call TEST_CXXFLAGS_FOR,HyLIoSGeometrySumTest)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
+
 $(PATHTESTS)ImageReaderOverflowTest.o: CPPFLAGS += -DRISE_TEST_SOURCE_ROOT='"$(abspath ../../..)"'
 
 $(PATHTESTS)%.o : $(PATHTESTS)%.cpp $(TEST_MODE_STAMP)
@@ -579,6 +590,49 @@ $(PATHLIBRARY)Utilities/FireCase.o : $(PATHLIBRARY)Utilities/FireCase.cpp
 # scalar path as strict IEEE single precision; fast-math's contraction would
 # change their results (OslNoise.cpp, OslVoronoi.cpp, OslColor.cpp, OslMath.cpp
 # and OslVector.cpp refuse to compile with __FAST_MATH__ defined).
+# Compensated microscopic geometry must not reassociate error-free sums.
+$(PATHLIBRARY)Materials/HyLIoS/HyLIoSParticleGeometry.o : $(PATHLIBRARY)Materials/HyLIoS/HyLIoSParticleGeometry.cpp
+	@echo "Compiling (strict particle geometry): $<"
+	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
+
+# Certified overlap bounds must retain outward-rounded operations.
+$(PATHLIBRARY)Materials/HyLIoS/HyLIoSParticleOverlap.o : $(PATHLIBRARY)Materials/HyLIoS/HyLIoSParticleOverlap.cpp
+	@echo "Compiling (strict overlap): $<"
+	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
+
+$(PATHLIBRARY)Materials/HyLIoS/HyLIoSComplexLayout.o : $(PATHLIBRARY)Materials/HyLIoS/HyLIoSComplexLayout.cpp
+	@echo "Compiling (strict complex geometry): $<"
+	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
+
+$(PATHLIBRARY)Materials/HyLIoS/HyLIoSSurfaceBoundary.o : $(PATHLIBRARY)Materials/HyLIoS/HyLIoSSurfaceBoundary.cpp
+	@echo "Compiling (strict surface boundary): $<"
+	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
+
+$(PATHLIBRARY)Materials/HyLIoS/HyLIoSLocalBake.o : $(PATHLIBRARY)Materials/HyLIoS/HyLIoSLocalBake.cpp
+	@echo "Compiling (strict HYLIOS bake): $<"
+	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
+
+$(PATHLIBRARY)Materials/HyLIoS/HyLIoSSkinMaterial.o : $(PATHLIBRARY)Materials/HyLIoS/HyLIoSSkinMaterial.cpp
+	@echo "Compiling (strict HYLIOS skin material): $<"
+	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
+
+$(PATHLIBRARY)Materials/HyLIoS/HyLIoSReciprocalBoundary.o : $(PATHLIBRARY)Materials/HyLIoS/HyLIoSReciprocalBoundary.cpp
+	@echo "Compiling (strict HYLIOS reciprocal boundary): $<"
+	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
+
+$(PATHLIBRARY)Materials/HyLIoS/HyLIoSSpatialGeometry.o : $(PATHLIBRARY)Materials/HyLIoS/HyLIoSSpatialGeometry.cpp
+	@echo "Compiling (strict HYLIOS spatial geometry): $<"
+	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
+
+$(PATHLIBRARY)Rendering/HyperspectralRadiometricRasterizer.o : $(PATHLIBRARY)Rendering/HyperspectralRadiometricRasterizer.cpp
+	@echo "Compiling (strict hyperspectral radiometric): $<"
+	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
+
+# Compensated beauty moments must not reassociate error-free transforms.
+$(PATHLIBRARY)Rendering/BeautyMoments.o : $(PATHLIBRARY)Rendering/BeautyMoments.cpp
+	@echo "Compiling (strict beauty moments): $<"
+	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
+
 $(PATHLIBRARY)Utilities/OslNoise.o : $(PATHLIBRARY)Utilities/OslNoise.cpp
 	@echo "Compiling (safe fp32): $<"
 	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@

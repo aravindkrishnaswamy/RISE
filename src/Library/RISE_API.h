@@ -304,6 +304,12 @@ namespace RISE
 		const Vector3 vDir										///< [in] Direction the light is shining
 		);
 
+	// Physical source samples: point/spot W/(sr nm), directional W/(m^2 nm).
+	// Linear interpolation; outsidePolicy must explicitly be "zero". Scale is dimensionless.
+	bool RISE_API_CreatePhysicalPointOmniLight(ILightPriv** ppi, const unsigned int count, const double* nm, const double* values, const char* outsidePolicy, const double scale, const bool shootPhotons);
+	bool RISE_API_CreatePhysicalPointSpotLight(ILightPriv** ppi, const unsigned int count, const double* nm, const double* values, const char* outsidePolicy, const double scale, const Point3& position, const Point3& target, const Scalar inner, const Scalar outer, const bool shootPhotons);
+	bool RISE_API_CreatePhysicalDirectionalLight(ILightPriv** ppi, const unsigned int count, const double* nm, const double* values, const char* outsidePolicy, const double scale, const Vector3& direction);
+
 	///////////////////////////////////////////////////////////
 	// Defines Geometry creation
 	///////////////////////////////////////////////////////////
@@ -1035,6 +1041,16 @@ namespace RISE
 								const IScalarPainter& ext,		///< [in] Extinction (scalar)
 								const IScalarPainter& N,		///< [in] Phong exponent (scalar)
 								const IScalarPainter& scat		///< [in] Multiple scattering component (scalar)
+								);
+
+	struct HyLIoSSkinMaterialConfig;
+
+	//! Creates a HyLIoS hyperspectral skin material (P5 local baked mode).
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateHyLIoSSkinMaterial(
+								IMaterial** ppi,											///< [out] Pointer to receive the material
+								const HyLIoSSkinMaterialConfig& config,						///< [in] Versioned HyLIoS material config
+								std::string* outError = 0									///< [out] Optional diagnostic string on failure
 								);
 
 	//! Creates a BioSpec skin material
@@ -3716,6 +3732,16 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								Implementation::FrameStore* frameStore = nullptr    ///< [in] Canonical FrameStore (default null until Job pushes one)
 								);
 
+
+	struct HyperspectralRadiometricConfig;
+
+	//! Creates a dedicated raw radiometric fixed-wavelength hyperspectral rasterizer (P6b).
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateHyperspectralRadiometricRasterizer(
+								IRasterizer** ppi,									///< [out] Pointer to receive the rasterizer
+								IRayCaster* caster,									///< [in] The ray caster to use
+								const HyperspectralRadiometricConfig& config		///< [in] Versioned radiometric sweep config
+								);
 
 	//! Creates a pure path tracing spectral rasterizer (bypasses shader ops)
 	/// \return TRUE if successful, FALSE otherwise

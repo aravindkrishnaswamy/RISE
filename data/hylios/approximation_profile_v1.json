@@ -1,0 +1,354 @@
+{
+  "schema_version": 1,
+  "profile_id": "hylios_cleanroom_approximation_v1",
+  "approximate": true,
+  "domain_nm": [
+    250.0,
+    2500.0
+  ],
+  "interpolation": "piecewise_linear_in_wavelength_and_raw_value",
+  "validation_status": "Unvalidated approximation profile. Numerical contract tests do not establish agreement with published HyLIoS, measured skin, or physiological correctness.",
+  "scope": "Spectral coverage only; raw extinction/absorbance/reference-sample bases retained. No concentration, molar-mass, ln(10), tissue-mixture or Table IV scaling beyond the strict importer conversions.",
+  "strict_reference_policy": "Unchanged: no tails or substitutions in strict source import. This profile must be selected explicitly.",
+  "limitations": [
+    "Zero tails are explicit omissions, not measured transparency.",
+    "100 nm e-fold decay is an arbitrary empirical assumption, not a literature fit.",
+    "Scaled oxyhemoglobin substitutions do not preserve unmeasured dyshemoglobin features.",
+    "Lipid endpoint holds omit any unmeasured UV and >2449.5 nm bands.",
+    "Melanin tail exponents come from a visible-appearance model; extension to 2500 nm has not been validated.",
+    "Hale-Querry substitutions are interpolated source tables and empirical continuity splices.",
+    "Original irregular source gaps remain visible; interpolation across them supplies no new measurements.",
+    "Source files are not vendored; redistribution permission has not been established."
+  ],
+  "curves": {
+    "keratin_abs": {
+      "source_manifest_id": "keratin_abs",
+      "source_files": {
+        "skin/keratin_abs.m": "1230071458f8fde95d6ae46b32396453b4199fe939ebb13f9440f7a14921473f",
+        "skin/keratin_abs.txt": "f3087f4494d7bd13a89cf61a2fd2afe0fa3192e4eebd3508865865dd94547cc8"
+      },
+      "source_quantity": "decadic_absorbance",
+      "source_unit": "dimensionless",
+      "reference_basis": "solid keratin sample; no Table IV 65% mixture applied",
+      "below": {
+        "kind": "zero",
+        "rationale": "Explicit omission of unmeasured absorption; empirical approximation, not evidence of zero absorption."
+      },
+      "above": {
+        "kind": "zero",
+        "rationale": "Explicit omission of unmeasured absorption; empirical approximation, not evidence of zero absorption."
+      }
+    },
+    "dna_abs": {
+      "source_manifest_id": "dna_abs",
+      "source_files": {
+        "skin/dna_abs.m": "aff3f34d149df747cb4cfe97050e561343afe6660df78ec1470e87f09a75aa6a",
+        "skin/dna_abs.txt": "a620eccd5d006977668a305187a3e7c2450f680d7705a81f916a32e1cd70f661"
+      },
+      "source_quantity": "normalized_decadic_absorbance",
+      "source_unit": "dimensionless",
+      "reference_basis": "50 ug/mL sample; MATLAB point-12 normalization applied once; no skin concentration scaling",
+      "below": {
+        "kind": "zero",
+        "rationale": "Explicit omission of unmeasured absorption; empirical approximation, not evidence of zero absorption."
+      },
+      "above": {
+        "kind": "zero",
+        "rationale": "Explicit omission of unmeasured absorption; empirical approximation, not evidence of zero absorption."
+      }
+    },
+    "uro_acid_abs": {
+      "source_manifest_id": "uro_acid_abs",
+      "source_files": {
+        "skin/uro_acid_abs.m": "10f5d7db89513ba923c3690258d417f659d29f05f20c56311bfddbb015794f2d",
+        "skin/uro_acid_abs.txt": "705885d5e1151c0d239657218ffc983c44207bcc953787cfe61d35506f1d61c5"
+      },
+      "source_quantity": "decadic_absorbance",
+      "source_unit": "dimensionless",
+      "reference_basis": "15 umol/L sample; no Table IV concentration scaling",
+      "below": {
+        "kind": "zero",
+        "rationale": "Explicit omission of unmeasured absorption; empirical approximation, not evidence of zero absorption."
+      },
+      "above": {
+        "kind": "zero",
+        "rationale": "Explicit omission of unmeasured absorption; empirical approximation, not evidence of zero absorption."
+      }
+    },
+    "eumelanin_extinction": {
+      "source_manifest_id": "eumelanin_extinction",
+      "source_files": {
+        "skin/eumelanin_extinction.m": "d49b17798fae2eb30ed8b13e69bba230883abe14d52c2113eb94ba7e94a6f121",
+        "skin/eumelanin_extinction.txt": "229d5ef50ee35144f198d78699267d66e95101a94603b7f0ae0aa59d8d7c5f3b"
+      },
+      "source_quantity": "mass_extinction_coefficient",
+      "source_unit": "cm^-1/(mg/mL)",
+      "reference_basis": "author tabulation; no concentration scaling",
+      "below": {
+        "kind": "power_law",
+        "exponent": -3.33,
+        "rationale": "Measured endpoint anchors amplitude in original mass-extinction basis; exponent borrowed from Donner/Jensen 2006 Eqs. (3)/(4). Extension to 2500 nm is an unvalidated cleanroom assumption; published amplitudes and concentration bases are not transplanted.",
+        "source_url": "https://cseweb.ucsd.edu/~henrik/papers/skin_bssrdf/skin_bssrdf.pdf"
+      },
+      "above": {
+        "kind": "power_law",
+        "exponent": -3.33,
+        "rationale": "Measured endpoint anchors amplitude in original mass-extinction basis; exponent borrowed from Donner/Jensen 2006 Eqs. (3)/(4). Extension to 2500 nm is an unvalidated cleanroom assumption; published amplitudes and concentration bases are not transplanted.",
+        "source_url": "https://cseweb.ucsd.edu/~henrik/papers/skin_bssrdf/skin_bssrdf.pdf"
+      }
+    },
+    "pheomelanin_extinction": {
+      "source_manifest_id": "pheomelanin_extinction",
+      "source_files": {
+        "skin/pheomelanin_extinction.m": "bd1625eabe8b9a0fd406aeb85e094f639cff46f6586039c7d66d0a7b67b27a11",
+        "skin/pheomelanin_extinction.txt": "a7aa203d0994aa057f2cd4802e3df2398ff24bff1fe261236bdadeaa6f89a8c0"
+      },
+      "source_quantity": "mass_extinction_coefficient",
+      "source_unit": "cm^-1/(mg/mL)",
+      "reference_basis": "author tabulation; no concentration scaling",
+      "below": {
+        "kind": "power_law",
+        "exponent": -4.75,
+        "rationale": "Measured endpoint anchors amplitude in original mass-extinction basis; exponent borrowed from Donner/Jensen 2006 Eqs. (3)/(4). Extension to 2500 nm is an unvalidated cleanroom assumption; published amplitudes and concentration bases are not transplanted.",
+        "source_url": "https://cseweb.ucsd.edu/~henrik/papers/skin_bssrdf/skin_bssrdf.pdf"
+      },
+      "above": {
+        "kind": "power_law",
+        "exponent": -4.75,
+        "rationale": "Measured endpoint anchors amplitude in original mass-extinction basis; exponent borrowed from Donner/Jensen 2006 Eqs. (3)/(4). Extension to 2500 nm is an unvalidated cleanroom assumption; published amplitudes and concentration bases are not transplanted.",
+        "source_url": "https://cseweb.ucsd.edu/~henrik/papers/skin_bssrdf/skin_bssrdf.pdf"
+      }
+    },
+    "oxy_hemoglobin_extinction": {
+      "source_manifest_id": "oxy_deoxy_hemoglobin",
+      "source_files": {
+        "skin/oxy_hemoglobin_extinction.m": "83181c17b382a65f3a9ab325b5d588f296bc063cad081f906f5b467a3950b461",
+        "skin/oxy_hemoglobin_extinction.txt": "5e96480d8d67e9d9506d81c0ec8d0d9f3cee3bc0280836391bcffee48810648b",
+        "skin/deoxy_hemoglobin_extinction.m": "c6833d5b857194f3751d25b3b4e7b650a1b64fc32652e7c5b2a0a88abe4da34d",
+        "skin/deoxy_hemoglobin_extinction.txt": "03351b3c576c44d06764e1de1fcc22f6bb9e69cac327bce2542b211941d29cbc"
+      },
+      "source_quantity": "molar_extinction_coefficient",
+      "source_unit": "cm^-1/(mol/L)",
+      "reference_basis": "author tabulation; no concentration or molar-mass scaling",
+      "below": {
+        "kind": "zero",
+        "rationale": "Explicit omission of unmeasured absorption; empirical approximation, not evidence of zero absorption."
+      },
+      "above": {
+        "kind": "exponential",
+        "e_fold_nm": 100.0,
+        "rationale": "Endpoint-anchored empirical decay with an arbitrary 100 nm e-fold scale; not a scientific extrapolation model or published HyLIoS rule."
+      }
+    },
+    "deoxy_hemoglobin_extinction": {
+      "source_manifest_id": "oxy_deoxy_hemoglobin",
+      "source_files": {
+        "skin/oxy_hemoglobin_extinction.m": "83181c17b382a65f3a9ab325b5d588f296bc063cad081f906f5b467a3950b461",
+        "skin/oxy_hemoglobin_extinction.txt": "5e96480d8d67e9d9506d81c0ec8d0d9f3cee3bc0280836391bcffee48810648b",
+        "skin/deoxy_hemoglobin_extinction.m": "c6833d5b857194f3751d25b3b4e7b650a1b64fc32652e7c5b2a0a88abe4da34d",
+        "skin/deoxy_hemoglobin_extinction.txt": "03351b3c576c44d06764e1de1fcc22f6bb9e69cac327bce2542b211941d29cbc"
+      },
+      "source_quantity": "molar_extinction_coefficient",
+      "source_unit": "cm^-1/(mol/L)",
+      "reference_basis": "author tabulation; no concentration or molar-mass scaling",
+      "below": {
+        "kind": "zero",
+        "rationale": "Explicit omission of unmeasured absorption; empirical approximation, not evidence of zero absorption."
+      },
+      "above": {
+        "kind": "exponential",
+        "e_fold_nm": 100.0,
+        "rationale": "Endpoint-anchored empirical decay with an arbitrary 100 nm e-fold scale; not a scientific extrapolation model or published HyLIoS rule."
+      }
+    },
+    "carboxyhemoglobin": {
+      "source_manifest_id": "carboxyhemoglobin",
+      "source_files": {
+        "blood/carboxyhemoglobin_extinction.m": "ef8f88460136ec0b8ee67a776878bae85fa7508a5087b4abce11ef71894de1be",
+        "blood/carboxyhemoglobin_extinction.txt": "d6056fade812cb1b15ccde8a05e3d54c6fb8f248f6399441980038d5630155ba"
+      },
+      "source_quantity": "molar_extinction_coefficient",
+      "source_unit": "cm^-1/(mol/L)",
+      "reference_basis": "author tabulation; no concentration or molar-mass scaling",
+      "below": {
+        "kind": "scaled_proxy",
+        "proxy_curve_id": "oxy_hemoglobin_extinction",
+        "rationale": "Unmeasured dyshemoglobin region borrows the oxyhemoglobin spectral shape in the same raw molar-extinction basis, scaled to the dyshemoglobin endpoint. This is an empirical species substitution, not measured dyshemoglobin data; above 1000 nm the proxy uses its own explicit empirical exponential tail."
+      },
+      "above": {
+        "kind": "scaled_proxy",
+        "proxy_curve_id": "oxy_hemoglobin_extinction",
+        "rationale": "Unmeasured dyshemoglobin region borrows the oxyhemoglobin spectral shape in the same raw molar-extinction basis, scaled to the dyshemoglobin endpoint. This is an empirical species substitution, not measured dyshemoglobin data; above 1000 nm the proxy uses its own explicit empirical exponential tail."
+      }
+    },
+    "methemoglobin": {
+      "source_manifest_id": "methemoglobin",
+      "source_files": {
+        "blood/methemoglobin_extinction.m": "8944e6b7064ad101602c0d566ab4f57f0edfd16177f49740c7c00c16f39b4e20",
+        "blood/methemoglobin_extinction.txt": "cf723fbfde1164e9d7d677df8f155a8c69cbcbeebe2b94eaeadd799b9f7e0f4c"
+      },
+      "source_quantity": "molar_extinction_coefficient",
+      "source_unit": "cm^-1/(mol/L)",
+      "reference_basis": "author tabulation; no concentration or molar-mass scaling",
+      "below": {
+        "kind": "scaled_proxy",
+        "proxy_curve_id": "oxy_hemoglobin_extinction",
+        "rationale": "Unmeasured dyshemoglobin region borrows the oxyhemoglobin spectral shape in the same raw molar-extinction basis, scaled to the dyshemoglobin endpoint. This is an empirical species substitution, not measured dyshemoglobin data; above 1000 nm the proxy uses its own explicit empirical exponential tail."
+      },
+      "above": {
+        "kind": "scaled_proxy",
+        "proxy_curve_id": "oxy_hemoglobin_extinction",
+        "rationale": "Unmeasured dyshemoglobin region borrows the oxyhemoglobin spectral shape in the same raw molar-extinction basis, scaled to the dyshemoglobin endpoint. This is an empirical species substitution, not measured dyshemoglobin data; above 1000 nm the proxy uses its own explicit empirical exponential tail."
+      }
+    },
+    "sulfhemoglobin": {
+      "source_manifest_id": "sulfhemoglobin",
+      "source_files": {
+        "blood/sulfhemoglobin_extinction.m": "e2c5b5661a5f3d7860817401cdf9c880f864dfc9d492b78617593389f0d6a3d0",
+        "blood/sulfhemoglobin_extinction.txt": "1a84ffb35bc853d2b8a3194750b051d3e5f37e0e586e34fbc6c56587c58708cf"
+      },
+      "source_quantity": "molar_extinction_coefficient",
+      "source_unit": "cm^-1/(mol/L)",
+      "reference_basis": "author tabulation; no concentration or molar-mass scaling",
+      "below": {
+        "kind": "scaled_proxy",
+        "proxy_curve_id": "oxy_hemoglobin_extinction",
+        "rationale": "Unmeasured dyshemoglobin region borrows the oxyhemoglobin spectral shape in the same raw molar-extinction basis, scaled to the dyshemoglobin endpoint. This is an empirical species substitution, not measured dyshemoglobin data; above 1000 nm the proxy uses its own explicit empirical exponential tail."
+      },
+      "above": {
+        "kind": "scaled_proxy",
+        "proxy_curve_id": "oxy_hemoglobin_extinction",
+        "rationale": "Unmeasured dyshemoglobin region borrows the oxyhemoglobin spectral shape in the same raw molar-extinction basis, scaled to the dyshemoglobin endpoint. This is an empirical species substitution, not measured dyshemoglobin data; above 1000 nm the proxy uses its own explicit empirical exponential tail."
+      }
+    },
+    "beta_carotene": {
+      "source_manifest_id": "beta_carotene",
+      "source_files": {
+        "skin/betacarotene_extinction.m": "d5b5f5e32cc6e94654074c47ce7cd1005c41f22db7a9538c27cf91d2b64da7e5",
+        "skin/betacarotene_extinction.txt": "ebb2d13b9000e8e9a6e559f6c6baab0591c1d1e72ffa59ca86c8fe889648c3f9"
+      },
+      "source_quantity": "molar_extinction_coefficient",
+      "source_unit": "cm^-1/(mol/L)",
+      "reference_basis": "author tabulation; no concentration or molar-mass scaling",
+      "below": {
+        "kind": "zero",
+        "rationale": "Explicit omission of unmeasured absorption; empirical approximation, not evidence of zero absorption."
+      },
+      "above": {
+        "kind": "exponential",
+        "e_fold_nm": 100.0,
+        "rationale": "Endpoint-anchored empirical decay with an arbitrary 100 nm e-fold scale; not a scientific extrapolation model or published HyLIoS rule."
+      }
+    },
+    "bilirubin": {
+      "source_manifest_id": "bilirubin",
+      "source_files": {
+        "skin/bilirubin_extinction.m": "d3f46b15f718715b3634d124cf25418baea75732f905b2845572da21e0e6216c",
+        "skin/bilirubin_extinction.txt": "6080a3f5bf5c5152fca79d4b18734b49ad5e537509a05667b03e7d41f0ae1453"
+      },
+      "source_quantity": "molar_extinction_coefficient",
+      "source_unit": "cm^-1/(mol/L)",
+      "reference_basis": "author tabulation; no concentration or molar-mass scaling",
+      "below": {
+        "kind": "zero",
+        "rationale": "Explicit omission of unmeasured absorption; empirical approximation, not evidence of zero absorption."
+      },
+      "above": {
+        "kind": "exponential",
+        "e_fold_nm": 100.0,
+        "rationale": "Endpoint-anchored empirical decay with an arbitrary 100 nm e-fold scale; not a scientific extrapolation model or published HyLIoS rule."
+      }
+    },
+    "water_absorption": {
+      "source_manifest_id": "water_absorption",
+      "source_files": {
+        "skin/water_absorption.m": "6dd37d351fe524e659d126625b9434803c1c13260101765c9a7af3ac6d0ce05c",
+        "skin/water_absorption.txt": "3beab8955d37390b60840ac6337b50a85118390dfd1eb4f9958c28e35d7eef69"
+      },
+      "source_quantity": "Napierian_absorption_coefficient",
+      "source_unit": "cm^-1",
+      "reference_basis": "author-combined water table; original source branches are 380–725 nm and 730–2500 nm",
+      "below": {
+        "kind": "water_k_substitution",
+        "substitution_curve_id": "hale_querry_water_extinction",
+        "anchor": "multiplicative",
+        "rationale": "Use mu_a=4*pi*k/lambda converted to source cm^-1, then scale by measured-water / converted-Hale-Querry value at 380 nm for continuity. This source splice and scaling are cleanroom approximations, not the published HyLIoS UV water choice."
+      },
+      "above": {
+        "kind": "reject",
+        "rationale": "Source reaches profile upper bound."
+      }
+    },
+    "lipid_absorption": {
+      "source_manifest_id": "lipid_absorption",
+      "source_files": {
+        "skin/lipid_absorption.m": "001f170532d87c8f40901ecf6edaabdda369bd53b8e3d0aa392b26553312b0f4",
+        "skin/lipid_absorption.txt": "f9aabfbc715398459821371308afdd27f8005bb3d1ab72f1675c10e05cf7ed82"
+      },
+      "source_quantity": "Napierian_absorption_coefficient",
+      "source_unit": "cm^-1",
+      "reference_basis": "author combined mammalian-fat/lipid table; no tissue-mixture scaling",
+      "below": {
+        "kind": "endpoint_hold",
+        "rationale": "Constant extension is an empirical approximation with no measured or published validity beyond source support."
+      },
+      "above": {
+        "kind": "endpoint_hold",
+        "rationale": "Constant extension is an empirical approximation with no measured or published validity beyond source support."
+      }
+    },
+    "palmer_williams_real_ior": {
+      "source_manifest_id": "palmer_williams_real_ior",
+      "source_files": {
+        "water/water1.m": "108ecbf943256281eda216a5d1bfebcdec5b6563a503c1a0f78d0aa46cb761fc",
+        "water/riW.txt": "4dc7a47c314c8a49792efa4d766613b3eb960836181989c6cd33126ad9b84f24"
+      },
+      "source_quantity": "real_refractive_index",
+      "source_unit": "dimensionless",
+      "reference_basis": "water; author table states linearly interpolated source values",
+      "below": {
+        "kind": "real_index_substitution",
+        "substitution_curve_id": "hale_querry_water_real_ior",
+        "anchor": "additive",
+        "rationale": "Use Hale-Querry real index below 400 nm with additive offset n_PalmerWilliams(400)-n_HaleQuerry(400) for continuity. Empirical source splice, not published HyLIoS parity. water/riW2.txt is excluded because it aliases IAPWS."
+      },
+      "above": {
+        "kind": "reject",
+        "rationale": "Source reaches profile upper bound."
+      }
+    }
+  },
+  "substitution_sources": {
+    "hale_querry_water_real_ior": {
+      "source_files": {
+        "water/water2_n.m": "ef4b8b77e910612c59af10acc470152c560f73f59845402577bccc6df55be280"
+      },
+      "source_quantity": "real_refractive_index",
+      "source_unit": "dimensionless",
+      "grid_nm": [
+        200,
+        2500,
+        5
+      ],
+      "source_url": "https://www.npsg.uwaterloo.ca/data/water.php",
+      "source_citation": "Hale and Querry 1973; index explicitly says linearly interpolated",
+      "note": "Author-provided 5 nm interpolation of Hale and Querry (1973); not new measurements. Only literal data=[...] is parsed; MATLAB is never executed."
+    },
+    "hale_querry_water_extinction": {
+      "source_files": {
+        "water/water2_k.m": "cb0c5f1fe9f58683e542f031c577ff1db5e1feb473d06f35487acbb2cfd43456",
+        "water/ecW2.txt": "22a13caf095a5dc8fdb8c6f4c13f08b4a5d0e5a75a6b482a1c20729459fa964c"
+      },
+      "source_quantity": "imaginary_refractive_index",
+      "source_unit": "dimensionless",
+      "grid_nm": [
+        200,
+        2500,
+        5
+      ],
+      "source_url": "https://www.npsg.uwaterloo.ca/data/water.php",
+      "source_citation": "Hale and Querry; not interchangeable with water absorption coefficient",
+      "note": "Author-provided 5 nm interpolation of Hale and Querry (1973); not new measurements. Only literal data=[...] is parsed; MATLAB is never executed."
+    }
+  }
+}

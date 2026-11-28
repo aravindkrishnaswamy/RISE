@@ -48,6 +48,8 @@
                      // only transitively available via ChunkDescriptor.h today; include directly
 #include "../Materials/DielectricSPF.h"   // DielectricSPF::kMaxARLayers (ar_layer cap)
 #include "../Materials/FabricPresets.h"   // fabric_material: the `fabric` enum's preset table (multi-slot seeding)
+#include "../Materials/HyLIoS/HyLIoSSkinMaterial.h" // HyLIoSSkinMaterialConfig for `hylios_skin_material`
+#include "../Rendering/HyperspectralRadiometricRasterizer.h" // HyperspectralRadiometricConfig
 #include <sys/types.h>
 #include <sys/stat.h>
 #include "AsciiCommandParser.h"
@@ -3640,6 +3642,101 @@ namespace RISE
 						{ auto& p = P(); p.name = "name";          p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "reflectance";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Front/back diffuse reflectance painter"; p.defaultValueHint = "none"; p.semantics.pipe = ParameterPipe::Color; }
 						{ auto& p = P(); p.name = "transmittance"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Two-sided diffuse transmittance painter"; p.defaultValueHint = "none"; p.semantics.pipe = ParameterPipe::Color; }
+						AddVariantTagParam( cd );
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct HyLIoSSkinMaterialAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					const std::string name              = bag.GetString( "name", "noname" );
+					const std::string modelRevision     = bag.GetString( "model_revision", "hylios_local_bake_analog_projected_v2" );
+					const std::string dataRevision      = bag.GetString( "data_revision", "hylios_cleanroom_composition_v1" );
+					const std::string transportMode     = bag.GetString( "transport_mode", "baked_local" );
+					const std::string boundaryMode      = bag.GetString( "boundary_mode", "smooth" );
+					const std::string boundaryRevision  = bag.GetString( "boundary_revision", "smooth_planar_dielectric_v1" );
+					const std::string placementPolicy   = bag.GetString( "placement_policy", "null_collision_placement_v1" );
+					const std::string postScatterPolicy = bag.GetString( "post_scatter_policy", "discard_after_scatter_v1" );
+					const std::string preset            = bag.GetString( "preset", "S3" );
+					const std::string responseAsset     = bag.GetString( "response_asset", "" );
+					const std::string specimenSource    = bag.GetString( "specimen_source", "" );
+
+					HyLIoSSkinMaterialConfig cfg;
+					cfg.modelRevision        = modelRevision.c_str();
+					cfg.dataRevision         = dataRevision.c_str();
+					cfg.transportMode        = transportMode.c_str();
+					cfg.boundaryMode         = boundaryMode.c_str();
+					cfg.boundaryRevision     = boundaryRevision.c_str();
+					cfg.placementPolicy      = placementPolicy.c_str();
+					cfg.postScatterPolicy    = postScatterPolicy.c_str();
+					cfg.preset               = preset.c_str();
+					cfg.explicitComplexPackV1 = bag.GetBool( "explicit_complex_pack_v1", false );
+					cfg.exteriorIOR          = bag.GetDouble( "exterior_ior", 1.0 );
+					cfg.physicalScale        = bag.GetDouble( "physical_scale", 1.0 );
+					cfg.fiberRadiusMetres    = bag.GetDouble( "fiber_radius_m", 1e-7 );
+					cfg.fiberFraction        = bag.GetDouble( "fiber_fraction", 0.22 );
+					cfg.fiberRelativeIOR     = bag.GetDouble( "fiber_relative_ior", 1.5 / 1.33 );
+					cfg.responseAssetPath    = responseAsset.empty() ? nullptr : responseAsset.c_str();
+					cfg.specimenSourcePath   = specimenSource.empty() ? nullptr : specimenSource.c_str();
+
+					const std::string spatialDomain = bag.GetString( "spatial_domain", "planar_polygon" );
+					cfg.boundaryRoughness     = bag.GetDouble( "boundary_roughness", 0.25 );
+					cfg.spatialDomain         = spatialDomain.c_str();
+					cfg.domainHalfWidthMetres = bag.GetDouble( "domain_half_width_m", 0.05 );
+					cfg.domainRadiusMetres    = bag.GetDouble( "domain_radius_m", 0.10 );
+					cfg.maxSubsurfaceSteps    = static_cast<std::uint64_t>( bag.GetUInt( "max_subsurface_steps", 4096 ) );
+
+					const double maxFileMiB = bag.GetDouble( "max_file_mib", 256.0 );
+					const double maxResMiB  = bag.GetDouble( "max_resident_mib", 1024.0 );
+					const double aggResMiB  = bag.GetDouble( "aggregate_resident_mib", 2048.0 );
+					if( !std::isfinite( maxFileMiB ) || maxFileMiB <= 0.0 ||
+						!std::isfinite( maxResMiB ) || maxResMiB <= 0.0 ||
+						!std::isfinite( aggResMiB ) || aggResMiB <= 0.0 ) {
+						SetFinalizeDiagIfEmpty( "hylios_skin_material memory budgets must be finite and positive" );
+						return false;
+					}
+					cfg.maximumFileBytes     = static_cast<std::uint64_t>( maxFileMiB * 1024.0 * 1024.0 );
+					cfg.maximumResidentBytes = static_cast<std::uint64_t>( maxResMiB * 1024.0 * 1024.0 );
+					cfg.aggregateResidentCap = static_cast<std::uint64_t>( aggResMiB * 1024.0 * 1024.0 );
+
+					return pJob.AddHyLIoSSkinMaterial( name.c_str(), cfg );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "hylios_skin_material"; cd.category = ChunkCategory::Material;
+						cd.description = "HyLIoS hyperspectral layered skin material (Chen et al. 2015) backed by validated local response assets.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";                   p.kind = ValueKind::String;   p.description = "Unique material name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "model_revision";         p.kind = ValueKind::String;   p.description = "HyLIoS local bake model revision"; p.defaultValueHint = "hylios_local_bake_analog_projected_v2"; }
+						{ auto& p = P(); p.name = "data_revision";          p.kind = ValueKind::String;   p.description = "HyLIoS optical data revision"; p.defaultValueHint = "hylios_cleanroom_composition_v1"; }
+						{ auto& p = P(); p.name = "transport_mode";         p.kind = ValueKind::Enum;     p.enumValues = {"baked_local", "nonlocal", "diagnostic"}; p.description = "Transport mode (baked_local in P5)"; p.defaultValueHint = "baked_local"; }
+						{ auto& p = P(); p.name = "boundary_mode";          p.kind = ValueKind::Enum;     p.enumValues = {"smooth", "hylios2015", "rise_reciprocal_boundary_v1"}; p.description = "Outer surface boundary model"; p.defaultValueHint = "smooth"; }
+						{ auto& p = P(); p.name = "boundary_roughness";     p.kind = ValueKind::Double;   p.description = "GGX roughness alpha for rise_reciprocal_boundary_v1 (0 = smooth)"; p.defaultValueHint = "0.25"; }
+						{ auto& p = P(); p.name = "spatial_domain";         p.kind = ValueKind::Enum;     p.enumValues = {"planar_polygon", "concentric_sphere", "concentric_cylinder", "intrinsic_layer"}; p.description = "Finite spatial domain for nonlocal transport"; p.defaultValueHint = "planar_polygon"; }
+						{ auto& p = P(); p.name = "domain_half_width_m";    p.kind = ValueKind::Double;   p.description = "Planar footprint half-width or cylinder half-length in metres"; p.defaultValueHint = "0.05"; }
+						{ auto& p = P(); p.name = "domain_radius_m";        p.kind = ValueKind::Double;   p.description = "Concentric sphere/cylinder outer radius in metres"; p.defaultValueHint = "0.10"; }
+						{ auto& p = P(); p.name = "max_subsurface_steps";   p.kind = ValueKind::UInt;     p.description = "Bounded iterative step budget for nonlocal subsurface transport"; p.defaultValueHint = "4096"; }
+						{ auto& p = P(); p.name = "boundary_revision";      p.kind = ValueKind::String;   p.description = "Explicit boundary revision tag"; p.defaultValueHint = "smooth_planar_dielectric_v1"; }
+						{ auto& p = P(); p.name = "placement_policy";       p.kind = ValueKind::String;   p.description = "Particle placement policy tag"; p.defaultValueHint = "null_collision_placement_v1"; }
+						{ auto& p = P(); p.name = "post_scatter_policy";    p.kind = ValueKind::String;   p.description = "Post-scatter particle policy tag"; p.defaultValueHint = "discard_after_scatter_v1"; }
+						{ auto& p = P(); p.name = "preset";                 p.kind = ValueKind::Enum;     p.enumValues = {"S1", "S2", "S3", "S4", "custom"}; p.description = "HyLIoS skin specimen preset"; p.defaultValueHint = "S3"; }
+						{ auto& p = P(); p.name = "explicit_complex_pack_v1"; p.kind = ValueKind::Bool;   p.description = "Enable explicit melanosome complex packing v1"; p.defaultValueHint = "FALSE"; }
+						{ auto& p = P(); p.name = "exterior_ior";           p.kind = ValueKind::Double;   p.description = "Exterior medium refractive index"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "physical_scale";         p.kind = ValueKind::Double;   p.description = "Scene units per metre"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "fiber_radius_m";         p.kind = ValueKind::Double;   p.description = "Dermal collagen fiber radius in metres"; p.defaultValueHint = "1e-7"; }
+						{ auto& p = P(); p.name = "fiber_fraction";         p.kind = ValueKind::Double;   p.description = "Dermal collagen fiber volume fraction"; p.defaultValueHint = "0.22"; }
+						{ auto& p = P(); p.name = "fiber_relative_ior";     p.kind = ValueKind::Double;   p.description = "Collagen fiber relative refractive index"; p.defaultValueHint = "1.12781954887"; }
+						{ auto& p = P(); p.name = "response_asset";         p.kind = ValueKind::Filename; p.description = "Path to baked HyLIoS local response asset (.hylios)"; }
+						{ auto& p = P(); p.name = "specimen_source";        p.kind = ValueKind::Filename; p.description = "Path to specimen JSON for independent semantic verification"; }
+						{ auto& p = P(); p.name = "max_file_mib";           p.kind = ValueKind::Double;   p.description = "Maximum response asset file size (MiB)"; p.defaultValueHint = "256"; }
+						{ auto& p = P(); p.name = "max_resident_mib";       p.kind = ValueKind::Double;   p.description = "Maximum per-asset resident memory budget (MiB)"; p.defaultValueHint = "1024"; }
+						{ auto& p = P(); p.name = "aggregate_resident_mib"; p.kind = ValueKind::Double;   p.description = "Aggregate resident memory cap across live HyLIoS assets (MiB)"; p.defaultValueHint = "2048"; }
 						AddVariantTagParam( cd );
 						return cd;
 					}();
@@ -11191,6 +11288,45 @@ namespace RISE
 				}
 			};
 
+            // Physical source spectra are inline numeric pairs, not named graph references.
+            static bool ReadPhysicalLightSamples(const ParseStateBag& bag,
+                std::vector<double>& nm, std::vector<double>& values)
+            {
+                if (bag.Has("color") || bag.Has("colorspace") ||
+                    !bag.Has("spectral_outside") || bag.GetString("spectral_outside") != "zero") {
+                    RISE::SetFinalizeDiagIfEmpty("physical light requires spectral_outside zero and excludes color/colorspace");
+                    return false;
+                }
+                for (const auto& row : bag.GetRepeatable("spectral_samples")) {
+                    std::istringstream input(row);
+                    double wavelength, value;
+                    std::string extra;
+                    if (!(input >> wavelength >> value) || (input >> extra)) {
+                        RISE::SetFinalizeDiagIfEmpty("spectral_samples requires exactly wavelength_nm and spectral value");
+                        return false;
+                    }
+                    nm.push_back(wavelength); values.push_back(value);
+                }
+                if (nm.size() < 2 || nm.size() > std::numeric_limits<unsigned int>::max()) {
+                    RISE::SetFinalizeDiagIfEmpty("physical light requires at least two spectral_samples");
+                    return false;
+                }
+                return true;
+            }
+
+            static void DescribePhysicalLightSamples(ChunkDescriptor& cd)
+            {
+                ParameterDescriptor samples;
+                samples.name = "spectral_samples"; samples.kind = ValueKind::String;
+                samples.repeatable = true; samples.tupleKinds = {ValueKind::Double, ValueKind::Double};
+                samples.description = "Physical source pair: wavelength_nm value (repeatable, increasing nm). Point/spot W/(sr nm), directional W/(m^2 nm). Excludes color/colorspace; power is a dimensionless scale.";
+                cd.parameters.push_back(samples);
+                ParameterDescriptor outside;
+                outside.name = "spectral_outside"; outside.kind = ValueKind::Enum; outside.enumValues = {"zero"};
+                outside.description = "Required with spectral_samples: explicit zero outside the authored interval. This is a model policy, not measured coverage.";
+                cd.parameters.push_back(outside);
+            }
+
 			// OmniLight — descriptor-driven, Finalize-only
 			struct OmniLightAsciiChunkParser : public IAsciiChunkParser
 			{
@@ -11202,6 +11338,12 @@ namespace RISE
 					double color[3]    = {0,0,0}; bag.GetVec3( "color",    color );
 					bool shootphotons  = bag.GetBool( "shootphotons", true );
 					const std::string cspace = bag.GetString( "colorspace", kLightDefaultColorSpace );
+                    if (!bag.GetRepeatable("spectral_samples").empty() || bag.Has("spectral_outside")) {
+                        std::vector<double> nm, values;
+                        if (!ReadPhysicalLightSamples(bag, nm, values)) return false;
+                        return pJob.AddPhysicalPointOmniLight(name.c_str(), static_cast<unsigned int>(nm.size()),
+                            nm.data(), values.data(), "zero", power, position, shootphotons);
+                    }
 					return pJob.AddPointOmniLight( name.c_str(), power, color, cspace.c_str(), position, shootphotons );
 				}
 
@@ -11213,11 +11355,12 @@ namespace RISE
 						cd.description = "Point light radiating uniformly in all directions.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";         p.kind = ValueKind::String;     p.description = "Unique name for this light";        p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "power";        p.kind = ValueKind::Double;     p.description = "Power scale (multiplies color)";   p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "power";        p.kind = ValueKind::Double;     p.description = "Power scale (multiplies color; dimensionless with spectral_samples)";   p.defaultValueHint = "1.0"; }
 						{ auto& p = P(); p.name = "position";     p.kind = ValueKind::DoubleVec3; p.description = "World-space position";             p.defaultValueHint = "0 0 0"; }
 						{ auto& p = P(); p.name = "color";        p.kind = ValueKind::DoubleVec3; p.description = kLightColorDescription;             p.defaultValueHint = "0 0 0"; }
 						{ auto& p = P(); p.name = "colorspace";   p.kind = ValueKind::Enum;       p.enumValues = kLightColorSpaceValues; p.description = kLightColorSpaceDescription; p.defaultValueHint = kLightDefaultColorSpace; }
 						{ auto& p = P(); p.name = "shootphotons"; p.kind = ValueKind::Bool;       p.description = "Whether this light emits photons"; p.defaultValueHint = "TRUE"; }
+						DescribePhysicalLightSamples(cd);
 						return cd;
 					}();
 					return d;
@@ -11241,6 +11384,12 @@ namespace RISE
 					double color[3]    = {0,0,0};  bag.GetVec3( "color",    color );
 					bool shootphotons  = bag.GetBool( "shootphotons", true );
 					const std::string cspace = bag.GetString( "colorspace", kLightDefaultColorSpace );
+                    if (!bag.GetRepeatable("spectral_samples").empty() || bag.Has("spectral_outside")) {
+                        std::vector<double> nm, values;
+                        if (!ReadPhysicalLightSamples(bag, nm, values)) return false;
+                        return pJob.AddPhysicalPointSpotLight(name.c_str(), static_cast<unsigned int>(nm.size()),
+                            nm.data(), values.data(), "zero", power, target, inner, outer, position, shootphotons);
+                    }
 					return pJob.AddPointSpotLight( name.c_str(), power, color, cspace.c_str(), target, inner, outer, position, shootphotons );
 				}
 
@@ -11252,14 +11401,15 @@ namespace RISE
 						cd.description = "Cone spot light with inner and outer falloff angles.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";         p.kind = ValueKind::String;     p.description = "Unique name for this light";       p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "power";        p.kind = ValueKind::Double;     p.description = "Power scale (multiplies color)";  p.defaultValueHint = "1.0"; }
-						{ auto& p = P(); p.name = "inner";        p.kind = ValueKind::Double;     p.description = "Inner cone half-angle (degrees)"; p.defaultValueHint = "45"; }
-						{ auto& p = P(); p.name = "outer";        p.kind = ValueKind::Double;     p.description = "Outer cone half-angle (degrees)"; p.defaultValueHint = "90"; }
+						{ auto& p = P(); p.name = "power";        p.kind = ValueKind::Double;     p.description = "Power scale (multiplies color; dimensionless with spectral_samples)";  p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "inner";        p.kind = ValueKind::Double;     p.description = "Inner full cone angle (degrees)"; p.defaultValueHint = "45"; }
+						{ auto& p = P(); p.name = "outer";        p.kind = ValueKind::Double;     p.description = "Outer full cone angle (degrees)"; p.defaultValueHint = "90"; }
 						{ auto& p = P(); p.name = "position";     p.kind = ValueKind::DoubleVec3; p.description = "World-space position";            p.defaultValueHint = "0 0 0"; }
 						{ auto& p = P(); p.name = "target";       p.kind = ValueKind::DoubleVec3; p.description = "World-space target point";        p.defaultValueHint = "0 0 -1"; }
 						{ auto& p = P(); p.name = "color";        p.kind = ValueKind::DoubleVec3; p.description = kLightColorDescription;            p.defaultValueHint = "0 0 0"; }
 						{ auto& p = P(); p.name = "colorspace";   p.kind = ValueKind::Enum;       p.enumValues = kLightColorSpaceValues; p.description = kLightColorSpaceDescription; p.defaultValueHint = kLightDefaultColorSpace; }
 						{ auto& p = P(); p.name = "shootphotons"; p.kind = ValueKind::Bool;       p.description = "Whether this light emits photons"; p.defaultValueHint = "TRUE"; }
+						DescribePhysicalLightSamples(cd);
 						return cd;
 					}();
 					return d;
@@ -11323,6 +11473,12 @@ namespace RISE
 					double dir[3]   = {0,0,0}; bag.GetVec3( "direction", dir );
 					double color[3] = {0,0,0}; bag.GetVec3( "color",     color );
 					const std::string cspace = bag.GetString( "colorspace", kLightDefaultColorSpace );
+                    if (!bag.GetRepeatable("spectral_samples").empty() || bag.Has("spectral_outside")) {
+                        std::vector<double> nm, values;
+                        if (!ReadPhysicalLightSamples(bag, nm, values)) return false;
+                        return pJob.AddPhysicalDirectionalLight(name.c_str(), static_cast<unsigned int>(nm.size()),
+                            nm.data(), values.data(), "zero", power, dir);
+                    }
 					return pJob.AddDirectionalLight( name.c_str(), power, color, cspace.c_str(), dir );
 				}
 
@@ -11334,10 +11490,11 @@ namespace RISE
 						cd.description = "Parallel rays from a fixed direction (e.g. sunlight).";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";      p.kind = ValueKind::String;     p.description = "Unique name for this light";      p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "power";     p.kind = ValueKind::Double;     p.description = "Power scale (multiplies color)"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "power";     p.kind = ValueKind::Double;     p.description = "Power scale (multiplies color; dimensionless with spectral_samples)"; p.defaultValueHint = "1.0"; }
 						{ auto& p = P(); p.name = "direction"; p.kind = ValueKind::DoubleVec3; p.description = "Direction vector";                p.defaultValueHint = "0 -1 0"; }
 						{ auto& p = P(); p.name = "color";     p.kind = ValueKind::DoubleVec3; p.description = kLightColorDescription;           p.defaultValueHint = "0 0 0"; }
 						{ auto& p = P(); p.name = "colorspace"; p.kind = ValueKind::Enum;      p.enumValues = kLightColorSpaceValues; p.description = kLightColorSpaceDescription; p.defaultValueHint = kLightDefaultColorSpace; }
+						DescribePhysicalLightSamples(cd);
 						return cd;
 					}();
 					return d;
@@ -13955,6 +14112,94 @@ namespace RISE
 				}
 			};
 
+			struct HyperspectralRadiometricRasterizerAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					HyperspectralRadiometricConfig cfg;
+					cfg.lambdaBegin           = bag.GetDouble( "lambda_begin", 400.0 );
+					cfg.lambdaEnd             = bag.GetDouble( "lambda_end", 700.0 );
+					cfg.lambdaStep            = bag.GetDouble( "lambda_step", 10.0 );
+					cfg.samplesPerPixel       = static_cast<std::uint64_t>( bag.GetUInt( "samples_per_pixel", 16 ) );
+					cfg.seed                  = static_cast<std::uint64_t>( bag.GetUInt( "seed", 1 ) );
+					cfg.outputPrefix          = bag.GetString( "output_prefix", "" );
+					cfg.checkpointPrefix      = bag.GetString( "checkpoint_prefix", "" );
+					cfg.outputObservable      = bag.GetString( "output_observable", "radiance_density" );
+					cfg.allowRGBUpliftSources = bag.GetBool( "allow_rgb_uplift_sources", false );
+					cfg.oidnDenoise           = bag.GetBool( "oidn_denoise", false );
+					cfg.toneMap               = bag.GetBool( "tone_map", false );
+					cfg.pixelFilterName       = bag.GetString( "pixel_filter", "box" );
+					cfg.stabilityConfig.directClamp   = Scalar( bag.GetDouble( "direct_clamp", 0.0 ) );
+					cfg.stabilityConfig.indirectClamp = Scalar( bag.GetDouble( "indirect_clamp", 0.0 ) );
+					cfg.stabilityConfig.filterGlossy  = Scalar( bag.GetDouble( "filter_glossy", 0.0 ) );
+
+					const std::vector<std::string>& wlList = bag.GetRepeatable( "wavelength_nm" );
+					if( !wlList.empty() ) {
+						cfg.wavelengthsNm.reserve( wlList.size() );
+						for( const std::string& tok : wlList ) {
+							char* endPtr = nullptr;
+							const double val = std::strtod( tok.c_str(), &endPtr );
+							if( !endPtr || endPtr == tok.c_str() || !std::isfinite( val ) || val <= 0.0 ) {
+								SetFinalizeDiagIfEmpty( "hyperspectral_radiometric_rasterizer: invalid wavelength_nm value" );
+								return false;
+							}
+							cfg.wavelengthsNm.push_back( val );
+						}
+					}
+
+					const std::vector<std::string>& srList = bag.GetRepeatable( "sensor_response" );
+					if( !srList.empty() ) {
+						cfg.sensorResponse.reserve( srList.size() );
+						double prevNm = 0.0;
+						for( const std::string& tok : srList ) {
+							std::istringstream iss( tok );
+							iss.imbue( std::locale::classic() );
+							double nm = 0.0, wt = 0.0;
+							std::string extra;
+							if( !( iss >> nm >> wt ) || ( iss >> extra ) ||
+								!std::isfinite( nm ) || nm <= prevNm ||
+								!std::isfinite( wt ) || wt < 0.0 )
+							{
+								SetFinalizeDiagIfEmpty( "hyperspectral_radiometric_rasterizer: invalid sensor_response entry (expected strictly increasing '<nm> <weight>')" );
+								return false;
+							}
+							prevNm = nm;
+							cfg.sensorResponse.emplace_back( nm, wt );
+						}
+					}
+
+					return pJob.SetHyperspectralRadiometricRasterizer( cfg );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "hyperspectral_radiometric_rasterizer"; cd.category = ChunkCategory::Rasterizer;
+						cd.description = "Dedicated raw radiometric fixed-wavelength hyperspectral rasterizer (P6b).";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "wavelength_nm";            p.kind = ValueKind::String;   p.repeatable = true; p.description = "Explicit fixed wavelength node in nm (repeatable)"; }
+						{ auto& p = P(); p.name = "lambda_begin";             p.kind = ValueKind::Double;   p.description = "Sweep start wavelength in nm"; p.defaultValueHint = "400.0"; }
+						{ auto& p = P(); p.name = "lambda_end";               p.kind = ValueKind::Double;   p.description = "Sweep end wavelength in nm"; p.defaultValueHint = "700.0"; }
+						{ auto& p = P(); p.name = "lambda_step";              p.kind = ValueKind::Double;   p.description = "Sweep step in nm"; p.defaultValueHint = "10.0"; }
+						{ auto& p = P(); p.name = "samples_per_pixel";        p.kind = ValueKind::UInt;     p.description = "Fixed samples per pixel per wavelength"; p.defaultValueHint = "16"; }
+						{ auto& p = P(); p.name = "seed";                     p.kind = ValueKind::UInt;     p.description = "Deterministic sweep seed"; p.defaultValueHint = "1"; }
+						{ auto& p = P(); p.name = "output_prefix";            p.kind = ValueKind::Filename; p.description = "Output prefix for EXR bands and JSON manifest"; }
+						{ auto& p = P(); p.name = "checkpoint_prefix";        p.kind = ValueKind::Filename; p.description = "Optional checkpoint prefix for save/resume"; }
+						{ auto& p = P(); p.name = "output_observable";        p.kind = ValueKind::String;   p.description = "Output observable (radiance_density, band_integrated, band_average, sensor_energy, sensor_photon)"; p.defaultValueHint = "radiance_density"; }
+						{ auto& p = P(); p.name = "sensor_response";          p.kind = ValueKind::String;   p.repeatable = true; p.tupleKinds = { ValueKind::Double, ValueKind::Double }; p.description = "Tabulated sensor response '<nm> <weight>' (repeatable, for sensor_energy/sensor_photon)"; }
+						{ auto& p = P(); p.name = "allow_rgb_uplift_sources"; p.kind = ValueKind::Bool;     p.description = "Allow RGB-uplifted lights (default FALSE: strict physical sources)"; p.defaultValueHint = "FALSE"; }
+						{ auto& p = P(); p.name = "oidn_denoise";             p.kind = ValueKind::Bool;     p.description = "Must remain FALSE in raw radiometric mode"; p.defaultValueHint = "FALSE"; }
+						{ auto& p = P(); p.name = "tone_map";                 p.kind = ValueKind::Bool;     p.description = "Must remain FALSE in raw radiometric mode"; p.defaultValueHint = "FALSE"; }
+						{ auto& p = P(); p.name = "pixel_filter";             p.kind = ValueKind::String;   p.description = "Nonnegative pixel filter (box/triangle/gaussian)"; p.defaultValueHint = "box"; }
+						{ auto& p = P(); p.name = "direct_clamp";             p.kind = ValueKind::Double;   p.description = "Must be 0 in raw radiometric mode"; p.defaultValueHint = "0.0"; }
+						{ auto& p = P(); p.name = "indirect_clamp";           p.kind = ValueKind::Double;   p.description = "Must be 0 in raw radiometric mode"; p.defaultValueHint = "0.0"; }
+						{ auto& p = P(); p.name = "filter_glossy";            p.kind = ValueKind::Double;   p.description = "Must be 0 in raw radiometric mode"; p.defaultValueHint = "0.0"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
 			struct MLTRasterizerAsciiChunkParser : public IAsciiChunkParser
 			{
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
@@ -15156,6 +15401,7 @@ namespace RISE
 		add( "isotropic_phong_material",              std::make_unique<IsotropicPhongMaterialAsciiChunkParser>() );
 		add( "translucent_material",                  std::make_unique<TranslucentMaterialAsciiChunkParser>() );
 		add( "biospec_skin_material",                 std::make_unique<BioSpecSkinMaterialAsciiChunkParser>() );
+		add( "hylios_skin_material",                  std::make_unique<HyLIoSSkinMaterialAsciiChunkParser>() );
 		add( "donner_jensen_skin_bssrdf_material",    std::make_unique<DonnerJensenSkinBSSRDFMaterialAsciiChunkParser>() );
 		add( "generic_human_tissue_material",         std::make_unique<GenericHumanTissueMaterialAsciiChunkParser>() );
 		add( "coated_material",                       std::make_unique<CoatedMaterialAsciiChunkParser>() );
@@ -15279,6 +15525,7 @@ namespace RISE
 		add( "vcm_spectral_rasterizer",               std::make_unique<VCMSpectralRasterizerAsciiChunkParser>() );
 		add( "pathtracing_pel_rasterizer",            std::make_unique<PathTracingPelRasterizerAsciiChunkParser>() );
 		add( "pathtracing_spectral_rasterizer",       std::make_unique<PathTracingSpectralRasterizerAsciiChunkParser>() );
+		add( "hyperspectral_radiometric_rasterizer",  std::make_unique<HyperspectralRadiometricRasterizerAsciiChunkParser>() );
 		add( "auto_rasterizer",                       std::make_unique<AutoRasterizerAsciiChunkParser>() );
 		add( "auto_spectral_rasterizer",              std::make_unique<AutoSpectralRasterizerAsciiChunkParser>() );
 		add( "mlt_rasterizer",                        std::make_unique<MLTRasterizerAsciiChunkParser>() );

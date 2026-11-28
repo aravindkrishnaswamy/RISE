@@ -13,6 +13,8 @@
 
 #include "pch.h"
 #include "EnvironmentSampler.h"
+#include "RadianceMap.h"
+#include <cmath>
 #include "../Utilities/Color/ColorMath.h"
 #include "../Intersection/RayIntersectionGeometric.h"
 
@@ -32,6 +34,12 @@ EnvironmentSampler::EnvironmentSampler(
   height( resolution ),
   totalLuminance( 0 )
 {
+    if (resolution == 0 || resolution == std::numeric_limits<unsigned int>::max()) {
+        throw std::invalid_argument("environment proposal resolution must be positive and leave a CDF endpoint");
+    }
+    if (!RISE::IsFiniteDouble(scale) || scale < 0) {
+        throw std::invalid_argument("environment proposal scale must be finite and nonnegative");
+    }
 	painter.addref();
 
 	// Compute inverse transform (map-space -> world-space).
@@ -39,57 +47,50 @@ EnvironmentSampler::EnvironmentSampler(
 	mxInvTransform = Matrix4Ops::Transpose( mxtransform );
 }
 
+EnvironmentSampler::EnvironmentSampler(const IRadianceMap& map,
+    std::shared_ptr<const SpectralSourceDomain> domain) :
+    EnvironmentSampler(map.GetPainter(),map.GetScale(),map.GetTransform(),8)
+{
+    if (!domain) throw std::invalid_argument("missing spectral environment domain");
+    spectralDomain = std::move(domain);
+    spectralMap = &map;
+    spectralMap->addref();
+}
+
 EnvironmentSampler::~EnvironmentSampler()
 {
 	painter.release();
+    if (spectralMap) spectralMap->release();
 }
 
-void EnvironmentSampler::DirectionToTexCoord(
-	const Vector3& dir,
-	Scalar& s,
-	Scalar& t
-	)
+Vector3 EnvironmentSampler::EqualAreaToDirection(Scalar u, Scalar v)
 {
-	const Scalar denom = sqrt( dir.x * dir.x + dir.y * dir.y );
-	if( denom < 1e-12 )
-	{
-		// Direction is along +Z or -Z axis
-		s = 0.5;
-		t = 0.5;
-		return;
-	}
-	const Scalar r = 0.159154943 * acos( r_max( Scalar(-1.0), r_min( Scalar(1.0), -dir.z ) ) ) / denom;
-	s = 0.5 + dir.x * r;
-	t = 0.5 - dir.y * r;
+    const Scalar phi = TWO_PI*u;
+    const Scalar z = 1-2*v;
+    const Scalar radius = 2*sqrt(r_max(Scalar(0),v*(1-v)));
+    return Vector3(radius*cos(phi),radius*sin(phi),z);
 }
 
-Vector3 EnvironmentSampler::TexCoordToDirection(
-	const Scalar s,
-	const Scalar t
-	)
+bool EnvironmentSampler::DirectionToEqualArea(const Vector3& direction, Scalar& u, Scalar& v)
 {
-	const Scalar dx = s - 0.5;
-	const Scalar dy = -(t - 0.5);
-	const Scalar rTexel = sqrt( dx * dx + dy * dy );
-
-	if( rTexel < 1e-12 )
-	{
-		// Center of probe: direction = (0, 0, -1)
-		return Vector3( 0, 0, -1 );
-	}
-
-	// Inverse of light-probe mapping:
-	// rTexel = theta / (2*PI), so theta = rTexel * 2*PI
-	const Scalar theta = rTexel * TWO_PI;
-	const Scalar sinTheta = sin( theta );
-	const Scalar cosTheta = cos( theta );
-
-	// Reconstruct direction from (theta, phi) encoded in (dx, dy)
-	const Scalar vx = dx * sinTheta / rTexel;
-	const Scalar vy = dy * sinTheta / rTexel;
-	const Scalar vz = -cosTheta;
-
-	return Vector3( vx, vy, vz );
+    if (!RISE::IsFiniteDouble(direction.x) || !RISE::IsFiniteDouble(direction.y) ||
+        !RISE::IsFiniteDouble(direction.z)) return false;
+    const Scalar scale = r_max(std::abs(direction.x),r_max(std::abs(direction.y),std::abs(direction.z)));
+    if (!(scale > 0)) return false;
+    int exponent = 0;
+    std::frexp(scale,&exponent);
+    const Vector3 d(std::ldexp(direction.x,-exponent),std::ldexp(direction.y,-exponent),std::ldexp(direction.z,-exponent));
+    const Scalar length = std::hypot(d.x,d.y,d.z);
+    const Scalar horizontal = r_max(std::abs(direction.x),std::abs(direction.y));
+    Scalar phi = 0;
+    if (horizontal > 0) {
+        int horizontalExponent = 0;std::frexp(horizontal,&horizontalExponent);
+        phi = std::atan2(std::ldexp(direction.y,-horizontalExponent),std::ldexp(direction.x,-horizontalExponent));
+    }
+    if (phi < 0) phi += TWO_PI;
+    u = phi/TWO_PI;
+    v = r_max(Scalar(0),r_min(Scalar(1),(1-d.z/length)*.5));
+    return true;
 }
 
 unsigned int EnvironmentSampler::SampleCDF(
@@ -132,106 +133,79 @@ unsigned int EnvironmentSampler::SampleCDF(
 
 void EnvironmentSampler::Build()
 {
-	// Allocate CDF arrays
-	conditionalCDF.resize( height );
-	for( unsigned int v = 0; v < height; v++ )
-	{
-		conditionalCDF[v].resize( width + 1 );
-	}
-	marginalCDF.resize( height + 1 );
-
-	// Create a dummy rasterizer state for painter queries
-	const RasterizerState rast = nullRasterizerState;
-
-	// For each row v, build the conditional CDF over columns u.
-	// Weight each texel by L * sin(theta) / theta to account for
-	// the solid angle Jacobian of the light-probe mapping.
-	for( unsigned int v = 0; v < height; v++ )
-	{
-		conditionalCDF[v][0] = 0;
-
-		for( unsigned int u = 0; u < width; u++ )
-		{
-			// Texel center in (s, t) space
-			const Scalar s = (static_cast<Scalar>(u) + 0.5) / static_cast<Scalar>(width);
-			const Scalar t_coord = (static_cast<Scalar>(v) + 0.5) / static_cast<Scalar>(height);
-
-			// Query painter at this texture coordinate
-			Ray dummyRay( Point3(0,0,0), Vector3(0,0,1) );
-			RayIntersectionGeometric rig( dummyRay, rast );
-			rig.ptCoord.x = s;
-			rig.ptCoord.y = t_coord;
-
-			// DL-396: the SOURCE view, as RadianceMap::GetRadiance emits.
-			const RISEPel color = painter.GetRadianceColor( rig ) * dScale;
-			const Scalar luminance = ColorMath::MaxValue( color );
-
-			// Compute theta from (s, t)
-			const Scalar dx = s - 0.5;
-			const Scalar dy = -(t_coord - 0.5);
-			const Scalar rTexel = sqrt( dx * dx + dy * dy );
-			const Scalar theta = rTexel * TWO_PI;
-
-			// Solid-angle correction weight: sin(theta) / theta
-			// When theta -> 0, the ratio -> 1 (L'Hopital).
-			// When theta -> PI, sin(theta) -> 0 as expected.
-			Scalar solidAngleWeight;
-			if( theta < 1e-6 )
-			{
-				solidAngleWeight = 1.0;
-			}
-			else
-			{
-				solidAngleWeight = sin( theta ) / theta;
-			}
-
-			// Texels outside the probe disk (rTexel > 0.5 -> theta > PI)
-			// should have zero weight.
-			if( rTexel > 0.5 )
-			{
-				solidAngleWeight = 0;
-			}
-
-			const Scalar weight = luminance * solidAngleWeight;
-			conditionalCDF[v][u + 1] = conditionalCDF[v][u] + weight;
-		}
-	}
-
-	// Build marginal CDF from row totals
-	marginalCDF[0] = 0;
-	for( unsigned int v = 0; v < height; v++ )
-	{
-		marginalCDF[v + 1] = marginalCDF[v] + conditionalCDF[v][width];
-	}
-
-	totalLuminance = marginalCDF[height];
-
-	if( totalLuminance <= 0 )
-	{
-		// Environment map is black — sampling will fail
-		return;
-	}
-
-	// Normalize CDFs to [0, 1]
-	for( unsigned int v = 0; v < height; v++ )
-	{
-		const Scalar rowTotal = conditionalCDF[v][width];
-		if( rowTotal > 0 )
-		{
-			for( unsigned int u = 0; u <= width; u++ )
-			{
-				conditionalCDF[v][u] /= rowTotal;
-			}
-		}
-		// Force the last entry to exactly 1.0
-		conditionalCDF[v][width] = 1.0;
-	}
-
-	for( unsigned int v = 0; v <= height; v++ )
-	{
-		marginalCDF[v] /= totalLuminance;
-	}
-	marginalCDF[height] = 1.0;
+    if (spectralDomain) {
+        spectralPower = SpectralSourceDomain::Mass();
+        // Equal-solid-angle world-space cell centres. A missed patch cannot
+        // remove support: Sample/Pdf remain uniform everywhere.
+        for (unsigned int y=0;y<8;++y) for (unsigned int x=0;x<16;++x) {
+            const Scalar z = 1-2*(Scalar(y)+.5)/8;
+            const Scalar phi = TWO_PI*(Scalar(x)+.5)/16;
+            const Scalar r = sqrt(r_max(Scalar(0),1-z*z));
+            const Ray ray(Point3(0,0,0),Vector3(r*cos(phi),r*sin(phi),z));
+            const auto m = spectralDomain->Integrate([&](double nm) {
+                return spectralMap->GetRadianceNM(ray,nullRasterizerState,nm);
+            });
+            if (m.positive) spectralPower.AddLog(m.logarithm);
+        }
+        spectralPower.Multiply(4*PI/128);
+        return;
+    }
+    // Build in temporaries. A rejected source leaves no stale CDF valid.
+    totalLuminance = 0;
+    conditionalCDF.clear(); marginalCDF.clear();
+    std::vector<std::vector<Scalar>> rows(height,std::vector<Scalar>(width+1,0));
+    std::vector<Scalar> marginal(height+1,0);
+    Scalar maximum = 0;
+    for (unsigned int y=0;y<height;++y) for (unsigned int x=0;x<width;++x) {
+        const Vector3 mapDirection = EqualAreaToDirection((Scalar(x)+.5)/width,(Scalar(y)+.5)/height);
+        const Vector3 worldDirection = Vector3Ops::Transform(mxInvTransform,mapDirection);
+        RayIntersectionGeometric rig(Ray(Point3(0,0,0),worldDirection),nullRasterizerState);
+        rig.ptCoord = LightProbeTextureCoordinates(mapDirection);
+        const RISEPel color = painter.GetRadianceColor(rig)*dScale;
+        if (!RISE::IsFiniteDouble(color.r) || !RISE::IsFiniteDouble(color.g) || !RISE::IsFiniteDouble(color.b))
+            throw std::invalid_argument("environment proposal source must have finite RGB radiance");
+        const Scalar weight = r_max(Scalar(0),ColorMath::MaxValue(color));
+        rows[y][x+1] = weight;
+        maximum = r_max(maximum,weight);
+    }
+    if (dScale == 0) return; // This explicit multiplicative factor proves no emission.
+    Scalar integral = 0;
+    Scalar sum = 0;
+    if (maximum > 0) {
+        // Normalize before summing. Keep the raw midpoint power separate from
+        // the proposal's support mixture: zero probes do not prove blackness.
+        int exponent = 0, angularExponent = 0;
+        const Scalar mantissa = std::frexp(maximum,&exponent);
+        for (unsigned int y=0;y<height;++y) for (unsigned int x=0;x<width;++x) {
+            rows[y][x+1] = std::ldexp(rows[y][x+1],-exponent)/mantissa;
+            sum += rows[y][x+1];
+        }
+        const Scalar meanAngularFactor = (sum/Scalar(width)/Scalar(height))*FOUR_PI;
+        const Scalar angularMantissa = std::frexp(meanAngularFactor,&angularExponent);
+        integral = std::ldexp(mantissa*angularMantissa,exponent+angularExponent);
+        if (!RISE::IsFiniteDouble(integral) || !(integral > 0))
+            throw std::invalid_argument("environment angular power integral is outside the representable range");
+    }
+    // A disclosed 5% uniform-solid-angle component protects arbitrary source
+    // features between midpoint probes. Integrate it into this one table;
+    // there is no extra mixture draw or conditional random-number remapping.
+    const Scalar uniformCell = 1/Scalar(width)/Scalar(height);
+    for (unsigned int y=0;y<height;++y) {
+        Scalar row = 0;
+        for (unsigned int x=0;x<width;++x) {
+            const Scalar probability = sum > 0 ?
+                (1-UniformSupportFraction())*(rows[y][x+1]/sum)+UniformSupportFraction()*uniformCell : uniformCell;
+            row += probability;
+            rows[y][x+1] = row;
+        }
+        marginal[y+1] = marginal[y]+row;
+        for (unsigned int x=1;x<=width;++x) rows[y][x] /= row;
+        rows[y][width] = 1;
+    }
+    for (unsigned int y=1;y<=height;++y) marginal[y] /= marginal[height];
+    marginal[height] = 1;
+    conditionalCDF.swap(rows); marginalCDF.swap(marginal);
+    totalLuminance = integral;
 }
 
 void EnvironmentSampler::Sample(
@@ -241,108 +215,38 @@ void EnvironmentSampler::Sample(
 	Scalar& pdf
 	) const
 {
-	if( totalLuminance <= 0 )
-	{
-		direction = Vector3( 0, 0, 1 );
-		pdf = 0;
-		return;
-	}
-
-	// Sample row (marginal)
-	Scalar fracV;
-	const unsigned int v = SampleCDF( marginalCDF, height, u2, fracV );
-
-	// Sample column (conditional) within selected row
-	Scalar fracU;
-	const unsigned int u = SampleCDF( conditionalCDF[v], width, u1, fracU );
-
-	// Continuous (s, t) coordinates with fractional offset
-	const Scalar s = (static_cast<Scalar>(u) + fracU) / static_cast<Scalar>(width);
-	const Scalar t_coord = (static_cast<Scalar>(v) + fracV) / static_cast<Scalar>(height);
-
-	// Convert to direction in map space, then transform to world space
-	const Vector3 mapDir = TexCoordToDirection( s, t_coord );
-	direction = Vector3Ops::Transform( mxInvTransform, mapDir );
-
-	// Compute the PDF
-	// pdf_st = marginal_pdf(v) * conditional_pdf(u|v)
-	// where marginal_pdf(v) = (marginalCDF[v+1] - marginalCDF[v]) * height
-	// and   conditional_pdf(u|v) = (conditionalCDF[v][u+1] - conditionalCDF[v][u]) * width
-
-	const Scalar marginalPdf = (marginalCDF[v + 1] - marginalCDF[v]) * static_cast<Scalar>(height);
-	const Scalar conditionalPdf = (conditionalCDF[v][u + 1] - conditionalCDF[v][u]) * static_cast<Scalar>(width);
-	const Scalar pdfST = marginalPdf * conditionalPdf;
-
-	// Convert from (s,t) density to solid-angle density.
-	// pdf_omega = pdf_st * theta / (4 * PI^2 * sin(theta))
-	const Scalar dx = s - 0.5;
-	const Scalar dy = -(t_coord - 0.5);
-	const Scalar rTexel = sqrt( dx * dx + dy * dy );
-	const Scalar theta = rTexel * TWO_PI;
-
-	if( theta < 1e-6 || rTexel > 0.5 )
-	{
-		// Near the pole or outside the disk: use limiting value
-		// theta/sin(theta) -> 1 as theta -> 0
-		pdf = pdfST / ((4.0 * PI));
-	}
-	else
-	{
-		const Scalar sinTheta = sin( theta );
-		if( sinTheta < 1e-10 )
-		{
-			pdf = 0;
-			return;
-		}
-		pdf = pdfST * theta / ((4.0 * PI) * PI * sinTheta);
-	}
+    if (spectralDomain) {
+        const Scalar z = 1-2*u1;
+        const Scalar phi = TWO_PI*u2;
+        const Scalar r = sqrt(r_max(Scalar(0),1-z*z));
+        direction = Vector3(r*cos(phi),r*sin(phi),z);
+        pdf = 1/(4*PI);
+        return;
+    }
+    if (!IsValid()) {
+        direction = Vector3(0,0,1); pdf = 0; return;
+    }
+    Scalar fractionalV=0,fractionalU=0;
+    const unsigned int y = SampleCDF(marginalCDF,height,u2,fractionalV);
+    const unsigned int x = SampleCDF(conditionalCDF[y],width,u1,fractionalU);
+    const Vector3 mapDirection = EqualAreaToDirection((Scalar(x)+fractionalU)/width,
+        (Scalar(y)+fractionalV)/height);
+    direction = Vector3Ops::Transform(mxInvTransform,mapDirection);
+    // A PDF is defined only almost everywhere. At poles and cell seams use
+    // the same canonical world-direction lookup as every MIS partner, also
+    // avoiding disagreement from floating-point rotation round trips.
+    pdf = Pdf(direction);
 }
 
-Scalar EnvironmentSampler::Pdf(
-	const Vector3& direction
-	) const
+Scalar EnvironmentSampler::Pdf(const Vector3& direction) const
 {
-	if( totalLuminance <= 0 )
-	{
-		return 0;
-	}
-
-	// Transform world direction to map space
-	const Vector3 mapDir = Vector3Ops::Transform( mxtransform, direction );
-
-	// Convert to (s, t) texture coordinates
-	Scalar s, t_coord;
-	DirectionToTexCoord( mapDir, s, t_coord );
-
-	// Clamp to [0, 1)
-	s = r_max( Scalar(0), r_min( Scalar(0.999999), s ) );
-	t_coord = r_max( Scalar(0), r_min( Scalar(0.999999), t_coord ) );
-
-	// Find the texel indices
-	const unsigned int u = r_min( static_cast<unsigned int>( s * width ), width - 1 );
-	const unsigned int v = r_min( static_cast<unsigned int>( t_coord * height ), height - 1 );
-
-	// Compute pdf_st = marginal_pdf * conditional_pdf
-	const Scalar marginalPdf = (marginalCDF[v + 1] - marginalCDF[v]) * static_cast<Scalar>(height);
-	const Scalar conditionalPdf = (conditionalCDF[v][u + 1] - conditionalCDF[v][u]) * static_cast<Scalar>(width);
-	const Scalar pdfST = marginalPdf * conditionalPdf;
-
-	// Convert to solid-angle density
-	const Scalar dx = s - 0.5;
-	const Scalar dy = -(t_coord - 0.5);
-	const Scalar rTexel = sqrt( dx * dx + dy * dy );
-	const Scalar theta = rTexel * TWO_PI;
-
-	if( theta < 1e-6 || rTexel > 0.5 )
-	{
-		return pdfST / ((4.0 * PI));
-	}
-
-	const Scalar sinTheta = sin( theta );
-	if( sinTheta < 1e-10 )
-	{
-		return 0;
-	}
-
-	return pdfST * theta / ((4.0 * PI) * PI * sinTheta);
+    if (spectralDomain) return 1/(4*PI);
+    if (!IsValid()) return 0;
+    Scalar u=0,v=0;
+    if (!DirectionToEqualArea(Vector3Ops::Transform(mxtransform,direction),u,v)) return 0;
+    const unsigned int x = r_min(static_cast<unsigned int>(u*width),width-1);
+    const unsigned int y = r_min(static_cast<unsigned int>(v*height),height-1);
+    const Scalar cellProbability = (marginalCDF[y+1]-marginalCDF[y])*
+        (conditionalCDF[y][x+1]-conditionalCDF[y][x]);
+    return cellProbability*Scalar(width)*Scalar(height)/FOUR_PI;
 }

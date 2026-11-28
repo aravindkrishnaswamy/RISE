@@ -25,6 +25,8 @@
 #endif
 
 #include "Interfaces/ILog.h"
+#include "Lights/PhysicalLightSpectrum.h"
+#include "Utilities/FiniteMath.h"
 
 //////////////////////////////////////////////////////////
 // Library versioning information
@@ -322,6 +324,55 @@ namespace RISE
 
 namespace RISE
 {
+	// Checked physical sources; spectra are copied and shared immutably.
+	bool RISE_API_CreatePhysicalPointOmniLight(ILightPriv** ppi, const unsigned int count, const double* nm, const double* values, const char* outsidePolicy, const double scale, const bool shootPhotons)
+	{
+		if (!ppi) return false;
+		*ppi = nullptr;
+		if (!RISE::IsFiniteDouble(scale) || scale < 0) return false;
+		auto spectrum = PhysicalLightSpectrum::Create(nm, values, count, outsidePolicy);
+		if (!spectrum || !spectrum->CanScale(scale, FOUR_PI)) return false;
+		const RISEPel rgb = spectrum->ScaledVisibleRGB(scale);
+		*ppi = new PointLight(scale, rgb, shootPhotons, spectrum);
+		GlobalLog()->PrintNew(*ppi, __FILE__, __LINE__, "physical spectral light");
+		return true;
+	}
+
+	bool RISE_API_CreatePhysicalPointSpotLight(ILightPriv** ppi, const unsigned int count, const double* nm, const double* values, const char* outsidePolicy, const double scale, const Point3& position, const Point3& target, const Scalar inner, const Scalar outer, const bool shootPhotons)
+	{
+		if (!ppi) return false;
+		*ppi = nullptr;
+		if (!RISE::IsFiniteDouble(scale) || scale < 0 || !RISE::IsFiniteDouble(inner) || !RISE::IsFiniteDouble(outer) || inner < 0 || outer <= 0 || inner > outer || outer > PI || !SpotLight::IsSupportedPhysicalCone(inner, outer) || !RISE::IsFiniteDouble(target.x) || !RISE::IsFiniteDouble(target.y) || !RISE::IsFiniteDouble(target.z) ||
+            !RISE::IsFiniteDouble(position.x) || !RISE::IsFiniteDouble(position.y) || !RISE::IsFiniteDouble(position.z)) return false;
+        Vector3 axis;
+        PhysicalLightSpectrum::ProductTerm distance;
+        Scalar queryDistance;
+        if (!PhysicalLightSpectrum::DirectionBetween(target,position,axis,distance,queryDistance)) return false;
+		auto spectrum = PhysicalLightSpectrum::Create(nm, values, count, outsidePolicy);
+		if (!spectrum || !spectrum->CanScale(scale, FOUR_PI)) return false;
+		const RISEPel rgb = spectrum->ScaledVisibleRGB(scale);
+		auto* light = new SpotLight(scale, target, inner, outer, rgb, shootPhotons, spectrum);
+        light->SetPosition(position);
+        light->FinalizeTransformations();
+        *ppi = light;
+		GlobalLog()->PrintNew(*ppi, __FILE__, __LINE__, "physical spectral light");
+		return true;
+	}
+
+	bool RISE_API_CreatePhysicalDirectionalLight(ILightPriv** ppi, const unsigned int count, const double* nm, const double* values, const char* outsidePolicy, const double scale, const Vector3& direction)
+	{
+		if (!ppi) return false;
+		*ppi = nullptr;
+		Vector3 axis;
+        if (!RISE::IsFiniteDouble(scale) || scale<0 || !PhysicalLightSpectrum::NormalizeDirection(direction,axis)) return false;
+		auto spectrum = PhysicalLightSpectrum::Create(nm, values, count, outsidePolicy);
+		if (!spectrum || !spectrum->CanScale(scale)) return false;
+		const RISEPel rgb = spectrum->ScaledVisibleRGB(scale);
+		*ppi = new DirectionalLight(scale, rgb, axis, spectrum);
+		GlobalLog()->PrintNew(*ppi, __FILE__, __LINE__, "physical spectral light");
+		return true;
+	}
+
 	//! Creates a infinite point omni light, located at the origin
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreatePointOmniLight(
@@ -4268,6 +4319,7 @@ namespace RISE
 #include "Materials/IsotropicPhongMaterial.h"
 #include "Materials/TranslucentMaterial.h"
 #include "Materials/BioSpecSkinMaterial.h"
+#include "Materials/HyLIoS/HyLIoSSkinMaterial.h"
 #include "Materials/DonnerJensenSkinBSSRDFMaterial.h"
 #include "Materials/GenericHumanTissueMaterial.h"
 #include "Materials/CompositeMaterial.h"
@@ -4659,6 +4711,27 @@ namespace RISE
 
 	//! Creates a BioSpec skin material
 	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateHyLIoSSkinMaterial(
+								IMaterial** ppi,
+								const HyLIoSSkinMaterialConfig& config,
+								std::string* outError
+								)
+	{
+		if( !ppi ) {
+			if( outError ) {
+				*outError = "RISE_API_CreateHyLIoSSkinMaterial: null output pointer";
+			}
+			return false;
+		}
+		*ppi = 0;
+		HyLIoSSkinMaterial* pMat = HyLIoSSkinMaterial::Create( config, outError );
+		if( !pMat ) {
+			return false;
+		}
+		*ppi = pMat;
+		return true;
+	}
+
 	bool RISE_API_CreateBioSpecSkinMaterial(
 								IMaterial** ppi,											///< [out] Pointer to recieve the material
 								const IScalarPainter& thickness_SC_,								///< Thickness of the stratum corneum (in cm)
@@ -9641,6 +9714,7 @@ namespace RISE
 #include "Rendering/VCMSpectralRasterizer.h"
 #include "Rendering/PathTracingPelRasterizer.h"
 #include "Rendering/PathTracingSpectralRasterizer.h"
+#include "Rendering/HyperspectralRadiometricRasterizer.h"
 #include "Rendering/MLTRasterizer.h"
 #include "Rendering/MLTSpectralRasterizer.h"
 #include "Rendering/AutoRasterizer.h"
@@ -10164,6 +10238,20 @@ namespace RISE
 
 		(*ppi) = pRasterizer;
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "Auto spectral rasterizer" );
+		return true;
+	}
+
+	bool RISE_API_CreateHyperspectralRadiometricRasterizer(
+								IRasterizer** ppi,
+								IRayCaster* caster,
+								const HyperspectralRadiometricConfig& config
+								)
+	{
+		if( !ppi || !caster ) {
+			return false;
+		}
+		*ppi = new HyperspectralRadiometricRasterizer( caster, config );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "Hyperspectral radiometric rasterizer" );
 		return true;
 	}
 

@@ -32,6 +32,8 @@ implementation backlog is [ROADMAP.md](ROADMAP.md).
   and the load-bearing thread-priority rules
 - [SCENE_CONVENTIONS.md](SCENE_CONVENTIONS.md): canonical scene-authoring
   semantics and common portability traps
+- [BEAUTY_ADAPTIVE_MOMENTS.md](BEAUTY_ADAPTIVE_MOMENTS.md): compensated beauty
+  luminance moments, adaptive convergence, producer parity, and storage/cost limits
 - [RENDERING_INTEGRATORS.md](RENDERING_INTEGRATORS.md): rasterizer and
   integrator selection guide
 - [MATERIALS.md](MATERIALS.md): material, BSDF/SPF, BSSRDF, and phase-function
@@ -68,7 +70,12 @@ implementation backlog is [ROADMAP.md](ROADMAP.md).
   findings of the third review on drafts 6 and 3 (fourteen new P1s, the leaf
   selector ruling, measured Cycles differences) and the owner's decisions;
   the designs carry an "After round 3" block and are not redrafted
-- [LIGHTS.md](LIGHTS.md): emitter and light-sampling architecture
+- [LIGHTS.md](LIGHTS.md): emitter and light-sampling architecture;
+  [ENVIRONMENT_SAMPLING.md](ENVIRONMENT_SAMPLING.md) records environment proposal
+  coordinates, PDFs, power and ownership contracts
+- [RADIOMETRIC_PRIMITIVES.md](RADIOMETRIC_PRIMITIVES.md): fixed-wavelength scalar
+  accumulation, exact represented-moment variance resolution, checkpoints and raw
+  EXR output; the P6b renderer adapter and calibration gates remain open
 - [MIS_HEURISTICS.md](MIS_HEURISTICS.md): PT/BDPT/VCM/MLT MIS choices and
   subsurface-jump partitions
 - [REFRACTIVE_RADIANCE_SCALING.md](REFRACTIVE_RADIANCE_SCALING.md): $\eta^2$
@@ -168,6 +175,21 @@ historical 2026-06-19 snapshot, not present-day ground truth.
 
 ## Active or Deferred Roadmaps
 
+- [HYLIOS_LOCAL_RESPONSE_CORE.md](HYLIOS_LOCAL_RESPONSE_CORE.md): immutable local
+  angular response, nonreciprocal camera transpose and finite-grid sampling
+  contracts; synthetic numeric core only, with bake/asset/renderer gates open
+- [HYLIOS_COUPLED_LINEAGE_PROOF.md](HYLIOS_COUPLED_LINEAGE_PROOF.md): coupled position/direction support proofs and their [implemented transition ledger](HYLIOS_COUPLED_LINEAGE_TRANSITIONS.md)
+- [HYLIOS_LOCAL_ASSET_V1.md](HYLIOS_LOCAL_ASSET_V1.md): bounded local-response asset framing, semantic identity, quantization and recovery contracts
+- [HYLIOS_EXPERIMENT_PREPARATION.md](HYLIOS_EXPERIMENT_PREPARATION.md): immutable exact-node resolution, shared history driving and locale-independent JSON
+- [HYLIOS_LOCAL_BAKE_V1.md](HYLIOS_LOCAL_BAKE_V1.md): bounded forward response baking, source provenance and statistical reports
+- [HYLIOS_WORKPLAN.md](HYLIOS_WORKPLAN.md): refreshed HyLIoS hyperspectral skin
+  implementation design, scientific validation gates, PT integration and spatial
+  transport roadmap; [research notes](HYLIOS_RESEARCH_NOTES.md) record sources,
+  optical-data gaps and unresolved publication conventions; the experimental
+  [measurement CLI](HYLIOS_MEASUREMENT.md) reports individual and explicit-complex
+  forward diagnostics and unresolved power explicitly; [angular lineage](HYLIOS_ANGULAR_LINEAGE.md)
+  distinguishes proved continuous and mirror laws from unclassified returns; [spectral source proposals](SPECTRAL_SOURCE_PROPOSALS.md)
+  document the per-caster preparation capability and its integration limits
 - [FIRE_SMOKE_STATUS.md](FIRE_SMOKE_STATUS.md): current fire/smoke state,
   open problems and operating rules; start here
 - [FIRE_SMOKE_PRODUCTION_SOLVER.md](FIRE_SMOKE_PRODUCTION_SOLVER.md): r82

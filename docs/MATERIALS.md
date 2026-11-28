@@ -633,9 +633,16 @@ file for parameter-by-parameter behaviour.
 - `randomwalk_sss_material` — random-walk volumetric SSS (§5).
 - `donner_jensen_skin_bssrdf_material` — Donner-Jensen multi-layer skin
   diffusion profile.
-- `biospec_skin_material` — biophysically-based skin, **spectral-only**
-  random walk (RGB renderers fall back to the diffusion variant via the
-  `GetRandomWalkSSSParamsNM` override pattern from §3 / §5).
+- `biospec_skin_material` — biophysically-based layered skin model
+  (Krishnaswamy & Baranoski 2004), SPF-only spectral scattering.
+- `hylios_skin_material` — HyLIoS hyperspectral 6-layer skin model
+  (Chen et al. 2015), supporting both `baked_local` validated local
+  response assets (`HyLIoSLocalResponseAsset` + `HyLIoSSupportedCameraProposal`)
+  and `nonlocal` spatial transport (`rise_reciprocal_boundary_v1` + finite
+  spatial domains: `planar_polygon`, `concentric_sphere`,
+  `concentric_cylinder`, `intrinsic_layer`), with a shared D65-weighted
+  visible guide albedo and PT-only routing (`AutoRasterizer` -> PT;
+  BDPT/VCM/MLT refuse; HWSS delegates per-lane to scalar NM).
 - `generic_human_tissue_material` — bulk-tissue scattering coefficients
   for human-body rendering.
 

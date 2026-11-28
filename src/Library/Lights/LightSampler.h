@@ -103,6 +103,7 @@
 #include "../Rendering/LuminaryManager.h"
 #include "../Rendering/EnvironmentSampler.h"
 #include "LightBVH.h"
+#include "PhysicalLightSpectrum.h"
 
 namespace RISE
 {
@@ -489,6 +490,13 @@ namespace RISE
 		struct LightEntry
 		{
 			const ILightPriv*	pLight;		///< Non-null for non-mesh lights
+            // Exact built-in physical source bound once at Prepare. No RTTI,
+            // shared ownership copy, or ILight vtable change on a NEE query.
+            const void* physicalLight = nullptr;
+            using PhysicalProductNM = Scalar (*)(const void*,const Vector3&,Scalar,
+                std::initializer_list<PhysicalLightSpectrum::ProductTerm>,
+                std::initializer_list<PhysicalLightSpectrum::ProductTerm>);
+            PhysicalProductNM physicalProductNM = nullptr;
 			unsigned int		lumIndex;	///< Index into luminaries list (valid when pLight==0)
 			Scalar				exitance;	///< MaxValue of radiant exitance
 			Point3				position;	///< Representative position for distance estimates
@@ -582,6 +590,11 @@ namespace RISE
 			virtual ~LightSampler();
 
 			/// Cached state set by Prepare()
+			std::shared_ptr<const SpectralSourceDomain> spectralDomain;
+            SpectralSourceDomain::Mass spectralFinitePower;
+            // Spectral-domain preparation is per sampler/pass, never a source cache.
+            SpectralSourceDomain::Mass EstimateSpectralPower(const ILightPriv& light) const;
+            SpectralSourceDomain::Mass EstimateSpectralPower(const IObject& object) const;
 			const IScene*									pPreparedScene;
 			const LuminaryManager::LuminariesList*			pPreparedLuminaries;
 			Scalar											cachedTotalExitance;
@@ -627,11 +640,11 @@ namespace RISE
 			/// (vs an alias-table light) on the next call.  Set during
 			/// `Prepare()` and `SetEnvironmentSampler()` from env
 			/// totalLuminance × disc area vs the alias table's total
-			/// weight.  Zero when env doesn't exist or env total
-			/// radiance is zero; 1 when env exists and the alias table
-			/// is empty (env-only scenes); fractional in mixed
-			/// env+other-lights scenes (continuous PMF, matching PBRT-
-			/// v4's `LightSampler::PMF(env)` semantics).
+			/// weight, with 5% uniform support across present classes in
+			/// legacy mixed roots. A zero midpoint estimate cannot disable
+			/// a present environment. Zero when env is absent, zero-scale,
+			/// or vertex placement is infeasible; one in env-only scenes.
+			/// Explicit spectral domains use their separate support policy.
 			Scalar						cachedEnvSelectProb;
 
 			/// Recomputes `cachedEnvSelectProb` from current env +
@@ -1048,6 +1061,16 @@ namespace RISE
 			{
 				pOptimalMIS = pAccum;
 			}
+
+            // Configure before Prepare; immutable during sampling. This concrete
+            // seam deliberately does not enable a radiometric rasterizer/API.
+            void SetSpectralSourceDomain(std::shared_ptr<const SpectralSourceDomain> domain);
+            const SpectralSourceDomain* GetSpectralSourceDomain() const { return spectralDomain.get(); }
+            Scalar LightSampleRRThreshold() const { return lightSampleRRThreshold; }
+            bool IsPrepared() const { return pPreparedScene && pPreparedLuminaries; }
+            // Preparation-only transfer to a replacement sampler; source scene
+            // must be the same frozen attachment. No proposal tables are copied.
+            void CopyMotionSweepFrom(const LightSampler& source, const IScene& scene);
 
 			/// Cache the scene and luminaries list for subsequent queries.
 			/// Builds the alias table for O(1) light selection.
@@ -1513,7 +1536,8 @@ namespace RISE
 			/// next call.  Continuous in (0, 1] when env exists, by
 			/// the env-vs-alias selection roll in `SampleLight()` —
 			/// computed during `Prepare()` from env totalLuminance ×
-			/// disc area vs the alias table's total weight.  Matches
+			/// disc area vs the alias table's total weight, including the
+			/// legacy 5% uniform class-support mixture. Matches
 			/// PBRT-v4's `LightSampler::PMF(env)` semantics so MIS at
 			/// the Path B s=0 site has a non-zero pdfRev in mixed
 			/// scenes (env + other lights), which closes the MIS

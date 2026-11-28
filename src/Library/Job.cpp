@@ -40,6 +40,7 @@
 #include <typeinfo>
 #define _USE_MATH_DEFINES
 #include "Job.h"
+#include "Materials/HyLIoS/HyLIoSSkinMaterial.h"
 #include "SceneEditor/CancellableProgressCallback.h"
 #include "Cst/Cst.h"   // P5 (save-as-CST): ParseToCst / DeriveToJob / Document
 #include <fstream>
@@ -78,6 +79,7 @@
 #include "Rendering/FileRasterizerOutput.h"
 #include "Rendering/Rasterizer.h"
 #include "Rendering/RayCaster.h"		// concrete RayCaster — dynamic_cast target for SetTransparentShadows (PT only)
+#include "Rendering/HyperspectralRadiometricRasterizer.h"
 #include "Rendering/PixelBasedRasterizerHelper.h"	// GetRayCaster() — reach the active rasterizer's caster for radiance_scale
 #include "Rendering/BlockRasterizeSequence.h"
 #include "Rendering/AdaptiveTileSizer.h"
@@ -7264,6 +7266,40 @@ bool Job::AddDiffuseTransmissionMaterial(
 	return ok;
 }
 
+bool Job::AddHyLIoSSkinMaterial(
+	const char* name,
+	const HyLIoSSkinMaterialConfig& config
+	)
+{
+	HyLIoSSkinMaterialConfig resolved = config;
+	std::string resolvedAssetPath;
+	std::string resolvedSpecimenPath;
+
+	if( config.responseAssetPath && config.responseAssetPath[0] ) {
+		resolvedAssetPath = GlobalMediaPathLocator().Find( config.responseAssetPath ).c_str();
+		resolved.responseAssetPath = resolvedAssetPath.c_str();
+	}
+	if( config.specimenSourcePath && config.specimenSourcePath[0] ) {
+		resolvedSpecimenPath = GlobalMediaPathLocator().Find( config.specimenSourcePath ).c_str();
+		resolved.specimenSourcePath = resolvedSpecimenPath.c_str();
+	}
+
+	IMaterial* pMaterial = 0;
+	std::string err;
+	if( !RISE_API_CreateHyLIoSSkinMaterial( &pMaterial, resolved, &err ) || !pMaterial ) {
+		if( err.empty() ) {
+			err = "hylios_skin_material creation failed";
+		}
+		GlobalLog()->PrintEx( eLog_Error, "hylios_skin_material `%s`: %s", name ? name : "", err.c_str() );
+		RISE::SetFinalizeDiagIfEmpty( err.c_str() );
+		return false;
+	}
+
+	const bool ok = RegisterOrDiag( pMatManager, pMaterial, name, "material" );
+	safe_release( pMaterial );
+	return ok;
+}
+
 //! Adds Schlick material
 /// \return TRUE if successful, FALSE otherwise
 bool Job::AddSchlickMaterial(
@@ -8890,6 +8926,52 @@ bool Job::AddDirectionalLight(
 	RISE_API_CreateDirectionalLight( &pLight, power, c, Vector3(dir) );
 	const bool ok = RegisterOrDiag( pLightManager, pLight, name, "light" );   // H3: LightManager::AddItem self-invalidates the light-topology gen on success
 	safe_release( pLight );
+	return ok;
+}
+
+bool Job::AddPhysicalPointOmniLight(const char* name, const unsigned int count, const double* nm, const double* values, const char* outsidePolicy, const double scale, const double pos[3], const bool shootPhotons)
+{
+	if (!name || !*name || !pos || !RISE::IsFiniteDouble(pos[0]) || !RISE::IsFiniteDouble(pos[1]) || !RISE::IsFiniteDouble(pos[2])) { RISE::SetFinalizeDiagIfEmpty("physical light requires a name and geometric parameters"); return false; }
+	ILightPriv* light = nullptr;
+	if (!RISE_API_CreatePhysicalPointOmniLight(&light, count, nm, values, outsidePolicy, scale, shootPhotons)) {
+		RISE::SetFinalizeDiagIfEmpty("physical light: invalid spectrum, scale, geometry or outside policy (expected zero)");
+		return false;
+	}
+	light->SetPosition(Point3(pos));
+	light->FinalizeTransformations();
+	const bool ok = RegisterOrDiag(pLightManager, light, name, "light");
+	safe_release(light);
+	if (!ok) RISE::SetFinalizeDiagIfEmpty("physical light registration failed");
+	return ok;
+}
+
+bool Job::AddPhysicalPointSpotLight(const char* name, const unsigned int count, const double* nm, const double* values, const char* outsidePolicy, const double scale, const double target[3], const double inner, const double outer, const double pos[3], const bool shootPhotons)
+{
+	if (!name || !*name || !pos || !target || !RISE::IsFiniteDouble(pos[0]) || !RISE::IsFiniteDouble(pos[1]) || !RISE::IsFiniteDouble(pos[2]) || (pos[0] == target[0] && pos[1] == target[1] && pos[2] == target[2])) { RISE::SetFinalizeDiagIfEmpty("physical light requires a name and geometric parameters"); return false; }
+	ILightPriv* light = nullptr;
+	if (!RISE_API_CreatePhysicalPointSpotLight(&light, count, nm, values, outsidePolicy, scale, Point3(pos), Point3(target), inner, outer, shootPhotons)) {
+		RISE::SetFinalizeDiagIfEmpty("physical light: invalid spectrum, scale, geometry or outside policy (expected zero)");
+		return false;
+	}
+	light->SetPosition(Point3(pos));
+	light->FinalizeTransformations();
+	const bool ok = RegisterOrDiag(pLightManager, light, name, "light");
+	safe_release(light);
+	if (!ok) RISE::SetFinalizeDiagIfEmpty("physical light registration failed");
+	return ok;
+}
+
+bool Job::AddPhysicalDirectionalLight(const char* name, const unsigned int count, const double* nm, const double* values, const char* outsidePolicy, const double scale, const double direction[3])
+{
+	if (!name || !*name || !direction) { RISE::SetFinalizeDiagIfEmpty("physical light requires a name and geometric parameters"); return false; }
+	ILightPriv* light = nullptr;
+	if (!RISE_API_CreatePhysicalDirectionalLight(&light, count, nm, values, outsidePolicy, scale, Vector3(direction))) {
+		RISE::SetFinalizeDiagIfEmpty("physical light: invalid spectrum, scale, geometry or outside policy (expected zero)");
+		return false;
+	}
+	const bool ok = RegisterOrDiag(pLightManager, light, name, "light");
+	safe_release(light);
+	if (!ok) RISE::SetFinalizeDiagIfEmpty("physical light registration failed");
 	return ok;
 }
 
@@ -14267,6 +14349,42 @@ bool Job::SetPathTracingSpectralRasterizer(
 	snap.stability       = stabilityConfig;
 	snap.progressive     = progressiveConfig;
 	return RegisterAndActivateRasterizer( "pathtracing_spectral_rasterizer", pRaster, snap );
+}
+
+bool Job::SetHyperspectralRadiometricRasterizer(
+	const HyperspectralRadiometricConfig& config
+	)
+{
+	IShader* pShader = pShaderManager->GetItem( "default" );
+	if( !pShader ) {
+		std::vector<IShaderOp*> emptyOps;
+		RISE_API_CreateStandardShader( &pShader, emptyOps );
+	} else {
+		pShader->addref();
+	}
+
+	IRayCaster* pCaster = 0;
+	RISE_API_CreateRayCaster( &pCaster, true, kDefaultPathTracingMaxDepth, *pShader, true );
+	safe_release( pShader );
+	if( !pCaster ) {
+		RISE::SetFinalizeDiagIfEmpty( "hyperspectral_radiometric_rasterizer: failed to create ray caster" );
+		return false;
+	}
+
+	IRasterizer* pRaster = 0;
+	const bool created = RISE_API_CreateHyperspectralRadiometricRasterizer( &pRaster, pCaster, config );
+	safe_release( pCaster );
+	if( !created || !pRaster ) {
+		RISE::SetFinalizeDiagIfEmpty( "hyperspectral_radiometric_rasterizer: creation failed" );
+		return false;
+	}
+
+	RasterizerParams snap;
+	snap.numPixelSamples = static_cast<unsigned int>( std::min<std::uint64_t>( config.samplesPerPixel, 0xffffffffULL ) );
+	snap.oidnDenoise     = config.oidnDenoise;
+	snap.stability       = config.stabilityConfig;
+	snap.sms             = config.smsConfig;
+	return RegisterAndActivateRasterizer( "hyperspectral_radiometric_rasterizer", pRaster, snap );
 }
 
 bool Job::SetMLTRasterizer(

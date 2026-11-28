@@ -84,10 +84,12 @@ namespace RISE
 		// the atmosphere (turbidity-dependent extinction).
 		Scalar SampleSolarRadiance( Scalar lambda_nm ) const;
 
-		// RGB convenience: integrate the spectral radiance against CIE
-		// 1931 + D65 → ROMM RGB.  Cached against a small directional
-		// quantization so the first-call cost is paid once.  Used by
-		// the IRadianceMap::GetRadiance non-spectral path.
+        // RGB convenience: evaluate analytic xyY and convert XYZ(D65)
+        // directly to the current linear Rec.709 RISEPel. Despite the
+        // historical method name, this does not integrate SampleRadiance.
+        // Queries have no directional quantization or shared mutable cache;
+        // value copies retain independent coefficients/scalars/vectors.
+        // Used by IRadianceMap::GetRadiance and its legacy painter proxy.
 		RISEPel IntegrateRGB( const Vector3& dir ) const;
 
 	private:

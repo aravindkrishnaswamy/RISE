@@ -1099,10 +1099,11 @@ void MLTSpectralRasterizer::RasterizeScene(
 	if( const ObjectManager* pObjMgr = dynamic_cast<const ObjectManager*>( pScene.GetObjects() ) ) {
 		std::string offender;
 		if( pObjMgr->ComputeScenePathDependence( &offender ) != 0u ||
-			pObjMgr->SceneHasMixMaterial( &offender ) )
+			pObjMgr->SceneHasMixMaterial( &offender ) ||
+			pObjMgr->SceneHasHyLIoSMaterial( &offender ) )
 		{
 			GlobalLog()->PrintEx( eLog_Error,
-				"MLTSpectralRasterizer:: Refusing scene with MixMaterial or non-physical path/view-dependent inputs "
+				"MLTSpectralRasterizer:: Refusing scene with MixMaterial, HyLIoS skin, or non-physical path/view-dependent inputs "
 				"(first object '%s'). Use pathtracing_spectral_rasterizer.",
 				offender.c_str() );
 			return;
@@ -1195,10 +1196,11 @@ void MLTSpectralRasterizer::RasterizeSceneAnimation(
 	if( const ObjectManager* pObjMgr = dynamic_cast<const ObjectManager*>( pScene.GetObjects() ) ) {
 		std::string offender;
 		if( pObjMgr->ComputeScenePathDependence( &offender ) != 0u ||
-			pObjMgr->SceneHasMixMaterial( &offender ) )
+			pObjMgr->SceneHasMixMaterial( &offender ) ||
+			pObjMgr->SceneHasHyLIoSMaterial( &offender ) )
 		{
 			GlobalLog()->PrintEx( eLog_Error,
-				"MLTSpectralRasterizer:: Refusing scene with MixMaterial or non-physical path/view-dependent inputs "
+				"MLTSpectralRasterizer:: Refusing scene with MixMaterial, HyLIoS skin, or non-physical path/view-dependent inputs "
 				"(first object '%s'). Use pathtracing_spectral_rasterizer.",
 				offender.c_str() );
 			return;

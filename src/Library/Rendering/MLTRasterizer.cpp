@@ -1378,10 +1378,11 @@ void MLTRasterizer::RasterizeScene(
 	if( const ObjectManager* pObjMgr = dynamic_cast<const ObjectManager*>( pScene.GetObjects() ) ) {
 		std::string offender;
 		if( pObjMgr->ComputeScenePathDependence( &offender ) != 0u ||
-			pObjMgr->SceneHasMixMaterial( &offender ) )
+			pObjMgr->SceneHasMixMaterial( &offender ) ||
+			pObjMgr->SceneHasHyLIoSMaterial( &offender ) )
 		{
 			GlobalLog()->PrintEx( eLog_Error,
-				"MLTRasterizer:: Refusing scene with MixMaterial or non-physical path/view-dependent inputs "
+				"MLTRasterizer:: Refusing scene with MixMaterial, HyLIoS skin, or non-physical path/view-dependent inputs "
 				"(first object '%s'). Use pathtracing_pel_rasterizer.",
 				offender.c_str() );
 			return;
@@ -1510,10 +1511,11 @@ void MLTRasterizer::RasterizeSceneAnimation(
 	if( const ObjectManager* pObjMgr = dynamic_cast<const ObjectManager*>( pScene.GetObjects() ) ) {
 		std::string offender;
 		if( pObjMgr->ComputeScenePathDependence( &offender ) != 0u ||
-			pObjMgr->SceneHasMixMaterial( &offender ) )
+			pObjMgr->SceneHasMixMaterial( &offender ) ||
+			pObjMgr->SceneHasHyLIoSMaterial( &offender ) )
 		{
 			GlobalLog()->PrintEx( eLog_Error,
-				"MLTRasterizer:: Refusing scene with MixMaterial or non-physical path/view-dependent inputs "
+				"MLTRasterizer:: Refusing scene with MixMaterial, HyLIoS skin, or non-physical path/view-dependent inputs "
 				"(first object '%s'). Use pathtracing_pel_rasterizer.",
 				offender.c_str() );
 			return;

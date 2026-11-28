@@ -41808,7 +41808,7 @@ namespace RISE
 						"surface material instead";
 				if( kind == "subsurfacescattering_material" || kind == "randomwalk_sss_material" ||
 				    kind == "donner_jensen_skin_bssrdf_material" || kind == "biospec_skin_material" ||
-				    kind == "generic_human_tissue_material" )
+				    kind == "hylios_skin_material" || kind == "generic_human_tissue_material" )
 					return "it is a BSSRDF / subsurface material (`" + kind + "`), whose volumetric random "
 						"walk has no hemispherical albedo for the sheen's energy subtraction to read";
 				if( kind == "coated_material" || kind == "composite_material" ||

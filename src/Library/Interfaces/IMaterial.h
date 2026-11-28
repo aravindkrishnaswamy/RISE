@@ -410,6 +410,34 @@ namespace RISE
         //! depends on non-physical path/view state or requires PT-only transport.
         virtual unsigned int GetPathDependence() const;
 
+        //! True iff this material (or any wrapped leaf) is a HyLIoS hyperspectral
+        //! skin material.  Drives PT-only Auto routing, BDPT/VCM/MLT refusal,
+        //! and HWSS per-lane scalar spectral delegation without polluting
+        //! `PathDependence` flags.
+        virtual bool IsHyperspectralSkin() const { return false; }
+
+        //! True iff this material (or any wrapped leaf) is a nonlocal HyLIoS skin
+        //! material with a smooth (alpha == 0) outer boundary, which cannot perform
+        //! conditional boundary-event NEE against delta lights.
+        virtual bool HasSmoothNonlocalBoundary() const { return false; }
+
+        //! Optional shared visible RGB guide albedo override (e.g. HyLIoS
+        //! D65-weighted white-normalized hemispherical reflectance) consumed
+        //! identically by AOV guides, `MixMaterial`, and preview pipelines.
+        //! Returns true if `outAlbedo` was populated.
+        virtual bool EvaluateVisibleGuideAlbedo(
+            const RayIntersectionGeometric& geom,
+            RISEPel& outAlbedo
+            ) const { return false; }
+
+        //! True iff this material's spectral representation covers `[nmBegin, nmEnd]`
+        //! (both in nanometres).  Ordinary analytic/RGB materials cover any range;
+        //! baked hyperspectral assets return false outside their baked band.
+        virtual bool CoversWavelengthRange(
+            const Scalar nmBegin,
+            const Scalar nmEnd
+            ) const { return true; }
+
 	};
 
 	//! Shared denoiser guide helper (Round 3 P1-1 & P1-6):

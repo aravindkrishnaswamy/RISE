@@ -75,6 +75,7 @@ Bytes ReadAll(const fs::path& path)
 	return Bytes(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
 }
 
+#if !defined(_WIN32) && defined(RISE_ENABLE_OPENVDB)
 std::string ReadText(const fs::path& path)
 {
 	const auto b = ReadAll(path);
@@ -92,6 +93,8 @@ void WriteText(const fs::path& path, const std::string& text)
 	std::ofstream f(path, std::ios::binary | std::ios::trunc);
 	f << text;
 }
+
+#endif
 
 // ---------------------------------------------------------------- children
 
