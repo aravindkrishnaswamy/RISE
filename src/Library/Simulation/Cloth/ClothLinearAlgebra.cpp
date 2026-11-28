@@ -288,6 +288,13 @@ bool SolveConjugateGradient(const BlockMatrix& a, const std::vector<double>& b, 
 }
 
 bool SolveConjugateGradient(const BlockMatrix& a, const std::vector<double>& b, std::vector<double>& x,
+	double rtol, int maxIterations, LinearSolveStats& stats, const EnvelopeCholesky& factor, ParallelPool* pool)
+{
+	return PooledConjugateGradient(a, b, x, rtol, maxIterations, stats, pool,
+		[&](const std::vector<double>& r, std::vector<double>& z) { factor.Solve(r, z); });
+}
+
+bool SolveConjugateGradient(const BlockMatrix& a, const std::vector<double>& b, std::vector<double>& x,
 	double rtol, int maxIterations, LinearSolveStats& stats, GridMultigrid& multigrid)
 {
 	return PooledConjugateGradient(a, b, x, rtol, maxIterations, stats, multigrid.Pool(),
@@ -620,8 +627,10 @@ void GridMultigrid::Build(const BlockMatrix& fine, std::uint32_t nu, std::uint32
 		BuildLines(levels_[l], Matrix(l), 0);
 		BuildLines(levels_[l], Matrix(l), 1);
 	}
-	coarseOrder_.resize(static_cast<std::size_t>(levels_.back().nu)*levels_.back().nv);
-	for (std::uint32_t k = 0; k < coarseOrder_.size(); ++k) coarseOrder_[k] = k;
+	// m3a.8: the coarsest level under reverse Cuthill-McKee or the grid order, whichever factors with less work.
+	std::vector<std::uint32_t> gridOrder(static_cast<std::size_t>(levels_.back().nu)*levels_.back().nv);
+	for (std::uint32_t k = 0; k < gridOrder.size(); ++k) gridOrder[k] = k;
+	coarse_.Prepare({}, {gridOrder});
 }
 
 bool GridMultigrid::Setup(const BlockMatrix& fine)
@@ -655,7 +664,7 @@ bool GridMultigrid::Setup(const BlockMatrix& fine)
 	}
 	for (std::size_t l = 0; l + 1 < levels_.size(); ++l)
 		if (!FactorLines(levels_[l], Matrix(l), 0) || !FactorLines(levels_[l], Matrix(l), 1)) return false;
-	return coarse_.Factor(Matrix(levels_.size() - 1), coarseOrder_);
+	return coarse_.Factor(Matrix(levels_.size() - 1));
 }
 
 void GridMultigrid::Cycle(std::size_t l)
@@ -777,6 +786,208 @@ void BandedCholesky::Solve(const std::vector<double>& b, std::vector<double>& x)
 		double s = y[ii];
 		for (std::size_t k = ii + 1; k <= kEnd; ++k) s -= band_[k*w + (k-ii)]*y[k];
 		y[ii] = s/band_[ii*w];
+	}
+	x.assign(n_, 0.0);
+	for (std::uint32_t v = 0; v < position_.size(); ++v)
+		for (int c = 0; c < 3; ++c) x[3*static_cast<std::size_t>(v) + c] = y[3*static_cast<std::size_t>(position_[v]) + c];
+}
+
+// ------------------------------------------------------------------ m3a.8: envelope Cholesky
+
+void EnvelopeCholesky::Prepare(const std::vector<char>& decoupled, const std::vector<std::vector<std::uint32_t>>& candidates)
+{
+	decoupled_ = decoupled;
+	candidates_ = candidates;
+	analysed_ = false;
+}
+
+std::vector<std::uint32_t> EnvelopeCholesky::ReverseCuthillMcKee(const BlockMatrix& a, const std::vector<char>& decoupled)
+{
+	const std::uint32_t n = a.Blocks();
+	const auto& rs = a.RowStart();
+	const auto& col = a.Column();
+	auto off = [&](std::uint32_t v) { return v < decoupled.size() && decoupled[v]; };
+	// The graph: pattern neighbours (columns are sorted), without decoupled vertices' edges.
+	std::vector<std::uint32_t> start(n + 1, 0), adjacent;
+	adjacent.reserve(col.size());
+	for (std::uint32_t i = 0; i < n; ++i) {
+		if (!off(i))
+			for (std::size_t k = rs[i]; k < rs[i + 1]; ++k)
+				if (col[k] != i && !off(col[k])) adjacent.push_back(col[k]);
+		start[i + 1] = static_cast<std::uint32_t>(adjacent.size());
+	}
+	auto degree = [&](std::uint32_t v) { return start[v + 1] - start[v]; };
+	std::vector<std::uint32_t> order, level(n, 0);
+	order.reserve(n);
+	std::vector<char> placed(n, 0);
+	std::vector<std::uint32_t> mark(n, 0), queue;
+	std::uint32_t stamp = 0;
+	// Breadth-first level structure of v's component; returns its depth and the last level's vertices.
+	auto levels = [&](std::uint32_t root, std::vector<std::uint32_t>& last) {
+		++stamp;
+		queue.assign(1, root);
+		mark[root] = stamp;
+		level[root] = 0;
+		std::uint32_t depth = 0;
+		for (std::size_t h = 0; h < queue.size(); ++h) {
+			const std::uint32_t v = queue[h];
+			depth = std::max(depth, level[v]);
+			for (std::uint32_t e = start[v]; e < start[v + 1]; ++e) {
+				const std::uint32_t u = adjacent[e];
+				if (mark[u] == stamp) continue;
+				mark[u] = stamp;
+				level[u] = level[v] + 1;
+				queue.push_back(u);
+			}
+		}
+		last.clear();
+		for (std::uint32_t v : queue) if (level[v] == depth) last.push_back(v);
+		return depth;
+	};
+	std::vector<std::uint32_t> last, neighbours;
+	for (std::uint32_t seed = 0; seed < n; ++seed) {
+		if (placed[seed]) continue;
+		// Pseudo-peripheral root (George and Liu): move to the lowest-degree vertex
+		// of the deepest level (lowest index among equals) while the depth grows.
+		std::uint32_t root = seed;
+		std::uint32_t depth = levels(root, last);
+		for (;;) {
+			std::uint32_t best = last.front();
+			for (std::uint32_t v : last) if (degree(v) < degree(best) || (degree(v) == degree(best) && v < best)) best = v;
+			std::vector<std::uint32_t> next;
+			const std::uint32_t d = levels(best, next);
+			if (d <= depth) break;
+			root = best; depth = d; last.swap(next);
+		}
+		// Cuthill-McKee: breadth first, each vertex's new neighbours by (degree, index).
+		std::size_t head = order.size();
+		order.push_back(root);
+		placed[root] = 1;
+		while (head < order.size()) {
+			const std::uint32_t v = order[head++];
+			neighbours.clear();
+			for (std::uint32_t e = start[v]; e < start[v + 1]; ++e)
+				if (!placed[adjacent[e]]) { neighbours.push_back(adjacent[e]); placed[adjacent[e]] = 1; }
+			std::sort(neighbours.begin(), neighbours.end(), [&](std::uint32_t x, std::uint32_t y) {
+				return degree(x) != degree(y) ? degree(x) < degree(y) : x < y; });
+			order.insert(order.end(), neighbours.begin(), neighbours.end());
+		}
+	}
+	std::reverse(order.begin(), order.end());
+	return order;
+}
+
+void EnvelopeCholesky::Analyse(const BlockMatrix& a, bool useDecoupled)
+{
+	const std::uint32_t nb = a.Blocks();
+	const auto& rs = a.RowStart();
+	const auto& col = a.Column();
+	const std::vector<char> none;
+	const std::vector<char>& decoupled = useDecoupled ? decoupled_ : none;
+	auto off = [&](std::uint32_t v) { return v < decoupled.size() && decoupled[v]; };
+	n_ = 3*static_cast<std::size_t>(nb);
+	// Per vertex position: the first coupled position; per scalar row: the envelope's start.
+	auto envelope = [&](const std::vector<std::uint32_t>& order, std::vector<std::uint32_t>& position,
+		std::vector<std::size_t>& first, std::size_t& bw) {
+		position.assign(nb, 0);
+		for (std::size_t k = 0; k < order.size(); ++k) position[order[k]] = static_cast<std::uint32_t>(k);
+		first.assign(n_, 0);
+		std::size_t widest = 0;
+		for (std::uint32_t i = 0; i < nb; ++i) {
+			std::uint32_t f = position[i];
+			if (!off(i))
+				for (std::size_t k = rs[i]; k < rs[i + 1]; ++k)
+					if (!off(col[k])) f = std::min(f, position[col[k]]);
+			widest = std::max<std::size_t>(widest, position[i] - f);
+			for (int r = 0; r < 3; ++r) first[3*static_cast<std::size_t>(position[i]) + r] = 3*static_cast<std::size_t>(f);
+		}
+		bw = 3*widest + 2;
+		// Multiply-adds of the row-oriented factorisation below.
+		double ops = 0;
+		for (std::size_t i = 0; i < n_; ++i)
+			for (std::size_t j = first[i]; j <= i; ++j) ops += static_cast<double>(j - std::max(first[i], first[j]));
+		return ops;
+	};
+	order_ = ReverseCuthillMcKee(a, decoupled);
+	operations_ = envelope(order_, position_, first_, bw_);
+	for (const auto& c : candidates_) {
+		if (c.size() != nb) continue;
+		std::vector<std::uint32_t> position;
+		std::vector<std::size_t> first;
+		std::size_t bw = 0;
+		const double ops = envelope(c, position, first, bw);
+		if (ops < operations_) { operations_ = ops; order_ = c; position_.swap(position); first_.swap(first); bw_ = bw; }
+	}
+	rowStart_.assign(n_ + 1, 0);
+	for (std::size_t i = 0; i < n_; ++i) rowStart_[i + 1] = rowStart_[i] + (i - first_[i] + 1);
+	envelope_ = rowStart_[n_] - n_;
+	values_.assign(rowStart_[n_], 0.0);
+	patternRowStart_ = rs;
+	patternColumn_ = col;
+	usedDecoupled_ = useDecoupled;
+	analysed_ = true;
+}
+
+bool EnvelopeCholesky::Factor(const BlockMatrix& a)
+{
+	if (!analysed_ || a.RowStart() != patternRowStart_ || a.Column() != patternColumn_) Analyse(a, true);
+	const std::uint32_t nb = a.Blocks();
+	const auto& rs = a.RowStart();
+	const auto& col = a.Column();
+	for (int attempt = 0; attempt < 2; ++attempt) {
+		std::fill(values_.begin(), values_.end(), 0.0);
+		bool outside = false;
+		for (std::uint32_t i = 0; i < nb; ++i)
+			for (std::size_t k = rs[i]; k < rs[i + 1]; ++k) {
+				const double* b = a.Block(k);
+				for (int r = 0; r < 3; ++r) for (int c = 0; c < 3; ++c) {
+					const std::size_t gi = 3*static_cast<std::size_t>(position_[i]) + r;
+					const std::size_t gj = 3*static_cast<std::size_t>(position_[col[k]]) + c;
+					if (gj > gi) continue; // lower triangle only
+					if (gj < first_[gi]) { outside = outside || b[3*r + c] != 0; continue; }
+					values_[rowStart_[gi] + (gj - first_[gi])] = b[3*r + c];
+				}
+			}
+		if (!outside) break;
+		if (!usedDecoupled_) break; // cannot happen: the full pattern is inside the envelope
+		Analyse(a, false);          // a decoupled vertex is coupled after all
+	}
+	for (std::size_t i = 0; i < n_; ++i) {
+		const std::size_t fi = first_[i];
+		double* li = &values_[rowStart_[i]] - fi; // li[j] = L(i, j)
+		for (std::size_t j = fi; j < i; ++j) {
+			const std::size_t fj = first_[j];
+			const double* lj = &values_[rowStart_[j]] - fj;
+			double t = li[j];
+			for (std::size_t k = std::max(fi, fj); k < j; ++k) t -= li[k]*lj[k];
+			li[j] = t/lj[j];
+		}
+		double s = li[i];
+		for (std::size_t k = fi; k < i; ++k) s -= li[k]*li[k];
+		if (!(s > 0) || !std::isfinite(s)) return false;
+		li[i] = std::sqrt(s);
+	}
+	return true;
+}
+
+void EnvelopeCholesky::Solve(const std::vector<double>& b, std::vector<double>& x) const
+{
+	std::vector<double> y(n_);
+	for (std::uint32_t v = 0; v < position_.size(); ++v)
+		for (int c = 0; c < 3; ++c) y[3*static_cast<std::size_t>(position_[v]) + c] = b[3*static_cast<std::size_t>(v) + c];
+	for (std::size_t i = 0; i < n_; ++i) {
+		const std::size_t fi = first_[i];
+		const double* li = &values_[rowStart_[i]] - fi;
+		double s = y[i];
+		for (std::size_t k = fi; k < i; ++k) s -= li[k]*y[k];
+		y[i] = s/li[i];
+	}
+	for (std::size_t i = n_; i-- > 0;) {
+		const std::size_t fi = first_[i];
+		const double* li = &values_[rowStart_[i]] - fi;
+		const double xi = y[i]/li[i];
+		y[i] = xi;
+		for (std::size_t k = fi; k < i; ++k) y[k] -= li[k]*xi;
 	}
 	x.assign(n_, 0.0);
 	for (std::uint32_t v = 0; v < position_.size(); ++v)

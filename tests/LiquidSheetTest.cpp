@@ -386,7 +386,7 @@ void Solver()
 	bool condition = false;
 	for (const auto& c : d.evidence.conditions) if (c.first == "sheets") condition = c.second == std::vector<std::string>{"prescribed"};
 	Check(condition, "the sheets condition");
-	Check(d.version == "m7l.1", "version m7l.1", d.version);
+	Check(d.version == "m7m.1", "version m7m.1", d.version);
 	{
 		SolverDescription plain;
 		Check(s->Configure(V::MapValue(TankParams(24, 5)), EmptySceneInputs(), plain, error) && !plain.effectiveParameters.Find("sheets") &&
@@ -418,9 +418,16 @@ void Solver()
 		Check(bad && error.find(needle) != std::string::npos, "refused: " + what, error);
 	};
 	{
+		// m7m: a prescribed sheet with viscosity configures (a no-slip wall of the viscous solve); a staggered port
+		// sheet with viscosity is refused (its load is the pressure only).
 		V::Members q = p;
 		q.emplace_back("viscosity", V::Float(1e-3));
-		refused(q, "sheets with viscosity", "viscosity");
+		SolverDescription x;
+		Check(s->Configure(V::MapValue(q), EmptySceneInputs(), x, error), "a prescribed sheet with viscosity configures (m7m)", error);
+		V::Members r = TankParams(24, 5);
+		r.emplace_back("sheets", V::ArrayValue({V::MapValue({{"name", V::String("f")}, {"motion", V::String("port")}})}));
+		r.emplace_back("viscosity", V::Float(1e-3));
+		refused(r, "a staggered port sheet with viscosity", "viscosity");
 	}
 	{
 		V::Members q = TankParams(24, 5);

@@ -2275,7 +2275,10 @@ void Refusals()
 	V::Members relaxed = imp;
 	relaxed.emplace_back("relaxation", V::Float(0.5));
 	Check(!s->Configure(liquid(relaxed, 0), EmptySceneInputs(), d, e), "an implicit sheet refuses relaxation", e);
-	Check(!s->Configure(liquid(imp, 1e-3), EmptySceneInputs(), d, e) && e.find("viscosity") != std::string::npos, "sheets with viscosity are refused", e);
+	Check(s->Configure(liquid(imp, 1e-3), EmptySceneInputs(), d, e), "an implicit sheet with viscosity configures (m7m)", e);
+	V::Members staggered{{"name", V::String("f")}, {"motion", V::String("port")}};
+	Check(!s->Configure(liquid(staggered, 1e-3), EmptySceneInputs(), d, e) && e.find("viscosity") != std::string::npos,
+		"a staggered port sheet with viscosity is refused (m7m)", e);
 	Check(s->Configure(liquid(imp, 0), EmptySceneInputs(), d, e) && s->Start(e), "an implicit sheet configures", e);
 	Check(d.evidence.fidelity == "preview" && d.capabilities.ownedImplicitPorts.size() == 6, "implicit sheets: preview, six owned ports (m7h: the elements)");
 	class Null final : public IFrameSink {

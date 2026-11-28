@@ -1,0 +1,209 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#                                                                                                           #
+#   File:           liquid_honey_cloth.RISEscene                                                            #
+#   Description:    Simulation M7m: honey poured onto a pinned cloth (preview).  A cotton-weave square      #
+#                   0.3 x 0.3 m (13 x 13 vertices, 0.5 kg/m^2: heavier than cotton's own 0.15, which the    #
+#                   impact kicks past the progress detail's 1% indicators) is held 0.2 m above the floor    #
+#                   of a tank 0.5 x 0.4 x 0.5 m by its four edges (`pin boundary`); a block of honey        #
+#                   0.1 x 0.12 x 0.1 m (1.2 L; viscosity 10 Pa s, density 1420 kg/m^3) is released 4 cm     #
+#                   above its middle.  `liquid_simulation pool` carries the cloth as `sheet cloth port      #
+#                   coupling implicit`; with viscosity the sheet is a no-slip wall of the viscous solve on  #
+#                   each wetted side, and the cloth's vertex velocities are unknowns of that solve, so the  #
+#                   honey's viscous drag reaches the cloth through its load steps (M7m).                    #
+#                   docs/SIMULATION_M7M_RESULTS.md.  The cloth renders from cloth.surface, the honey from   #
+#                   pool.surface.                                                                           #
+#                                                                                                           #
+#   Bake:           bin/tools/rise_sim bake <this scene> pour                                               #
+#                                                                                                           #
+#   Frames:         1/30 s apart over 1.6 s (49 frames); 40 cells along x (1.25 cm cells).  Positions are   #
+#                   metres, y up.  Label: preview (sheets are not certified).                               #
+#                                                                                                           #
+#############################################################################################################
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultPathTracing
+}
+
+uniformcolor_painter
+{
+	name			sky
+	color			0.75 0.8 0.9
+}
+
+uniformcolor_painter
+{
+	name			stone
+	color			0.55 0.5 0.45
+}
+
+uniformcolor_painter
+{
+	name			wall
+	color			0.7 0.72 0.75
+}
+
+uniformcolor_painter
+{
+	name			blue
+	color			0.15 0.25 0.6
+}
+
+lambertian_material
+{
+	name			mat_floor
+	reflectance		stone
+}
+
+lambertian_material
+{
+	name			mat_wall
+	reflectance		wall
+}
+
+lambertian_material
+{
+	name			mat_cloth
+	reflectance		blue
+}
+
+dielectric_material
+{
+	name				honey_mat
+	tau					0.93 0.6 0.15
+	ior					1.49
+	scattering			10000
+	henyey-greenstein	FALSE
+}
+
+pinhole_camera
+{
+	location		0.8 0.42 0.88
+	lookat			0.25 0.18 0.25
+	up				0 1 0
+	fov				38.0
+}
+
+cloth_simulation
+{
+	name			cloth
+	frames			49
+	size_u			0.3
+	size_v			0.3
+	vertices_u		13
+	vertices_v		13
+	origin			0.1 0.2 0.4
+	axis_u			1 0 0
+	axis_v			0 0 -1
+	material		cotton-plain-weave
+	material_density	0.5
+	pin				boundary
+}
+
+liquid_simulation
+{
+	name			pool
+	frames			49
+	domain_min		0 0 0
+	domain_size		0.5 0.4 0.5
+	resolution		40
+	viscosity		10
+	density			1420
+	liquid			box 0.2 0.24 0.2 0.3 0.36 0.3
+	sheet			cloth port coupling implicit
+}
+
+simulation_group
+{
+	name			pour
+	members			pool
+	members			cloth
+	connect			cloth.surface_state -> pool.sheet_state
+	connect			cloth.surface_mechanics -> pool.sheet_mechanics
+	connect			cloth.surface_stiffness -> pool.sheet_stiffness
+	connect			cloth.surface_elements -> pool.sheet_elements
+	connect			pool.sheet_load -> cloth.surface_load
+	connect			pool.sheet_load_steps -> cloth.surface_load_steps
+	policy			staggered
+	order			gauss-seidel
+	member_order	pool cloth
+	owned			pool cloth
+	macro_step		0.008333333333333333
+}
+
+simulated_mesh_geometry
+{
+	name			geo_honey
+	source			pool.surface
+}
+
+standard_object
+{
+	name			honey_object
+	geometry		geo_honey
+	material		honey_mat
+}
+
+simulated_mesh_geometry
+{
+	name			geo_cloth
+	source			cloth.surface
+	double_sided	TRUE
+}
+
+standard_object
+{
+	name			cloth_object
+	geometry		geo_cloth
+	material		mat_cloth
+}
+
+clippedplane_geometry
+{
+	name			geo_floor
+	pta				-2.0 -0.001 -2.0
+	ptb				 2.0 -0.001 -2.0
+	ptc				 2.0 -0.001  2.0
+	ptd				-2.0 -0.001  2.0
+}
+
+standard_object
+{
+	name			floor
+	geometry		geo_floor
+	material		mat_floor
+}
+
+clippedplane_geometry
+{
+	name			geo_back
+	pta				-2.0 -0.001 -0.002
+	ptb				-2.0  2.0   -0.002
+	ptc				 2.0  2.0   -0.002
+	ptd				 2.0 -0.001 -0.002
+}
+
+standard_object
+{
+	name			back_wall
+	geometry		geo_back
+	material		mat_wall
+}
+
+directional_light
+{
+	name			sun
+	power			3
+	color			1 1 1
+	direction		-0.3 -1 -0.5
+}
+
+pathtracing_pel_rasterizer
+{
+	samples			16
+	radiance_map	sky
+	radiance_scale	0.7
+	radiance_background	TRUE
+}

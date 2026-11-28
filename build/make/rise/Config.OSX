@@ -59,8 +59,31 @@ endif
 
 CPPFLAGS_OIDN = -I$(OIDN_PREFIX)/include
 
+# Link-time optimisation mode (docs/BUILD_FLAGS.md): `make LTO=full|thin|off`.
+#   full (default)  -flto.  The pinned fire digests (FireProductionSolverTest r83 table package,
+#                   FireSimulationSolverTest r80 cycling branch) were recorded with it and are the
+#                   product of full-LTO fast-math code generation: under thin LTO both move.
+#                   Every relink is a ~160 s single-threaded job.
+#   thin            -flto=thin plus the linker's LTO cache (bin/lto-cache): an incremental rebuild
+#                   takes ~5 s; run time -6%..+3% against full; simulation bytes and the non-fire
+#                   fast tier unchanged, BUT the two fire digests above fail.  Opt-in iteration mode
+#                   for work that does not touch fire; delete the objects when switching modes.
+#   off             no LTO; ~3 s incremental, up to ~5% slower on some workloads.
+# The floating-point flags below are the same in all modes.
+LTO ?= full
+ifeq ($(LTO),full)
+LTOFLAG = -flto
+else ifeq ($(LTO),thin)
+LTOFLAG = -flto=thin
+LDLTOCACHE = -Wl,-cache_path_lto,$(abspath ../../../bin/lto-cache)
+else ifeq ($(LTO),off)
+LTOFLAG =
+else
+$(error LTO must be thin, full or off)
+endif
+
 # options for the linker
-CPPFLAGS = -I$(PATHLIBRARY) -isystem /opt/homebrew/include $(CPPFLAGS_TIFF) $(CPPFLAGS_OPENEXR) $(CPPFLAGS_OIDN) -flto
+CPPFLAGS = -I$(PATHLIBRARY) -isystem /opt/homebrew/include $(CPPFLAGS_TIFF) $(CPPFLAGS_OPENEXR) $(CPPFLAGS_OIDN) $(LTOFLAG)
 
 # C++17 standard pinned explicitly: the codebase uses [[nodiscard]] et al.
 # Without -std=, Apple clang's default standard varies by toolchain version
@@ -98,7 +121,7 @@ CPPFLAGS = -I$(PATHLIBRARY) -isystem /opt/homebrew/include $(CPPFLAGS_TIFF) $(CP
 # cost on a traversal-bound one (see docs/INTEGRATOR_BUGFIX_FINDINGS.md
 # section "SUPERSEDED 2026-07-29" for the interval and the caveats).
 #
-CXXFLAGS = -O3 -flto -ffast-math -fno-finite-math-only -funroll-loops -std=gnu++17 -Wall -pedantic -Wno-c++11-long-long
+CXXFLAGS = -O3 $(LTOFLAG) -ffast-math -fno-finite-math-only -funroll-loops -std=gnu++17 -Wall -pedantic -Wno-c++11-long-long
 
 # For debugging information
 # CXXFLAGS = -ggdb
@@ -147,4 +170,4 @@ LDLIBS = $(LDLIBS_OIDN) -L/opt/homebrew/lib -Wl,-rpath,/opt/homebrew/lib -lpng -
 # M8b: the fire run driver now calls the CPU projected-Heun owner (the CPU backend), so
 # shipped binaries reference its weak_import test probe; as the Xcode targets do, let it
 # stay undefined (it then resolves to null: no fault injection outside the test executables).
-LDLIBS += -Wl,-U,_RISEProjectedHeunOwnerTestFailureProbe
+LDLIBS += -Wl,-U,_RISEProjectedHeunOwnerTestFailureProbe $(LDLTOCACHE)

@@ -448,7 +448,7 @@ private:
 	// share no vertex, so they assemble in parallel without conflicts.
 	std::vector<std::vector<std::uint32_t>> triColors_, hingeColors_, rodColors_;
 	mutable std::vector<double> elementEnergy_; // per element: triangles, hinges, rods
-	mutable BandedCholesky factor_;           // the last direct factorisation
+	mutable EnvelopeCholesky factor_;         // the last direct factorisation (m3a.8)
 	mutable bool factorValid_ = false;
 	bool fatal_ = false;                      // the last StepOnce failed in a way halving cannot cure
 	// M7e: the linear model (BeginLinear).

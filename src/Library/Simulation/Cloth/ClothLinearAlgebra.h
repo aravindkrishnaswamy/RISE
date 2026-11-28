@@ -12,9 +12,12 @@
 //  factorisation see only the pattern part.  Two solvers:
 //  preconditioned conjugate gradient with a block symmetric Gauss-Seidel
 //  (default) or block-Jacobi preconditioner (the default for dynamics, where
-//  the mass term keeps the system reasonably conditioned), and a banded Cholesky factorisation under the better of
-//  two structured orderings (for small or narrow problems and static
-//  solves, which are too ill-conditioned for CG).  Everything runs in a
+//  the mass term keeps the system reasonably conditioned), and a direct
+//  Cholesky factorisation (for small or narrow problems and static solves,
+//  which are too ill-conditioned for CG): since m3a.8 the cloth system and the
+//  multigrid's coarsest level use EnvelopeCholesky (reverse Cuthill-McKee,
+//  envelope storage); BandedCholesky (a band under the caller's ordering)
+//  remains for liquid.mac's copy of the sheet's response.  Everything runs in a
 //  fixed order on one thread, so results are bitwise reproducible.
 //
 //  License Information: Please see the attached LICENSE.TXT file
@@ -99,6 +102,50 @@ private:
 	std::vector<double> band_;            // row i: entries (i, i-d) for d = 0..bw at i*(bw+1)+d
 };
 
+//! m3a.8: Cholesky of the pattern part of A in envelope (variable band) storage
+//! under a fill-reducing vertex ordering: reverse Cuthill-McKee from a
+//! pseudo-peripheral vertex, or one of the caller's candidate orderings when that
+//! needs fewer operations.  Row i of L is stored from its first nonzero column
+//! f_i to the diagonal; Cholesky fills only inside that envelope, so the
+//! factorisation is exact (a direct solve of the same system) and does less
+//! work than a band of the widest row.  The ordering is a function of the
+//! pattern alone (ties broken by vertex index), computed once per pattern and
+//! decoupled set and reused while both stay the same; everything runs on the
+//! caller in a fixed order, so results do not depend on threads or platform.
+//! `decoupled` vertices (pins) have zero off-diagonal blocks in every matrix
+//! factored (MaskFixed), so their couplings are left out of the graph; should a
+//! nonzero turn up there anyway, the analysis is redone with the full pattern.
+class EnvelopeCholesky {
+public:
+	//! The vertices whose off-diagonal blocks are zero, and orderings (vertex order
+	//! -> position lists) to compare with reverse Cuthill-McKee.  Invalidates the analysis.
+	void Prepare(const std::vector<char>& decoupled, const std::vector<std::vector<std::uint32_t>>& candidates);
+	bool Factor(const BlockMatrix& a);
+	void Solve(const std::vector<double>& b, std::vector<double>& x) const;
+	//! Deterministic reverse Cuthill-McKee ordering (position -> vertex) of the
+	//! pattern of `a` without the couplings of `decoupled` vertices.
+	static std::vector<std::uint32_t> ReverseCuthillMcKee(const BlockMatrix& a, const std::vector<char>& decoupled);
+	//! Diagnostics of the current analysis: the ordering, the scalar half-bandwidth,
+	//! the stored entries below the diagonal and the multiply-adds of one factorisation.
+	const std::vector<std::uint32_t>& Order() const { return order_; }
+	std::size_t Bandwidth() const { return bw_; }
+	std::size_t Envelope() const { return envelope_; }
+	double FactorOperations() const { return operations_; }
+private:
+	void Analyse(const BlockMatrix& a, bool useDecoupled);
+	std::vector<char> decoupled_;
+	std::vector<std::vector<std::uint32_t>> candidates_;
+	bool analysed_ = false, usedDecoupled_ = false;
+	std::vector<std::size_t> patternRowStart_;  // the analysed pattern (to detect a different one)
+	std::vector<std::uint32_t> patternColumn_;
+	std::size_t n_ = 0, bw_ = 0, envelope_ = 0;
+	double operations_ = 0;
+	std::vector<std::uint32_t> order_;          // position -> vertex
+	std::vector<std::uint32_t> position_;       // vertex -> position
+	std::vector<std::size_t> first_, rowStart_; // per scalar row: first column, offset in values_
+	std::vector<double> values_;                // row i: columns first_[i]..i at rowStart_[i]
+};
+
 //! Geometric multigrid on a structured nu x nv vertex grid (vertex i + nu j),
 //! used as the preconditioner of CG.  Levels coarsen by two in each grid
 //! direction (the last vertex of a line is always kept); the prolongation is
@@ -168,14 +215,15 @@ private:
 	std::vector<Level> levels_;
 	const BlockMatrix* fine_ = nullptr;
 	ParallelPool* pool_ = nullptr;
-	BandedCholesky coarse_;
-	std::vector<std::uint32_t> coarseOrder_;
+	EnvelopeCholesky coarse_;
 };
 
 //! PCG preconditioned by a banded factorisation (of the pattern part of A, for
 //! a matrix with an extension).  Same conventions as below.
 bool SolveConjugateGradient(const BlockMatrix& a, const std::vector<double>& b, std::vector<double>& x,
 	double rtol, int maxIterations, LinearSolveStats& stats, const BandedCholesky& factor, ParallelPool* pool);
+bool SolveConjugateGradient(const BlockMatrix& a, const std::vector<double>& b, std::vector<double>& x,
+	double rtol, int maxIterations, LinearSolveStats& stats, const EnvelopeCholesky& factor, ParallelPool* pool);
 
 //! PCG with the multigrid V-cycle as preconditioner.  Returns false on a
 //! breakdown (non-positive curvature or a non-positive preconditioned

@@ -214,6 +214,10 @@ public:
 	V3 viscousWallImpulse{{0, 0, 0}};
 	//! m7c: the viscous part of each body's impulse in the last step (in bodyImpulse too).
 	std::vector<Vec6> bodyViscousImpulse;
+	//! m7m: the viscous impulse on each sheet in the last viscous solve (3 per vertex, N s; empty without
+	//! viscosity or sheets): a coupled sheet's is in its step's impulse (sheetHistory), a prescribed one's
+	//! is added to sheetImpulse.
+	std::vector<std::vector<double>> sheetViscousImpulse;
 	//! m7c: the curvature of the last step's interface (surface tension only).
 	const std::vector<double>& Kappa() const { return kappa_; }
 	//! The liquid's discrete momentum rho h^3 sum_f w_f u_f per axis, w_f the
@@ -282,7 +286,14 @@ private:
 	PressureOptions WithJump(PressureOptions po, double dt, double weight) const;
 	//! m7c: the implicit viscous step on `s` with the bodies' wall velocities `w`
 	//! (`impulse` receives each body's viscous impulse).
-	bool Viscous(MacField& s, double dt, std::vector<Vec6>& w, std::vector<Vec6>& impulse, StepStats& stats, std::string& error);
+	//! m7m: with sheets, `qp` the previous pressure the stage's predictor holds (or null), `vStar` the coupled
+	//! sheets' predicted velocities (gaining S'^-1 of their viscous impulse) and `faceMass` the face liquid's
+	//! blocks of their step matrices (the preconditioner).
+	bool Viscous(MacField& s, double dt, std::vector<Vec6>& w, std::vector<Vec6>& impulse, StepStats& stats, std::string& error,
+		const std::vector<double>* qp = nullptr, std::vector<std::vector<double>>* vStar = nullptr,
+		const std::vector<std::vector<SheetBlock>>* faceMass = nullptr);
+	//! m7m: the viscous solve's walls at the sheets (LiquidViscosity.h ViscousSheetFace, ViscousSheetCut).
+	void SheetViscousGeometry(std::vector<ViscousSheetFace>& faces, std::vector<ViscousSheetCut>& cuts) const;
 	//! m7i: the surface's vertices where a coupled sheet holds the liquid moved clear of it (Surface).
 	void ClearSheets(const std::array<int,3>& d, const std::vector<double>& f, IsoSurface& iso) const;
 	//! The velocity the outputs sample: u with its invalid faces extrapolated

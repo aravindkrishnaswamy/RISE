@@ -329,10 +329,15 @@ ParameterSchema Build()
 		"<sheet_mechanics> and <sheet_stiffness>, and <sheet_load_steps> to its surface_load_steps, with `owned <liquid> <cloth>`; "
 		"docs/SIMULATION_M7E_RESULTS.md), or `<name> rect sx sy [divisions nx ny] [at x y z] "
 		"[orientation w x y z] [velocity vx vy vz] [spin wx wy wz] [amplitude ax ay az] [frequency f] [phase p]` a prescribed "
-		"rectangle (its frame's xy plane, normal +z).  Liquid resting on an implicit sheet needs a layer about 2.5 cells "
-		"deep, as on a rigid floor (m7l, two-valued level set; measured without the volume correction: a held bowl's 1.3-cell "
-		"rim sloshing loses 2.5% in 2 s, a sagging bag's 2.4 cells 4%, a rigid floor's sloshing 2.4 cells 4%; "
-		"docs/SIMULATION_M7L_RESULTS.md)");
+		"rectangle (its frame's xy plane, normal +z).  With `viscosity` (m7m) prescribed and implicit sheets are no-slip walls "
+		"on each wetted side, an implicit cloth's velocities solved with the viscous step and its drag returned to it; a "
+		"staggered or one-way sheet with viscosity is refused (docs/SIMULATION_M7M_RESULTS.md).  Stated limits (preview): "
+		"liquid resting on an implicit sheet needs a layer about 2.5 cells deep, as on a rigid floor (m7l, two-valued level "
+		"set; measured without the volume correction over 2 s: a held flat sheet's 2.4-cell sloshing layer loses 6%, a "
+		"sagging bag's 4%, a held bowl's 1.3-cell rim 2.5%, a rigid floor's 2.4 cells 4%); very light cloth (below about "
+		"0.1 kg/m^2) with a free edge at a waterline on a coarse grid is kicked at the edge (m7k: 0.05 kg/m^2 at 24 cells, "
+		"edge peaks of 4-9 m/s in a dam break), which the progress detail flags as a rotation stretch or linearisation "
+		"correction above 1%: use heavier cloth, pin the edge, or a finer grid (docs/SIMULATION_M7M_RESULTS.md, Known limits)");
 	// Text, as rigid_simulation's body_object: the object's name is followed by options.
 	F("body_object", SchemaChunkField::Kind::Text, "A rigid body made from a scene object's closed mesh (m7d; world "
 		"space at t = 0, the body frame at its centroid and principal axes, mass properties from the mesh): `<object>` then the "

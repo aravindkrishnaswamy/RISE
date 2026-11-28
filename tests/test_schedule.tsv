@@ -85,6 +85,7 @@ LiquidPhysicsValidationTest	wide:3	50	about 3 cores mean (8-thread pool; small g
 LiquidRigidTest	wide:5	8	5 cores mean (38 s cpu / 7.5 s real, solver pools of 8-16 threads; measured alone)
 LiquidRigidValidationTest	wide:3	35	2.9 cores mean (102 s cpu / 35 s real, 8-thread pool; measured alone)
 LiquidSheetTest	wide:4	17	about 3.4 cores mean (solver pools of 8 threads; measured alone)
+LiquidSheetViscosityTest	pool	5	one core (its grids are below the viscous solve's pool threshold; m7m: viscosity with sheets and the 3-D momentum audit, 4.6 s measured beside another suite)
 LiquidSolverTest	wide:3	20	2.2 cores mean (44 s cpu / 20 s real, solver pool of 16 threads; measured alone)
 LiquidValidationTest	wide:4	34	3.6 cores mean (124 s user / 34 s real, 8-thread pool; measured alone)
 LuminarySamplerAreaTest	wide:4	19	multi-threaded renders (D/F/P)

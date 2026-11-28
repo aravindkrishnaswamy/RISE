@@ -62,6 +62,9 @@
 
 #include "LiquidFlow.h"
 
+#include <functional>
+#include <string>
+
 namespace RISE { namespace Simulation { namespace Liquid {
 
 struct ViscosityOptions {
@@ -90,12 +93,62 @@ struct ViscousTwist {
 	std::array<bool,4> free{{true, true, true, true}};
 };
 
+//! m7m: a point of a sheet (a crossing): the crossed triangle's vertices and the barycentric weights.
+struct ViscousSheetPoint {
+	std::uint32_t sheet = 0;
+	std::uint32_t v[3] = {0, 0, 0};
+	double w[3] = {0, 0, 0};
+};
+//! m7m: a face a sheet closes (a barrier of the pressure): a no-slip wall of the viscous solve
+//! at the crossing, coordinate s along the face's axis.
+struct ViscousSheetFace {
+	int axis = 0;
+	std::size_t face = 0;
+	double s = 0;
+	ViscousSheetPoint p;
+};
+//! m7m: a difference of component `comp` along `dir` (dir != comp) between the faces of comp at
+//! `hi` - e_dir and `hi` (index triple on comp's face grid) whose segment a sheet crosses, a
+//! fraction t of the way from the low face; `loSide` the sheet side (+1 front, -1 back: the
+//! triangle's normal) of the low face.
+struct ViscousSheetCut {
+	int comp = 0, dir = 0;
+	int hi[3] = {0, 0, 0};
+	double t = 0.5;
+	int loSide = -1;
+	double normal[3] = {0, 0, 0};
+	ViscousSheetPoint p;
+};
+//! m7m: a sheet's velocity in the viscous solve.  `coupled`: its free vertex velocities V are
+//! unknowns with the kinetic energy (1/2)(V - V*)^T S' (V - V*), S' the sheet's step matrix with
+//! the face liquid (LiquidSheets.h SheetDynamics), V* = v; else (and for fixed vertices) v is given.
+struct ViscousSheet {
+	std::vector<double> v;                 // 3 per vertex (m/s)
+	std::vector<std::uint8_t> fixed;       // per vertex: given (a pin); empty: none
+	bool coupled = false;
+	//! y = S' x (3 per vertex, N s/m times m/s; zero on fixed vertices).
+	std::function<void(const std::vector<double>&, std::vector<double>&)> applyMass;
+	//! Prepares the preconditioner (S' + diag(d))^-1, d 3 per vertex (N s/m).
+	std::function<bool(const std::vector<double>&, std::string&)> prepare;
+	//! z = (S' + diag(d))^-1 r (zero on fixed vertices), after prepare.
+	std::function<void(const std::vector<double>&, std::vector<double>&)> precondition;
+};
+
 struct ViscosityInput {
 	const std::vector<double>* solidNodes = nullptr;   // node signed distance of the solids (null: none)
 	const MacField* solid = nullptr;                   // solid face velocities (bodies; null: zero)
 	//! Per face: the body that closes it (-1: the static solids); null: all static.
 	const std::array<std::vector<std::int16_t>,3>* owner = nullptr;
 	const std::vector<ViscousTwist>* bodies = nullptr;
+	//! m7m: sheets (null or empty: none).  The faces they close are no-slip walls at the crossing
+	//! (always, whatever `noSlip` says of the walls and solids); a difference whose segment crosses a
+	//! sheet is one-sided on each side, the sheet's velocity at the crossing (ghost fluid, the
+	//! fraction to the crossing), so no strain couples the liquid across a sheet; a strain at a cell
+	//! edge whose differences a sheet cuts is split into one per side, each weighted by its side's
+	//! part of the edge's control volume (LiquidViscosity.cpp).
+	const std::vector<ViscousSheet>* sheets = nullptr;
+	const std::vector<ViscousSheetFace>* sheetFaces = nullptr;
+	const std::vector<ViscousSheetCut>* sheetCuts = nullptr;
 };
 
 struct ViscosityStats {
@@ -112,9 +165,13 @@ using Impulse6 = std::array<double,6>;
 //! dt; torque dt about its centre; for a coupled body M (w - w*)), wallImpulse
 //! the impulse of the static solids and the domain walls on the liquid.  Faces that are not unknowns
 //! keep their input values.
+//! m7m: `sheetImpulse` (may be null; one per input sheet, 3 per vertex, N s) receives the viscous
+//! impulse on each sheet: S' (V - V*) for a coupled one, the reaction of the strains on its
+//! given velocities otherwise (zero on fixed vertices of a coupled sheet: pins absorb theirs).
 bool ViscousStep(const Grid& g, const std::vector<double>& phi, const std::array<std::vector<double>,3>& fraction,
 	const ViscosityInput& input, const ViscosityOptions& options, double dt, double density, MacField& u,
-	std::vector<Impulse6>& bodyImpulse, V3& wallImpulse, ViscosityStats& stats, Pool* pool, std::string& error);
+	std::vector<Impulse6>& bodyImpulse, V3& wallImpulse, ViscosityStats& stats, Pool* pool, std::string& error,
+	std::vector<std::vector<double>>* sheetImpulse = nullptr);
 
 //! For tests: y = (M + 2 dt nu G^T S G) x on the unknown faces (zero on the
 //! others) after the same assembly; `unknown` receives the unknown mask.

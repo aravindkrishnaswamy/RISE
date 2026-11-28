@@ -1,6 +1,7 @@
-# Simulation performance: measurements and tuning opportunities (first half of the tuning pass)
+# Simulation performance: measurements and tuning opportunities (first half and the cloth part of the second half)
 
-2026-11-27. Branch `simulation-liquid` at `05eab7170` plus the working-tree changes listed in §8. Plan:
+2026-11-27. Branch `simulation-liquid` at `05eab7170` plus the working-tree changes listed in §8 (first half);
+the cloth part of the second half (at `052fc4338`, thin LTO) is §13. Plan:
 [SIMULATION_IN_RISE_PROPOSAL.md](SIMULATION_IN_RISE_PROPOSAL.md). Contract:
 [SIMULATION_SOLVER_CONTRACT.md](SIMULATION_SOLVER_CONTRACT.md) (no contract change). Fire CPU timings of
 earlier rounds: [SIMULATION_M8_RESULTS.md](SIMULATION_M8_RESULTS.md) §11.6 and §12.3.
@@ -225,8 +226,11 @@ Proposals, in order of value:
 2. **Memoise within the process on a key of the options** (as the cloth evidence does) if `Configure` is called more
    than once per process for the same options (the group `Configure` calls it again). Bytes unchanged.
 3. **Persist the evidence across processes**, keyed by the content hash of the options and of the solver version
-   string. Saves the whole 1.3 to 1.7 s per process; risk: staleness when the solver changes without a version bump
-   (it is the same hazard the cache key already has); bytes unchanged.
+   string. Saves the whole 1.3 to 1.7 s per process; bytes unchanged. The store now exists (§13.4,
+   `SimulationSolver.h` `LoadPersistedEvidence` / `PersistEvidence`, bound to the build so staleness cannot occur);
+   adopting it is a few lines in `LiquidSolver.cpp` `ComputeEvidence` / `ComputeBodyEvidence`: build a key `Value`
+   from the solver id, `SolverVersion` and every option the cases read, `LoadPersistedEvidence("liquid.mac", key, e)`
+   first, and `PersistEvidence` after computing.
 
 ### 5.2 Per-step phases (share of `LiquidModel::Step` on the step thread, evidence removed)
 
@@ -270,16 +274,16 @@ order in the dot products, single-precision coarse levels. Each moves every fram
 
 | Rank | Opportunity | Where | Measured / expected gain | Risk | Status |
 |---:|---|---|---|---|---|
-| A1 | Plan-time evidence concurrency and memoisation (cloth, coupling, liquid) | `ClothSolver.cpp`, `ClothRigidCoupling.cpp`, Liquid | cloth contact evidence: trampoline status 3.66 to 2.36 s; liquid 1.3 to 1.7 s; coupling 1.9 s | low; cases are independent and deterministic | cloth done; coupling and liquid proposed |
-| A2 | Persist plan-time evidence across processes (hash of the key and the solver version) | the three evidence sites | removes up to 2.3 to 4.7 s per process | medium: stale entries after a solver change without a version bump | proposed |
+| A1 | Plan-time evidence concurrency and memoisation (cloth, coupling, liquid) | `ClothSolver.cpp`, `ClothRigidCoupling.cpp`, Liquid | cloth contact evidence: trampoline status 3.66 to 2.36 s; liquid 1.3 to 1.7 s; coupling 1.9 s | low; cases are independent and deterministic | cloth done; coupling done (§13.3: computed beside the members' configuration); liquid proposed |
+| A2 | Persist plan-time evidence across processes (hash of the key, the solver version and the build) | the three evidence sites | removes up to 2.3 to 4.7 s per process | low: the entry is bound to the linked image's identity, so a code change can never reuse one | cloth and coupling done (§13.4: trampoline status 2.1 s to 0.04 s); liquid to adopt the same store |
 | A3 | Hardware SHA-256 | `RISECBOR64.cpp` | 429 to 2,869 MB/s (6.7 times); frame verify 2.4 to 0.4 ms per MiB; every Append and Sample | low; checked against `shasum` on 20 sizes and incremental updates | done |
 | A4 | ASCII fast path of `IsUTF8NFC` (every manifest key and digest) | `RISECBOR64.cpp` | cache writer: 2000 x 4 KiB frames 7.7 to 2.1 s; last-frame Append 7.0 to 1.4 ms | low; 2.3 million strings agree with the full path | done |
 | A5 | Pool without syscalls (spin hint, bounded spin, wake only as many helpers as chunks) | `ClothParallel.cpp` | system time 37.9 to 2.2 s on a 16-thread liquid bake; wall neutral on a quiet machine and better on a loaded one | low; chunking and reduction order untouched | done |
 | A6 | Moves instead of copies of `Value` trees in the manifest encode and the CBOR decoder | `RISECBOR64`, `EncodeManifest` | part of A4's remaining cost (about 40 %) | none | done |
 | A7 | Per-stage path bounds computed once per vertex (`KinematicStep`): each vertex is in many candidate pairs | `ClothContact.cpp` | up to 30 % of the trampoline step (PathBound), expected 15 to 25 % wall | low: the same function of the same inputs | done, see §8.5 |
 | A8 | Incremental or batched manifest publication: encode the new entry only and keep a running manifest, or publish every k frames and at seal | `SimulationCache.cpp` `Publish` | removes the O(n) per frame: last-frame Append 1.4 ms to about 0.7 ms at 2000 frames | medium: weakens "every committed frame is durable and in the manifest" unless the frame files are still individually durable and the resume path re-publishes; final manifest bytes unchanged | proposed |
-| A9 | Cache hash grid with open addressing and a reused flat array instead of `unordered_map<uint64, vector>` rebuilt at every `Place` | `ClothContact.h/.cpp` | `Place*` and `Insert` are about 8 % of the trampoline | low; **the first attempt (a sort-based flat table) was slower** (the `std::sort` of tens of thousands of pairs and a binary search per cell cost more than the hash map; reverted); a counting-sort build or an open-addressed table is the way | tried and reverted |
-| A10 | `BandedCholesky::Factor` loop structure (25.7 % of the trampoline): block the update loops, keep each row's inner product in the same order | `ClothLinearAlgebra.cpp` | up to 1.5 to 2 times on 26 % | **high for byte identity**: the build uses `-ffast-math`, so the compiler may already reassociate the reduction, and a restructured loop can vectorise differently; verify by bake comparison only | proposed |
+| A9 | Cache hash grid with open addressing and a reused flat array instead of `unordered_map<uint64, vector>` rebuilt at every `Place` | `ClothContact.h/.cpp` | `Place*` and `Insert` are about 8 % of the trampoline | low; the first attempt (a sort-based flat table) was slower; the second (open-addressed table built by a counting sort, §13.2) is faster | done: trampoline 6.9 % fewer instructions, frames identical |
+| A10 | `BandedCholesky::Factor` loop structure (45 % of the trampoline step after A7): block the update loops, keep each row's inner product in the same order | `ClothLinearAlgebra.cpp` | up to 1.5 to 2 times on 45 % | **high for byte identity**: under `-ffast-math` the compiler splits each inner product over vector lanes in an order the source does not state; a blocked kernel vectorises differently | not done (§13.5) |
 | A11 | `SampledTrack::At` memo | `ClothModel.cpp` | 13.7 % fewer instructions but 1 % wall: the TLS lookup costs about what the sine and cosine do | n/a | tried and reverted |
 | A12 | Skip the redundant digest of a frame that was just verified (render path reads a frame once per sample) | `SimulatedMeshSource`, `SimulationCache` | with A3 already down to 0.4 ms per MiB | low | not needed after A3 |
 | A13 | Overlap hashing with the write of a frame file (hash on the solver thread, write and fsync on another) | `SimulationCache.cpp` | 30 x 16 MiB: 13 ms per frame of which about 6 is the hash | medium (ordering with the manifest) | proposed, small |
@@ -289,7 +293,7 @@ order in the dot products, single-precision coarse levels. Each moves every fram
 
 | Rank | Change | Why it would help | Why it changes bytes |
 |---:|---|---|---|
-| B1 | Fill-reducing ordering (reverse Cuthill-McKee or nested dissection) for the cloth `BandedCholesky` instead of the natural vertex order | Factor is 26 % of the trampoline | different elimination order: every solve differs in the last bits |
+| B1 | Fill-reducing ordering (reverse Cuthill-McKee or nested dissection) for the cloth `BandedCholesky` instead of the natural vertex order | Factor is 26 % (45 % after A7) of the trampoline | different elimination order: every solve differs in the last bits. **Done (§13.1, m3a.8)**: trampoline 26 % fewer instructions, 1.3 times faster as B1 alone; landed after the self-collision incline evidence was made well posed (§13.7) |
 | B2 | Cloth: reuse a factorization across Newton iterations (modified Newton) or a looser `cg_tolerance` / `tolerance` | fewer factorizations | different iterates |
 | B3 | Cloth: a coarser `PathBound` (fewer than 16 samples) or a looser safety factor in `KinematicStep` | the largest kinematic cost | different stage lengths, different contact sequence |
 | B4 | Liquid: looser pressure tolerance, fewer V-cycle sweeps, a two-level preconditioner, single-precision coarse levels | `Precondition` is 50 to 70 % of `Project` | different pressures |
@@ -425,7 +429,7 @@ A flat sort-based hash grid (slower, A9) and a per-thread memo of `SampledTrack:
 | Build | Flags | Finding |
 |---|---|---|
 | make (`Config.OSX`) | `-O3 -flto` (full LTO), `-ffast-math -fno-finite-math-only`, `-funroll-loops`, default `-mcpu=apple-m1` | Already aggressive. No profile-guided optimisation; no `-mcpu=apple-m4` (the M4 has SME but the code is NEON; a newer `-mcpu` gains little for this code and ties the binary to M4). `-ffast-math` is on for the whole library except the fire production sources, which compile with `-fno-fast-math -ffp-contract=off` |
-| Xcode, Deployment configuration, targets `rise` and `rise-sim` | `GCC_OPTIMIZATION_LEVEL = 3`, `LLVM_LTO = YES_THIN` (thin, not full), `-fno-finite-math-only` but **no `-ffast-math`**, no `-funroll-loops` | The Deployment build is configured differently from the make build the goldens and the test hashes were recorded with: no fast-math means different floating-point contraction and reassociation in the cloth and liquid solvers, so **a Deployment `rise-sim` may write different bytes than the make `rise_sim` for the same scene** (the `RISE_FP_CONTRACTION_MODE = compiler_default` setting of the project is the only related knob). The `Opto` configuration does have `-ffast-math` and full LTO. This should be decided and tested (bake a scene with each and compare frame sets) before the app's baked caches are trusted against the test-suite goldens. Thin LTO also leaves inlining across modules on the table; the make build's full LTO is what produced the numbers here |
+| Xcode, Deployment configuration, targets `rise` and `rise-sim` | `GCC_OPTIMIZATION_LEVEL = 3`, `LLVM_LTO = YES_THIN` (thin, not full), `-fno-finite-math-only` but no `-ffast-math`, no `-funroll-loops` | **Correction (second half):** the guess here that a Deployment `rise-sim` may write different bytes than the make `rise_sim` was measured by the build-flags work and is wrong: the frame sets are identical (see [BUILD_FLAGS.md](BUILD_FLAGS.md)). The make build has since switched to thin LTO by default (`LTO=thin`; `make LTO=full` restores full LTO); the second-half numbers in §13 are thin-LTO builds compared with thin-LTO builds |
 | Library compile options for the simulation | none specific | The simulation hot loops (cloth `BandedCholesky`, liquid multigrid) are plain scalar loops that clang vectorises only as far as `-ffast-math` allows; an explicit NEON kernel would be a result-changing rewrite (B) unless the lane order is the same |
 
 ## 11. Not verified, not measured
@@ -446,3 +450,201 @@ A flat sort-based hash grid (slower, A9) and a per-thread memo of `SampledTrack:
 `src/Library/Simulation/Cloth/ClothContact.cpp`, `src/Library/Simulation/SimulationCache.cpp`,
 `src/Library/Utilities/RISECBOR64.cpp`, `src/Library/Utilities/RISECBOR64.h`, this document. No new source files.
 Drivers and raw samples are in `/Volumes/SSD/claude-tmp/perf-scratch/` (not in git).
+
+## 13. Second half, cloth part (2026-11-27, at `052fc4338`, thin LTO)
+
+Same machine, now with the make build's thin LTO (`LTO=thin`, the new default): every before/after pair below is
+thin against thin (`base_thin` is `052fc4338` built in that mode). The machine was heavily shared (load average 10 to
+130, noted per table); instructions retired (`/usr/bin/time -l`) are the load-independent figure. Bakes:
+`cloth_flag_scene` (all 91 frames), `rigid_cloth_trampoline` (all 31 frames), `liquid_cloth_catch` reduced to 12
+macro steps. Byte identity is the frame-name comparison of §1. Scratch, drivers and bakes:
+`/Volumes/SSD/claude-tmp/perf2-scratch/`.
+
+### 13.1 B1, fill-reducing ordering for the cloth factorisation: done (cloth.shell m3a.8)
+
+**Structure.** With the default `bending lines` the pattern couples each vertex to its eight neighbours and to the
+vertices two along its row and two along its column (rods), so the narrower grid order (u- or v-fastest) has a band of
+two grid lines: 6 nu + 2 scalars. Cholesky fills a band completely, and in grid order the envelope (each row from its
+first nonzero) is the band, so a smarter storage alone gains nothing; a different ordering is needed.
+
+**Choice.** Orderings compared with a symbolic driver (`order_probe.cpp`) on the four committed meshes: grid order,
+reverse Cuthill-McKee (RCM) from a pseudo-peripheral vertex, exact minimum degree, and a geometric nested dissection
+with two-line separators. On these sizes (169 to 961 vertices) minimum degree and nested dissection give **no less
+fill and no fewer operations** than RCM with envelope storage (trampoline: nnz(L) 40.8 K minimum degree, 46.6 K nested
+dissection, 42.6 K RCM envelope; operations within 3 % of RCM for minimum degree, 27 % more for nested dissection), and
+a general sparse factorisation would replace the contiguous inner products of the band by indexed ones. Asymptotically
+nested dissection wins (O(n^1.5) against O(n^2)), but the crossover is well above these meshes. So: RCM + envelope
+(variable-band) Cholesky, `EnvelopeCholesky` in `ClothLinearAlgebra.{h,cpp}`, with the grid order as a candidate (the
+cheaper of the two is used), pinned vertices decoupled (their off-diagonal blocks are zero after `MaskFixed`; a
+nonzero there would trigger a re-analysis with the full pattern), computed once per pattern and pin set, ties by
+vertex index, everything on one thread in a fixed order. `BandedCholesky` itself was left unchanged (liquid.mac uses
+it, see below). The direct/iterative choice (`directCost_`) keeps the band's cost, so no scene changes solver. The
+multigrid's coarsest level used the same class.
+
+**Per mesh** (driver `env_probe.cpp`: the real pattern, a random SPD matrix masked like `MaskFixed`, 200 repeats):
+
+| Mesh (pins) | dofs | Band: half-width / stored / multiply-adds / Factor / Solve | Envelope RCM: half-width / stored / multiply-adds / Factor / Solve | Factor speed-up |
+|---|---:|---|---|---:|
+| trampoline 15 x 15 (corners) | 675 | 92 / 62.1 K / 2.62 M / 900 us / 62 us | 89 / 41.7 K / 1.47 M / 518 us / 35 us | 1.74 |
+| catch 17 x 17 (boundary pinned) | 867 | 104 / 90.2 K / 4.35 M / 1,592 us / 90 us | 92 / 42.7 K / 1.52 M / 535 us / 36 us | 2.98 |
+| wave 13 x 19 (edge v0) | 741 | 80 / 59.3 K / 2.23 M / 746 us / 66 us | 83 / 43.3 K / 1.49 M / 519 us / 26 us | 1.44 |
+| flag 31 x 31 (edge v0; not direct in the scene, multigrid) | 2,883 | 188 / 542 K / 49 M / 20.3 ms / 0.57 ms | 185 / 350 K / 24.8 M / 9.8 ms / 0.20 ms | 2.07 |
+
+Relative difference of the solutions from the band solver's: 3e-17 to 2e-15; residuals 2e-15 either way.
+
+**Bakes, B1 alone** (load average 10 to 36; before = `base_thin`):
+
+| Scene | Before: wall / instructions | B1: wall / instructions | Max \|x_B1 - x_before\| over all frames (at the last frame) |
+|---|---|---|---|
+| `cloth_flag_scene`, 91 frames | 1.24 s / 44.1 G | 1.13 s / 41.0 G (-7 %, the multigrid's coarse level) | 3.7e-9 m (0 at binary32) |
+| `rigid_cloth_trampoline`, 31 frames | 41.4 s / 763 G | **31.8 s / 566 G (-26 %)** | 5.7e-14 m (0); the ball's frames identical |
+| `liquid_cloth_catch`, 12 macro steps | 6.77 s / 544.5 G | 6.58 s / 535.7 G (-1.6 %; the liquid dominates) | cloth frames identical; 1 of 4 liquid frames differs in bytes, its positions identical at binary32 |
+
+(`sample` of the trampoline before: `BandedCholesky::Factor` 3,349 of 7,473 main-thread samples, 45 % of the step
+after A7.) The gain passes the 10 % bar easily.
+
+**Final state** (B1 + A9 + A1 + A2, evidence store cold; the two binaries run back to back at load average 4 to 6):
+
+| Scene | `base_thin` (052fc4338): wall / instructions | Final: wall / instructions | Max \|x - x_before\| (at the last frame) |
+|---|---|---|---|
+| `cloth_flag_scene`, 91 frames | 0.83 s / 44.0 G | 1.19 s / 40.6 G (-7.7 %) | 3.7e-9 m (0) |
+| `rigid_cloth_trampoline`, 31 frames | 40.6 s / 763.8 G | **27.3 s / 511.7 G (-33 %; 1.49 times faster)** | 5.7e-14 m (0); the ball's 31 frames identical |
+| `liquid_cloth_catch`, 12 macro steps | 6.68 s / 540.1 G | 6.47 s / 518.2 G (-4 %) | cloth frames identical; liquid positions identical at binary32 (1 of 4 frames differs in bytes) |
+
+(The flag's walls are under a second and noisy; its instruction count is the figure to read. The catch's `base_thin`
+binary was built at 14:37 and the final one at 15:17: the liquid agent's edits in between may be part of the catch
+difference.) With a warm store each of these bakes also skips the plan-time evidence (§13.4).
+
+**Validation.** `ClothValidationTest` with B1 holds every gate with the same margins (membrane frequencies, plates,
+energy drift, catenary and cantilevers identical to four digits; contact and self-collision cases within their
+tolerances) once the self-collision incline cases are well posed (§13.7). Before that fix, the polyester self-stick
+case flipped from 1.235e-2 to 1.784e-2 against its 1.6e-2 gate, and so did the old solver with its grid order
+reversed: the case was measuring round-off, not the solver.
+
+**Liquid side.** liquid.mac does call `Cloth::BandedCholesky` (`LiquidSheets.cpp` `SheetDynamics::Prepare` factors
+its copy of the sheet's response under its own breadth-first `BandOrder`; `Solve` and `Predict` back-substitute inside
+the pressure system). B1 leaves that class and that call path byte for byte as they were, so no liquid code changes;
+the liquid's bytes move only because the cloth's values do. **Next round:** the liquid's sheet solve could adopt
+`EnvelopeCholesky` (with its pins decoupled; the catch sheet's factor would be about 3 times cheaper, see the table
+above). The share it would affect is `SheetDynamics::Prepare` (factor) plus the back-substitutions inside
+`ProjectCoupled`: `Prepare` was 5.6 % of `LiquidModel::Step` in the catch and 4.0 % in the wave (§5.2), so the gain is
+a few percent of a liquid step; it changes the liquid's bytes (a liquid version bump).
+
+### 13.2 A9, contact hash grid: done, bytes identical
+
+`HashGrid` (`ClothContact.h`) is now an open-addressed table (linear probing, splitmix64 of the cell key) of the
+occupied cells over one flat id array, built in two passes by a counting sort (`Insert` records the primitive's cell
+range, `Finish` counts, takes prefix sums and fills); the vectors are reused from one `Place` to the next. Each cell
+holds its ids in insertion order, as before, and every caller either sorts and deduplicates its candidates or takes a
+minimum, so the result cannot depend on the table. Trampoline, 31 frames: 763.4 G to 710.9 G instructions (-6.9 %;
+the persistence of §13.4 was cold, so this is the grid), wall 41.4 to 37.7 s (load 15 to 30). Flag 44.1 to 43.7 G.
+Frame sets identical to `base_thin` for all three scenes (flag 91, trampoline 62 files, catch cloth and liquid),
+and for the trampoline with the cloth's `threads 1` (a scratch copy of the scene) against the default threads.
+
+### 13.3 A1, coupling evidence beside the members' configuration: done, bytes identical
+
+The coupling evidence is one dependent run (a 16-frame zero-gravity group), already memoised per process; what can
+overlap is its run with the configuration of the group's members (their own evidence). `SceneSimulationGraph::Plan`
+now derives each group's likely coupling kind from its `connect` lines (the sorted adapters) and starts
+`PrefetchCouplingEvidence(kind)` (`SimulationGroup.h`) on another thread before configuring the members;
+`CouplingEvidence` waits for it (same mutex, same memo; a wrong guess only costs CPU), and the futures are joined
+before `Plan` returns. `rise-sim status rigid_cloth_trampoline`, store off, three runs each at load average 100 to
+130: 2.57 / 2.65 / 2.73 s before, 2.05 / 2.15 / 2.17 s after; status text identical.
+
+### 13.4 A2, plan-time evidence persisted across processes: done for cloth and coupling
+
+`LoadPersistedEvidence` / `PersistEvidence` (`SimulationSolver.h/.cpp`): an entry is
+`<simulation cache base>/evidence/<SHA-256 of (format, space, key, build)>.cbor` holding the key, the build identity,
+the evidence (doubles as bit patterns, so values round-trip exactly) and a SHA-256 of it. The **build identity** is
+the Mach-O `LC_UUID` of the image the library is linked into (the linker derives it from the image's contents), so
+any rebuild with a code change gets other entries; where it is unknown (other platforms for now) the store is off.
+Writes go to a temporary file renamed into place (safe under concurrent processes); a missing, short, corrupt or
+foreign entry is ignored and recomputed (a driver flipped each of the 2,784 bits of an entry and truncated it: no
+corrupt version loaded); the directory is pruned to the 192 most recently used entries when it passes 256 entries or
+16 MiB; `RISE_SIMULATION_EVIDENCE_STORE=off` disables it. Users: the cloth memo (`ClothSolver.cpp` `Memoised`, key =
+the evidence configuration with solver id and version) and the cloth-rigid coupling (`ClothRigidCoupling.cpp`, key =
+the scenario's member parameters, the policy and both solvers' versions). Liquid can adopt it next round (§5.1).
+
+| `rise-sim status` (load 100 to 130) | Before | Store off (A1 only) | Store cold (first process) | Store warm |
+|---|---:|---:|---:|---:|
+| `rigid_cloth_trampoline` | 2.57 to 2.73 s | 2.05 to 2.17 s | 1.97 to 2.06 s | **0.04 s** |
+| `cloth_flag_scene` | 0.28 to 0.29 s | 0.30 to 0.31 s | 0.29 to 0.30 s | **0.04 s** |
+| `liquid_cloth_catch` (liquid evidence not persisted) | 5.96 s | | 5.60 s | 4.99 s |
+
+Bakes with a warm store: frame sets identical (all three scenes); trampoline 651 G instructions against 711 G cold;
+the flag bake 32.3 G against 43.7 G. Status text (which carries the cache keys and so the evidence digests) is
+identical computed, loaded, after corruption and under four concurrent cold processes. Scene load in the `rise` CLI
+(`load` of the trampoline with a baked cache) takes 0.02 s with or without the store: it does not plan the
+simulations; the app's scene load was not measured.
+
+### 13.5 A10 (blocking the `Factor` update loops): not done
+
+Under `-ffast-math` the compiler vectorises each inner product of `BandedCholesky::Factor` with its own split over
+lanes and accumulators; a blocked or register-tiled kernel is vectorised differently, so each entry's sum would be
+accumulated in another order and the bytes would move. Reproducing the compiler's lane order by hand is possible
+but fragile (it changes with the compiler and flags). B1 is the better lever for the same 45 %.
+
+### 13.6 Tests and warnings (this part)
+
+Build `mk.sh all tests build-tool/rise_sim build-tool/simulation_cache_import`: warning-free (only the Homebrew
+"built for newer macOS" linker notices). `./run_all_tests.sh --tier fast --timeout 300 --filter
+'[!F]*,F[!i]*,Fi[!r]*,Fir[!e]*'` with A1, A2 and A9 in the tree: **453 of 453 pass**. With B1 and §13.7 as
+well (final state, cloth.shell m3a.8): **453 of 453 pass**, including the liquid-owned `LiquidClothCouplingTest`,
+`LiquidSheetTest` and `LiquidRigidTest` (no cloth-dependent pin there moved). The full make of `all tests` is
+warning-free; its only error is the link of `bin/tests/FireProductionCalibrationOracle` (undefined fire Metal
+symbols, from the concurrent build-flag work; no fire file was touched here).
+
+Files changed: `src/Library/Simulation/Cloth/ClothLinearAlgebra.{h,cpp}` and `ClothModel.{h,cpp}` (B1),
+`src/Library/Simulation/Cloth/ClothValidation.cpp` and `tests/ClothValidationTest.cpp` (§13.7),
+`tests/ClothSolverTest.cpp` (version pin m3a.8), `src/Library/Simulation/Cloth/ClothContact.{h,cpp}` (A9), `src/Library/Simulation/SimulationSolver.{h,cpp}`
+(the store), `src/Library/Simulation/Cloth/ClothSolver.{h,cpp}` (m3a.8, self-slide gate, cloth persistence, `ClothSolverVersion()`),
+`src/Library/Simulation/Coupling/ClothRigidCoupling.{h,cpp}` (coupling persistence), `src/Library/Simulation/SimulationGroup.{h,cpp}`
+and `src/Library/Simulation/SceneSimulation.cpp` (prefetch), this document. No new source files.
+
+### 13.7 The self-collision incline evidence made well posed (self-stick, self-slide)
+
+**Cause.** `RunSelfIncline` first settles the upper layer on the pinned lower one by a frictionless static solve
+(gravity normal to the layers, four frictionless walls 12.5 um beyond the layer's edges). In the plane of the layers
+that solve has a neutral rigid mode: nothing resists an in-plane translation until a wall's barrier engages. The
+settle's Newton iterations therefore left the layer wherever round-off pushed it: centred, or in one of the four
+corners at (+-1.25e-5, +-1.25e-5) m (measured, driver `selfcase.cpp`, a replica of the case). The tilted run then
+measured a creep speed that depends on the corner (2.92e-4, 2.977e-4 or 3.03e-4 m/s for polyester), i.e. on round-off.
+
+**Perturbation set** (all on the same build): old `BandedCholesky` in grid order, the same with the grid order
+reversed, the old solver with a 1-ulp increase of one initial coordinate (four choices of vertex and axis), the old
+solver at 1 and 8 cloth threads; the new `EnvelopeCholesky` (RCM), it forced to the grid order, and it with three
+1-ulp nudges. Spread = max - min of the gate quantity over the set, both integrators:
+
+| Case | Material | Committed case: old solver (8 perturbations) | Committed: new solver (5) | Redesigned: old (8) | Redesigned: new (5) |
+|---|---|---|---|---|---|
+| self-stick | cotton-plain-weave | 7.77e-3 .. 1.686e-2 | 7.77e-3 .. 1.686e-2 | 1.2333e-2 (spread 0) | 1.2333e-2 (0) |
+| self-stick | denim-twill | 2.383e-3 (0) | 2.383e-3 (0) | 1.2392e-2 (0) | 1.2392e-2 (0) |
+| self-stick | silk-lightweight | 1.227e-2 .. 1.437e-2 | 1.227e-2 .. 1.437e-2 | 1.2272e-2 (2e-7) | 1.2272e-2 (2e-7) |
+| self-stick | polyester-knit | 6.81e-3 .. 1.784e-2 | 6.81e-3 .. 1.784e-2 | 1.2346e-2 .. 1.2348e-2 (1.9e-6) | 1.2346e-2 .. 1.2347e-2 (1.0e-6) |
+| self-slide | cotton-plain-weave | 2.983e-3 .. 3.019e-3 | 2.983e-3 (0) | 2.9468e-3 (0) | 2.9468e-3 (0) |
+| self-slide | denim-twill | 3.841e-3 (0) | 3.841e-3 (0) | 3.6753e-3 (0) | 3.6753e-3 (0) |
+| self-slide | silk-lightweight | 2.295e-3 .. 2.308e-3 | 2.295e-3 (0) | 2.2870e-3 (0) | 2.2870e-3 (0) |
+| self-slide | polyester-knit | 3.498e-3 .. 3.555e-3 | 3.498e-3 .. 3.555e-3 | 3.4946e-3 .. 3.4982e-3 (3.6e-6) | the same (3.6e-6) |
+
+(Backward Euler shown; BDF2 behaves the same, its values 1e-5 lower for stick and 15 % lower for slide.) The committed
+case's intrinsic noise was up to 1.1e-2 on a gate of 1.6e-2: cotton already failed the gate under one 1-ulp nudge of
+the old solver.
+
+**Redesign.** The settle still supplies the normal (contact) equilibrium; afterwards the upper layer's in-plane
+coordinates are reset to its plan placement (aligned with the lower layer, which is what the case states), so the
+tilted run starts from one defined state. What the case tests is unchanged: the smoothed-friction creep speed of a
+sticking layer (stick) and the sliding acceleration (slide) against their closed forms. Spreads fall to at most 2e-6
+(stick) and 4e-6 (slide), relative 2e-4 and 1e-3, and the two solvers agree within them; the full test under four
+solver variants (old grid, old reversed, new RCM, new grid) gives the same self-collision table to four digits.
+
+**Gates**, by the rule the other gates use (1.25 times the largest value over the four built-in records and both bake
+integrators, rounded up to two digits): self-stick 1.25 x 1.239e-2 = 1.549e-2, so **1.6e-2 (unchanged)**; self-slide
+1.25 x 3.675e-3 = 4.594e-3, so **4.6e-3 (was 4.8e-3)**. Both in `ClothSolver.cpp` `SelfSpecs` and
+`tests/ClothValidationTest.cpp`. The evidence values change, so this is part of the m3a.8 bump.
+
+**The other contact and self-collision cases** under the solver perturbations (old grid, old reversed, new RCM, new
+grid; four records, two integrators): rest (identical to all digits), cylinder (identical), single-layer slide (1e-15
+to 1e-12 on a 1e-6 gate: round-off), mesh and bounce (0), self-stack (9e-14 to 2.7e-12 on 1e-8), self-fold (0
+violations). The single-layer **stick** case is bistable too (BDF2: 3e-13 or 1.18e-6 depending on the variant, backward
+Euler 1.37e-7 throughout) but both branches are under its 1e-5 solver-tolerance gate by 8.5 times or more, so it was
+not changed. The 1-ulp-nudge and thread perturbations were applied only to the incline replica, not to these.

@@ -998,9 +998,9 @@ void SelfEvidenceFamily()
 			for (int k = 0; k < 4; ++k) worst[k] = std::max(worst[k], v[k]);
 			Check(st.ok && sk.ok && sl.ok && fo.ok && fo.secondary > 0, "self-collision evidence cases run for " + m.name);
 		}
-	std::printf("  largest: stack %.2e  stick %.3e  slide %.3e  fold %.0f (tolerances 1e-8, 1.6e-2, 4.8e-3, 0.5)\n", worst[0], worst[1],
+	std::printf("  largest: stack %.2e  stick %.3e  slide %.3e  fold %.0f (tolerances 1e-8, 1.6e-2, 4.6e-3, 0.5)\n", worst[0], worst[1],
 		worst[2], worst[3]);
-	Check(worst[0] <= 1e-8 && worst[1] <= 1.6e-2 && worst[2] <= 4.8e-3 && worst[3] < 0.5, "self-collision evidence within the solver's tolerances");
+	Check(worst[0] <= 1e-8 && worst[1] <= 1.6e-2 && worst[2] <= 4.6e-3 && worst[3] < 0.5, "self-collision evidence within the solver's tolerances");
 }
 } // namespace
 
