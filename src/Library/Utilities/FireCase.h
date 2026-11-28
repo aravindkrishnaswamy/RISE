@@ -1,5 +1,14 @@
 //////////////////////////////////////////////////////////////////////
-// FireCase.h - Canonical fire-case-v1 record and r54 derivations
+//
+//  FireCase.h - Canonical fire-case-v1 record and r54 derivations
+//
+//  Defines authored and derived methane fire-case schemas (Heskestad
+//  flame height, D* grid sizing, source/pilot geometry, timestep
+//  policies), canonical CBOR64 envelope construction/validation,
+//  r271 inert-plume diagnostics, and explicit CFL timestep selection.
+//
+//  License Information: Please see the attached LICENSE.TXT file
+//
 //////////////////////////////////////////////////////////////////////
 
 #ifndef RISE_FIRE_CASE_H
@@ -16,10 +25,14 @@ namespace RISE
 
 	namespace FireCase
 	{
-		// Negative means the transport record supplies the scalar coefficient.
+		//! Process-cached override from RISE_FIRE_SCALAR_VREMAN_CV (>= 0).
+		//! Negative means the transport record supplies the scalar coefficient.
 		float ProductionScalarVremanOverride();
 
+		//! Piecewise-linear HRR/flux envelope knot: timeS (s), normalized value in [0, 1].
 		struct EnvelopeKnot { double timeS=0.0, value=0.0; };
+		//! User-authored methane fire-case parameters (pool or patch source in m,
+		//! hrr in kW or mass_flux in kg/(m^2*s), quality draft/standard/high/dstar).
 		struct AuthoredV1
 		{
 			std::string fuelRecordId;
@@ -47,6 +60,8 @@ namespace RISE
 			double floorEmissivity=0.0;
 		};
 
+		//! Deterministically derived r54 physical, grid (nx,ny,nz, cellWidthM in m),
+		//! Heskestad/D*, flow-through, pilot, and floor-radiation closure parameters.
 		struct DerivedV1
 		{
 			double sourceAreaM2=0.0, nominalFuelFluxKGPerM2S=0.0;
@@ -75,6 +90,8 @@ namespace RISE
 			std::string floorRadiationModelVersion;
 		};
 
+		//! Complete canonical fire-case-v1 record with serialized CBOR64 payload/envelope
+		//! bytes, SHA-256 caseRecordId, and sorted unique referencedRecordIds.
 		struct RecordV1
 		{
 			AuthoredV1 authored;
@@ -85,13 +102,21 @@ namespace RISE
 			std::vector<std::string> referencedRecordIds;
 		};
 
+		//! Deterministic 64-bit mixing hash used to seed source-pattern perturbations.
 		std::uint64_t SplitMix64(std::uint64_t value);
+		//! Builds the 2D (nx*ny) burner multiplicative flux-factor mask normalized so
+		//! sum(factor) * dx^2 == sourceAreaM2, with deterministic +-1% seeded variation.
 		bool BuildSourcePattern(
 			const AuthoredV1&,const DerivedV1&,std::vector<double>&,
 			std::string& error );
+		//! Builds the 3D (nx*ny*nz) pilot mask: active (1) on z=0 cells whose centers lie
+		//! in the burner-rim annulus [D/2, D/2 + 2*dx] (translated for r244/r246 studies).
 		bool BuildPilotMask(
 			const AuthoredV1&,const DerivedV1&,std::vector<std::uint8_t>&,
 			std::string& error );
+		//! Evaluates the pilot target temperature (K) over [beginningTimeS, endTimeS] (s)
+		//! via exponential ramp from ambient to pilotSetpointTemperatureK; outputs 0 when
+		//! inactive or when InertPlumeSelected() is true.
 		bool EvaluatePilotSetpointTemperatureK(
 			const DerivedV1&,bool maskCell,double beginningTimeS,double endTimeS,
 			double& setpointTemperatureK,
@@ -118,17 +143,27 @@ namespace RISE
 		//! in [-1,1] from a hash of the cell and a 10 ms time bucket, renormalised per layer so the total stays exact.
 		double InertPlumeSeedAmplitude();
 		const double InertPlumeSeedBucketS=0.01;
+		//! Returns matchedScheduleFlowThroughTimeS when set (r246 top study), else flowThroughTimeS.
 		double ScheduleFlowThroughTimeS(const DerivedV1&);
+		//! Maximum step (s) keeping one pilot ramp step within pilotExpansionVolumeRatioCap (17/16).
 		double PilotCommandMaximumStepS(const DerivedV1&);
+		//! Validates authored inputs against `fuel`, computes all DerivedV1 quantities,
+		//! and encodes canonical CBOR64 payload/envelope bytes and SHA-256 caseRecordId.
 		bool BuildMethaneV1(
 			const AuthoredV1&,const FireSimulationMethaneRecord&,
 			const std::vector<std::string>& referencedRecordIds,
 			RecordV1&,std::string& error );
+		//! Structural check only: verifies canonical {case_record_id, payload} v1 envelope and SHA-256.
 		bool ValidateEnvelopeV1(
 			const RISECBOR64::Bytes&,RecordV1&,std::string& error );
+		//! Full semantic check: parses authored fields, rebuilds via BuildMethaneV1,
+		//! and requires bit-identical reproduction of the input envelopeBytes.
 		bool ValidateMethaneEnvelopeV1(
 			const RISECBOR64::Bytes&,const FireSimulationMethaneRecord&,
 			RecordV1&,std::string& error );
+		//! Selects the next explicit timestep (s) as the minimum of advective CFL
+		//! (0.5 or RISE_FIRE_ADVECTIVE_CFL), buoyant 0.5*sqrt(2*dx/g'), diffusive
+		//! dx^2/(8*D), and 1.1*previousStepS; returns 0 on invalid or unconstrained inputs.
 		double SelectTimeStepS(
 			double cellWidthM,double maximumAxisSpeedMPerS,
 			double maximumPositiveReducedGravityMPerS2,

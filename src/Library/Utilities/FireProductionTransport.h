@@ -2,6 +2,18 @@
 //
 //  FireProductionTransport.h - fp32 production coupled transport
 //
+//  Declares the coupled scalar & momentum transport, physical diffusion/
+//  conduction flux, FCT limiter, accepted-state EOS gate, frozen-source
+//  packet seal, divergence-target lineage, and projected-Heun CPU owner
+//  interfaces for the staggered MAC fire solver.
+//  Backends: CPU oracle (FireProductionTransport.cpp), canonical source
+//  authority (FireProductionSource.cpp), Metal resident transport/FCT/EOS
+//  (FireProductionAdvectionMac.mm), and non-Metal stub
+//  (FireProductionAdvectionUnsupported.cpp).
+//  Layout: conservative Q[9][cells] component-major with cells x-fast
+//  (z*ny+y)*nx+x; packed MAC faces [x,y,z] via packedFaceOffset[3].
+//  Units: SI (kg/m^3, J/m^3, K, m^2/s, W/(m*K), kg/(m^2*s), W/m^2, 1/s).
+//
 //  License Information: Please see the attached LICENSE.TXT file
 //
 //////////////////////////////////////////////////////////////////////
@@ -318,6 +330,9 @@ namespace RISE
 		}
 	};
 
+	//! Outputs of one 3D scalar FCT solve: packed donor low flux, MC-MUSCL
+	//! antidiffusive delta, low state, per-cell inequality ratios, shared face
+	//! alpha in [0,1], accepted Q, accepted gas mass flux, and commuting witness.
 	struct FireProductionScalarFCTResult
 	{
 		std::array<std::size_t,3> packedFaceOffset;
@@ -559,6 +574,7 @@ namespace RISE
 		const std::vector<float>& temperatureK,
 		std::string* error=0 );
 
+	//! Stage role of a base low-Mach divergence target before Picard correction.
 	enum class FireProductionScalarDivergenceTargetRole : std::uint8_t
 	{
 		R0Base=1u,
@@ -776,6 +792,7 @@ namespace RISE
 		}
 	};
 
+	//! Stage tag identifying R0, R1, or their arithmetic Heun average flux stage.
 	enum class FireProductionScalarHeunFluxRole : std::uint8_t
 	{
 		R0=1u,
@@ -1022,6 +1039,9 @@ namespace RISE
 		std::uint64_t& workingSetBytes,
 		std::string* error=0,bool prescribedBottomFlux=false );
 
+	//! Computes certified nonadvective species diffusion (projected onto the
+	//! stoichiometric nullspace N_C N_C^T in fp64) and Fourier + enthalpy energy
+	//! flux on all MAC faces from fixed stage T, D, k, and sealed open-inflow masks.
 	bool BuildFireProductionScalarPhysicalFluxPrerequisiteCPU(
 		const FireProductionScalarPhysicalFluxPrerequisiteRequest& request,
 		FireProductionScalarPhysicalFluxPrerequisiteResult& result,
@@ -1087,6 +1107,8 @@ namespace RISE
 		FireProductionCompatibleFCTMomentumResult& result,
 		std::string* error=0 );
 
+	//! Full single-stage CPU FCT driver: builds the donor/MC flux pair and runs
+	//! the shared-alpha admissibility limiter and conservative update.
 	bool EvaluateFireProductionScalarFCTCPU(
 		const FireProductionScalarFCTRequest& request,
 		FireProductionScalarFCTResult& result,

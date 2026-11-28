@@ -1,3 +1,15 @@
+//////////////////////////////////////////////////////////////////////
+//
+//  PhysicalLightSpectrum.cpp - Tabulated physical light SPD (nm ->
+//    spectral radiant power/intensity) with exponent-separated Parts
+//    arithmetic avoiding UV-VIS-SWIR overflow/subnormal loss, plus
+//    1 nm CIE-Y-normalized visible Rec.709 RGB projection.
+//
+//  Tabs: 4
+//  License Information: Please see the attached LICENSE.TXT file
+//
+//////////////////////////////////////////////////////////////////////
+
 #include "pch.h"
 #include "PhysicalLightSpectrum.h"
 #include "PointLight.h"
@@ -117,6 +129,8 @@ PhysicalLightSpectrum::PhysicalLightSpectrum(
     }
 }
 
+// Validates tabulated SPD: >= 2 strictly increasing finite positive wavelengths,
+// finite nonnegative samples, and explicit "zero" outside-domain policy.
 std::shared_ptr<const PhysicalLightSpectrum> PhysicalLightSpectrum::Create(
     const double* nm, const double* samples, const unsigned int count, const char* outsidePolicy)
 {
@@ -135,6 +149,8 @@ bool PhysicalLightSpectrum::NormalizeDirection(const Vector3& authored,Vector3& 
     return UnitAndMagnitude(authored,unit,magnitude);
 }
 
+// Computes unit direction and exponent-scaled distance between two points
+// without overflowing intermediate squared lengths.
 bool PhysicalLightSpectrum::DirectionBetween(const Point3& destination,const Point3& origin,
     Vector3& unit,ProductTerm& distance,Scalar& queryDistance)
 {
@@ -181,6 +197,8 @@ bool PhysicalLightSpectrum::CanScale(const Scalar scale, const Scalar angularBou
     return RISE::IsFiniteDouble(scaled.r) && RISE::IsFiniteDouble(scaled.g) && RISE::IsFiniteDouble(scaled.b);
 }
 
+// Linearly interpolates the SPD at nm in exponent-separated Parts form;
+// returns zero outside [wavelengths.front(), wavelengths.back()].
 void PhysicalLightSpectrum::EvalParts(const Scalar nm, double& fraction, int& exponent) const
 {
     Parts result;

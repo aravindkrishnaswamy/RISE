@@ -2,60 +2,18 @@
 //
 //  BSSRDFSampling.h - Shared BSSRDF importance sampling utility
 //
-//  Implements the disk projection method (Christensen & Burley 2015)
-//  for sampling entry points on translucent surfaces.  The algorithm
-//  is used by both the bidirectional path tracer (BDPTIntegrator) and
-//  the unidirectional path tracer (PathTracingIntegrator).
-//
-//  ALGORITHM OVERVIEW:
-//    Given a ray exit point on a material with a diffusion profile,
-//    the sampler finds a nearby entry point on the same surface and
-//    computes the BSSRDF importance sampling weight.
-//
-//    Steps:
-//    1. Choose a spectral channel uniformly (R, G, B)
-//    2. Choose a projection axis:
-//       normal (50%), tangent (25%), bitangent (25%)
-//    3. Sample radius r from the profile CDF for the channel
-//    4. Sample angle phi uniformly on [0, 2pi)
-//    5. Compute probe origin offset in the perpendicular plane
-//    6. Cast a single finite chord through the object along the axis,
-//       starting before and passing through the projection plane
-//       (DL-52: NOT two half-lines starting AT the plane -- that
-//       skips a coplanar near surface, see BSSRDFSampling.cpp).
-//       DL-71/DL-75: any hit -- near OR far side of the projection
-//       plane, position is irrelevant -- whose underlying geometry
-//       orients its reported normal to face the incoming ray
-//       (RayIntersectionGeometric::bGeomNormalOrientedToRay) has that
-//       normal (and its shading-normal partner, oriented into the
-//       same hemisphere -- P2-A) unconditionally recovered via
-//       `oriented ? -raw : raw`, EXCEPT when the orientation is
-//       fabricated rather than a recovered winding normal
-//       (HairGeometry; RayIntersectionGeometric::bGeomNormalRayDerived)
-//       -- see the probe loop in BSSRDFSampling.cpp for the full rule.
-//       DL-96 (checked, not changed here): the entry ADMISSION GATE at
-//       the call site treats an open sheet's two faces symmetrically
-//       (RayIntersectionGeometric::bOpenSheet), but this probe's own
-//       per-hit recovery stays unconditional -- see the long comment
-//       at its call site in BSSRDFSampling.cpp for why.
-//    7. If hit: evaluate Rd(r_actual), compute multi-axis PDF
-//    8. Generate cosine-weighted scattered ray from entry normal
-//    9. Compute Fresnel transmission and Sw normalization
+//  Disk-projection entry-point sampling (Christensen & Burley 2015)
+//  shared by PathTracingIntegrator and BDPTIntegrator, plus contact-
+//  launch and boundary-Fresnel helpers.
 //
 //  FACTORIZATION:
-//    The BSSRDF is factored as (Christensen & Burley 2015):
-//      S(wo, xo, wi, xi) = C * Ft(wo) * Rd(||xo - xi||) * Ft(wi)
-//    where Ft = 1 - F is the EXACT dielectric Fresnel transmission
-//    (DL-306: the same law SubSurfaceScatteringSPF's surface reflection
-//    uses, so reflection + transmission = 1 at the interface),
-//    C = 1 / (c * PI) and c = 2 * integral Ft(mu) mu dmu (a closed form,
-//    see BoundaryTransmissionNormalization), with eta the RELATIVE
-//    boundary index n_interior / n_exterior (DL-49; see
-//    RelativeBoundaryIOR below).  SampleEntryPoint returns two weights:
-//      weight        = Rd * Ft(exit) * Ft(cosine_dir) / (c * pdfSurface)
-//                      (Sw * cosine / cosinePdf = Ft/c for this continuation)
-//      weightSpatial = Rd * Ft(exit) / pdfSurface
-//                      (for NEE/connections, which evaluate Sw independently)
+//    S(wo, xo, wi, xi) = C * Ft(wo) * Rd(||xo - xi||) * Ft(wi)
+//    where Ft = 1 - F is exact dielectric Fresnel transmission
+//    (matching SubSurfaceScatteringSPF reflection so R + Ft = 1),
+//    C = 1 / (c * PI), c = 2 * integral Ft(mu) mu dmu for relative
+//    eta = n_interior / n_exterior.  SampleEntryPoint returns:
+//      weight        = Rd * Ft(exit) * Ft(entry) / (c * pdfSurface)
+//      weightSpatial = Rd * Ft(exit) / pdfSurface (NEE / connections)
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: March 30, 2026
@@ -93,16 +51,10 @@ namespace RISE
 		{
             Scalar acceptedAlphaCoverage = 1;
 			Point3				entryPoint;		///< Entry point on the surface
-			/// DL-408: the entry point ON the surface, before the
-			/// `BSSRDF_RAY_EPSILON` outward offset `entryPoint` carries --
-			/// the launch point of a contact continuation (FindExitContact).
+			/// On-surface entry point before BSSRDF_RAY_EPSILON outward offset (contact launch origin).
 			Point3				boundaryPoint;
-			Vector3				entryNormal;	///< Shading normal at entry point — drives the cosine-sampled
-												///< continuation frame and Sw Fresnel angular dependence.
-			Vector3				entryGeomNormal;///< Geometric normal at entry point — drives the disk-to-surface
-												///< area Jacobian and the rebuilt entry front/back-face gate.
-												///< Independent of smooth interpolation and shading modifiers,
-												///< including normal maps on analytical primitives.
+			Vector3				entryNormal;	///< Shading normal at entry (continuation frame & Sw Fresnel).
+			Vector3				entryGeomNormal;///< Geometric normal at entry (area Jacobian & entry facing gate; independent of modifiers).
 			OrthonormalBasis3D	entryONB;		///< ONB at entry point
 			SurfaceDerivativesInfo derivatives;	///< Surface derivatives at entry point (DL-22)
 			SurfaceSignalInfo	signals;		///< Surface signals at entry point (DL-22)
@@ -124,22 +76,12 @@ namespace RISE
 			Scalar				weightSpatialNM;///< Scalar spatial-only weight for spectral path
 			Scalar				cosinePdf;		///< PDF of the cosine-weighted direction
 			Scalar				pdfSurface;		///< Spatial sampling PDF in area measure
-			/// DL-357: the diffusion jump's own wavelength-dependent inputs,
-			/// so an HWSS companion can re-price the jump at its own
-			/// wavelength (`BDPTIntegrator::RecomputeSubpathThroughputNM`):
-			/// the 3-D exit-to-entry distance Rd was evaluated at, and the
-			/// exit cosine Ft(exit) was evaluated at.  Set by
-			/// `SampleEntryPoint` only; 0 from `RandomWalkSSS::SampleExit`.
+			/// Diffusion jump inputs for HWSS companion re-pricing (RecomputeSubpathThroughputNM):
+			/// 3D exit-to-entry distance and exit cosine.  Set by SampleEntryPoint; 0 from RandomWalkSSS.
 			Scalar				jumpDistance;
 			Scalar				exitCos;
-			/// DL-370: the object the subsurface event actually LEFT, its
-			/// material, and that material's absolute index.  A random walk
-			/// that reaches a face it shares with a touching random-walk
-			/// neighbour crosses into the neighbour and may leave through
-			/// it, so the exit vertex belongs to that object (its Sw, its
-			/// connections, its self-exclusion).  Null / 0 = the entry
-			/// object (every diffusion result, and every walk that never
-			/// crossed); `ExitObject` / `ExitMaterial` resolve that.
+			/// Exited body/material/absolute IOR when a random walk crosses into a touching
+			/// neighbour; null / 0 means the entry object (resolved via ExitObject/ExitMaterial/ExitIOR).
 			const IObject*		pExitObject;
 			const IMaterial*	pExitMaterial;
 			Scalar				exitIOR;
@@ -163,33 +105,10 @@ namespace RISE
 			pExitObject(0), pExitMaterial(0), exitIOR(0), valid(false) {}
 		};
 
-		//////////////////////////////////////////////////////////////
-		// DL-49: the SSS boundary is an INTERFACE between two media.
-		//
-		// Every boundary quantity below (Fresnel transmission, its Sw
-		// normalization, the random walk's Snell refraction) is a
-		// function of the RELATIVE index eta = n_interior / n_exterior,
-		// never of the material's absolute index against air.  The
-		// exterior index is the medium the ray arrived through --
-		// `RayIntersectionGeometric::ambientIOR`, which PT, BDPT, VCM,
-		// MLT and the ray caster stamp from `IORStack::top()` at every
-		// hit (G6) and which `PathVertexEval::PopulateRIGFromVertex`
-		// replays from `BDPTVertex::mediumIOR`.  It is the SAME source
-		// `SubSurfaceScatteringSPF`'s surface reflection has always
-		// read (`ior_stack.top()`), so the two halves of one boundary
-		// event now describe one interface.  A stackless caller (a
-		// freshly constructed record, a photon tracer without a stack)
-		// sees the field's default 1.0: air, exactly as before.
-		//
-		// In air (exterior 1.0) `interior / 1.0 == interior` exactly and
-		// every helper below takes its pre-DL-49 branch, so an in-air
-		// SSS evaluation is bit-identical to the pre-DL-49 code.
-		//
-		// DL-04's complete-event convention is untouched: Sw is still
-		// normalized to a unit cosine-hemisphere integral on the
-		// exterior side, so no unmatched eta^2 enters at any exterior
-		// index (the two basic-radiance factors still telescope to 1).
-		//////////////////////////////////////////////////////////////
+		// Boundary helpers use the relative index eta = n_interior / n_exterior,
+		// where exterior comes from ri.ambientIOR (default 1.0 = air), matching
+		// SubSurfaceScatteringSPF reflection.  Sw normalizes to unit exterior
+		// cosine-hemisphere integral.
 
 		/// The exterior (incident-medium) index carried by a hit record.
 		/// Non-positive or non-finite values fall back to air.
@@ -206,26 +125,10 @@ namespace RISE
 				? interiorIOR / exteriorIOR : interiorIOR;
 		}
 
-		/// Exact dielectric Fresnel transmission Ft = 1 - F at an
-		/// EXTERIOR-side cosine mu for the RELATIVE index eta.
-		///
-		/// DL-306: this is the law every SSS boundary transmission uses --
-		/// the profiles' FresnelTransmission, the random walk's entry coin
-		/// and exit Sw, and the NEE / connection adapters -- because it is
-		/// the law `SubSurfaceScatteringSPF` prices the surface REFLECTION
-		/// of the same interface with (`Optics::CalculateDielectricReflectance`
-		/// against `ior_stack.top()`, i.e. the same relative index).  So
-		/// R(mu) + Ft(mu) = 1 at every cosine, to rounding.  Before
-		/// DL-306 the transmission was Schlick's approximation, which does
-		/// not partition with the exact reflection: <R> + <T> read 0.966 /
-		/// 0.980 / 0.9992 / 1.006 at eta 1.05 / 1.128 / 1.33 / 1.5.
-		///
-		/// eta < 1 (a denser exterior) needs no special casing: the Fresnel
-		/// function evaluates the transmitted cosine itself and returns
-		/// total reflection (Ft = 0) past the critical angle.  eta == 1 is
-		/// no interface (Ft = 1).
-		// Keep the ordered absolute pair for pointwise boundary queries: forming
-		// eta first discards an index-ratio residual amplified at critical incidence.
+		/// Exact dielectric Fresnel transmission Ft = 1 - F at exterior cosine mu
+		/// (matches SubSurfaceScatteringSPF reflection so R + Ft = 1; handles
+		/// eta < 1 TIR and eta == 1).  Ordered absolute pair avoids critical-
+		/// incidence ratio rounding.
 		inline Scalar BoundaryTransmission( const Scalar mu,
 			const Scalar interiorIOR, const Scalar exteriorIOR )
 		{
@@ -237,14 +140,9 @@ namespace RISE
 			return BoundaryTransmission(mu, eta, 1.0);
 		}
 
-		/// Closed-form cosine-hemisphere mean of the exact dielectric
-		/// Fresnel REFLECTANCE for light arriving from the rarer side,
-		/// r(n) = 2 * integral_0^1 F(mu; 1 -> n) mu dmu, n > 1 (the
-		/// classical diffuse / hemispherical Fresnel reflectance, exact,
-		/// not a fit).  Verified against an independent quadrature to
-		/// < 1e-11 for n - 1 >= 1e-3; below that its log terms cancel
-		/// catastrophically, which is why BoundaryTransmissionNormalization
-		/// never calls it there.
+		/// Exact closed-form diffuse Fresnel reflectance r(n) = 2 * integral_0^1
+		/// F(mu; 1->n) mu dmu for n > 1 (accurate to < 1e-11 for n - 1 >= 1e-3;
+		/// unstable below that due to log cancellation).
 		inline Scalar ExactExternalDiffuseFresnelReflectance( const Scalar n )
 		{
 			const Scalar n2 = n * n;
@@ -259,26 +157,9 @@ namespace RISE
 				+ 8.0 * n4 * (n4 + 1.0) / (n2p1 * n4m1 * n4m1) * log( n );
 		}
 
-		/// Normalization c = 2 * integral_0^1 Ft(mu) mu dmu of
-		/// BoundaryTransmission over the EXTERIOR cosine hemisphere, for
-		/// the RELATIVE index eta (DL-306; replaces DL-48/DL-49's Schlick
-		/// constant 20(1-F0)/21 and its eta^2 twin).  Sw = Ft/(c*PI) then
-		/// has unit exterior cosine-hemisphere integral at every index, so
-		/// DL-04's complete-event convention is unchanged.
-		///
-		/// eta >= 1: c = 1 - r(eta), the closed form above.  Within 1e-3 of
-		///   eta = 1 the closed form loses digits to cancellation, so c is
-		///   interpolated linearly between the exact c(1) = 1 and the closed
-		///   form at 1 + 1e-3 (r ~ e/3 + O(e^2 log e) there); the
-		///   interpolation error is below 1e-6, measured against an
-		///   independent quadrature (BSSRDFNormalizationTest Test E and
-		///   docs/DEBT_LEDGER.md).
-		/// eta < 1: Fresnel is symmetric in the two sides, so
-		///   F(mu; 1 -> eta) = F(t; 1 -> 1/eta) with t the transmitted
-		///   cosine, and Snell gives mu dmu = eta^2 t dt over t in [0,1]
-		///   (directions past the critical angle transmit nothing), hence
-		///   c(eta) = eta^2 * c(1/eta) exactly -- the same identity DL-49
-		///   derived for the Schlick law.
+		/// Exterior cosine-hemisphere normalization c = 2 * integral_0^1 Ft(mu) mu dmu
+		/// for relative eta (docs/DEBT_LEDGER.md).  Linearly interpolates for
+		/// |n - 1| < 1e-3 (error < 1e-6); for eta < 1 uses c(eta) = eta^2 * c(1/eta).
 		inline Scalar BoundaryTransmissionNormalization( const Scalar eta )
 		{
 			if( !( eta > 0 ) || !( eta < RISE_INFINITY ) ) {
@@ -297,15 +178,8 @@ namespace RISE
 			return bDenserExterior ? eta * eta * c : c;
 		}
 
-		/// Computes the Sw directional scattering factor at a BSSRDF
-		/// entry point, given the Fresnel transmission at that point.
-		///
-		///   Sw(wi) = Ft(cos_theta_i) / (c * PI)
-		///
-		/// Used by PathVertexEval::EvalBSDFAtVertex for BSSRDF entry
-		/// connections and by BSSRDFEntryBSDF in the unidirectional PT.
-		///
-		/// \return Sw value (scalar, achromatic)
+		/// Directional scattering factor Sw(wi) = Ft(cos_theta_i) / (c * PI)
+		/// (achromatic) for relative eta = n_interior / n_exterior.
 		inline Scalar EvaluateSwWithFresnel(
 			const Scalar FtEntry,					///< [in] Fresnel transmission at entry point
 			const Scalar eta						///< [in] RELATIVE index n_interior / n_exterior (DL-49)
@@ -319,15 +193,8 @@ namespace RISE
 			return 0;
 		}
 
-		/// Attempts BSSRDF importance sampling at a front-face hit
-		/// on a material with a diffusion profile.
-		///
-		/// Uses the disk projection method (Christensen & Burley 2015).
-		/// The probe ray is cast against the specific object (pObject),
-		/// not the whole scene, to ensure the entry point is on the
-		/// same translucent surface.
-		///
-		/// \return A SampleResult with valid=true on success
+		/// Disk-projection BSSRDF entry-point sampling (Christensen & Burley 2015)
+		/// against pObject alone.  Returns SampleResult with valid=true on success.
 		SampleResult SampleEntryPoint(
 			const RayIntersectionGeometric& ri,		///< [in] Exit point intersection
 			const IObject* pObject,					///< [in] Object to cast probe rays against
@@ -337,21 +204,10 @@ namespace RISE
 			const IRayIntersectionModifier* pExitLeafModifier = 0	///< [in] Optional resolved mix leaf modifier (Round 3 P1-4)
 			);
 
-		//////////////////////////////////////////////////////////////
-		// DL-408: CONTACT LAUNCHES (docs/DEBT_LEDGER.md)
-		//
-		// A continuation launched from a point p that lies on a face SHARED
-		// with a neighbour T meets T at zero distance, where neither a ray
-		// offset off the surface (it starts inside T) nor one from p (both
-		// roots under the self-hit floor) can find it.  A contact launch is
-		// cast against T ALONE from o = p - d * delta, backed off INTO the
-		// launching body: T's face is then at t ~= delta and the launching
-		// body's face is not tested.  The hit is an ordinary hit (backed off
-		// toward o, i.e. on the launching side, as a hit reached through a
-		// tiny gap is) and records the launching body as its
-		// `pContactPartner`, so a continuation from it back toward the
-		// arrival side is again a contact launch restricted to that body.
-		//////////////////////////////////////////////////////////////
+		// Contact launches (docs/DEBT_LEDGER.md): cast against touching target T
+		// alone from backed-off o = p - d * delta so a shared face hits at t ~= delta
+		// instead of falling under the self-hit floor; accepted hits set
+		// pContactPartner = pSource.
 
 		/// The back-off delta of a contact launch from `p`: scale-relative,
 		/// far above every primitive's self-hit floor (~1e-12 (1+s)).
@@ -367,15 +223,10 @@ namespace RISE
 			return Ray( Point3Ops::mkPoint3( p, dir * ( -ContactBackoff( p ) ) ), dir );
 		}
 
-		/// Casts `ri.geometric.ray` (built by ContactRay) against `pTarget`
-		/// alone and ACCEPTS the hit only if it lies at the launch point:
-		/// `delta/2 <= range <= delta + reach`, `reach = 4 BSSRDF_RAY_EPSILON
-		/// (1+s) / max(|cos|, 0.05)` against the hit's own geometric normal
-		/// (covers a sub-offset gap, which the containment test admits).  On
-		/// acceptance `ri` is the hit with `pContactPartner = pSource` and
-		/// TRUE is returned; otherwise `ri` is reset to an unhit record on
-		/// the same ray and FALSE is returned.  Deterministic in its inputs,
-		/// so a verification and a later re-cast agree.
+		/// Casts a ContactRay against `pTarget` alone; accepts iff
+		/// `delta/2 <= range <= delta + reach` where `reach = 4 * BSSRDF_RAY_EPSILON
+		/// * (1+s) / max(|cos|, 0.05)`.  Sets `pContactPartner = pSource` on hit
+		/// and resets `ri` on miss.  Deterministic in its inputs.
 		bool IntersectContactRay(
 			const IObjectManager& objects,			///< [in] The scene's objects
 			const IObject* pTarget,					///< [in] The only object tested
@@ -396,17 +247,9 @@ namespace RISE
 			ISampler* pSampler = 0
 			);
 
-		/// At an SSS exit (`r`, left through `pExitObject`) whose
-		/// continuation is `dir`: the body the exit is in CONTACT with, or
-		/// null.  Candidates are every other body whose box lies within the
-		/// band's reach of `r.boundaryPoint` (`ObjectsNearPoint`: touching
-		/// solids, open sheets such as a ground plane, enclosures); each is
-		/// asked by the contact cast, the band arbitrates, the nearest
-		/// accepted hit wins.  A candidate that contains the backed-off
-		/// origin is nested with the launching body at the face: it is
-		/// accepted when it ENCLOSES that body (world-box nesting: a room
-		/// the body rests in) and refused otherwise (an inset flush with
-		/// the face on the launching side).  Nothing draws from a sampler.
+		/// Finds the nearest touching body at an SSS exit along `dir` (or null).
+		/// Accepts enclosing bodies (world-box nesting) and rejects flush insets.
+		/// Draws no samples.
 		const IObject* FindExitContact(
 			const IObjectManager& objects,
 			const SampleResult& r,
@@ -414,17 +257,10 @@ namespace RISE
 			const Vector3& dir
 			);
 
-		/// FindExitContact's search for any launch from surface point `p`
-		/// (outward normal `n`) of body `pSelf` along `dir`: also used by
-		/// BDPT / VCM / MLT for a light subpath EMITTED from a luminary in
-		/// contact with an SSS body (DL-408 round 3), with
-		/// `bSSSTargetsOnly`: only a body carrying a diffusion profile or a
-		/// random walk is a candidate.  A luminary is usually a sheet with no
-		/// interior, so "which side of a coincident surface is it on" has no
-		/// geometric answer; a panel flush with a ceiling sheet or with the
-		/// inside face of a closed room emits AWAY from that surface, and a
-		/// contact launch there would hit it from behind and lose the light.
-		/// An SSS body flush with an emitter is the DL-408 case.
+		/// General contact search from surface point `p` (outward normal `n`) of
+		/// `pSelf` along `dir`.  `bSSSTargetsOnly` restricts candidates to SSS
+		/// bodies (used for emitter-on-SSS launches so sheet emitters don't hit
+		/// coincident ceilings/enclosures).
 		const IObject* FindSurfaceContact(
 			const IObjectManager& objects,
 			const Point3& p,
@@ -434,44 +270,25 @@ namespace RISE
 			const bool bSSSTargetsOnly = false
 			);
 
-		/// Does a contact with `pPartner` COVER the side facing it -- is every
-		/// shadow ray and connection into that side occluded at zero
-		/// distance, as the gap twin's are by the partner's near face?  True
-		/// for a shadow-casting partner whose material has no non-delta
-		/// transmission a connection could cross (not `ScattersFullSphere`:
-		/// translucent, fabric, weave, hair; not a delta pass-through).
-		/// A covered contact's NEE / connections are zeroed (DL-408 round 2);
-		/// a transmitting partner's are left to the ordinary visibility test
-		/// (round 3: zeroing them removed real light).
+		/// True when `pPartner` casts shadows and occludes zero-distance shadow/
+		/// connection rays (opaque, non-full-sphere, non-delta-pass-through,
+		/// non-alpha, non-unresolved-mix).
 		inline bool ContactCovers( const IObject* pPartner )
 		{
 			if( !pPartner || !pPartner->DoesCastShadows() ) {
 				return false;
 			}
 			const IMaterial* pMat = pPartner->GetMaterial();
-			// Round 3 P1-2 / Slice 3 R1 A-P1-6: alpha-covered materials and
-			// MixMaterials (which may have pass-through or full-sphere leaves)
-			// must not short-circuit shadow/connection visibility at zero distance.
+			// Alpha-covered and unresolved MixMaterials must not short-circuit
+			// zero-distance shadow/connection visibility.
 			return pMat && !pMat->ScattersFullSphere() && !pMat->HasDeltaPassThrough()
 				&& !pMat->HasAlphaCoverage() && !pMat->IsUnresolvedMix();
 		}
 
-		/// DL-408 review round 4: the closest-hit TIE at a coincident face.
-		/// `ri` is a whole-scene closest hit that ENTERS an SSS body (a
-		/// body carrying a diffusion profile or a random walk) from outside.
-		/// If another body's surface lies at the same point -- a sheet
-		/// emitter the body rests on, the floor of a closed room the body
-		/// stands in -- the two hits tie exactly and the traversal's choice
-		/// is arbitrary; physically the ray meets that other surface FIRST
-		/// (it lies on the ray's side of the SSS body).  Rewrites `ri` to
-		/// that surface's hit on the same ray and returns true.  A
-		/// candidate qualifies when its physical (unbacked) distance on the
-		/// same ray agrees within a floating-point rounding budget, and either it has no interior just past the
-		/// face (a sheet or an adjacent body's exit), or it ENCLOSES the SSS
-		/// body (world-box nesting, a room). Arrival from inside a neighbour
-		/// does not disqualify its exit. A flush INSET inside SSS is refused.
-		/// Called from ObjectManager::IntersectRay so strategies share the
-		/// same first surface. Draws no samples; preserves requested exit data.
+		/// Resolves closest-hit ties on exterior entry into an SSS body when
+		/// another surface (sheet, adjacent exit, or enclosing body) coincides
+		/// within a coordinate rounding budget; rejects flush insets.  Called
+		/// from ObjectManager::IntersectRay; draws no samples.
 		bool ResolveCoincidentEntry(
 			const IObjectManager& objects,
 			RayIntersection& ri,

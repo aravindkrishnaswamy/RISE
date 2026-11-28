@@ -54,23 +54,12 @@ namespace RISE
 {
 	namespace PathVertexEval
 	{
-		//! DL-14 / DL-402: stamp the pixel footprint of a light-traced
-		//! (t == 1) camera connection onto a LIGHT-subpath surface vertex
-		//! before it is shaded for that pixel.  A light vertex otherwise
-		//! carries no footprint (nothing traced it from the camera), so a
-		//! footprint-filtered texture -- ExpressionPainter's `fw`, a mip
-		//! level -- would be evaluated UNFILTERED by the light-tracing
-		//! strategy while every eye strategy MIS-combined into the same
-		//! pixel evaluates it filtered: the pixel then converges to a
-		//! mixture of two textures weighted by the strategies' MIS shares.
-		//! `dpdx` / `dpdy` are the world-space surface steps per raster
-		//! pixel (BDPTCameraUtilities::PixelFootprintThrough).  The fields
-		//! use the formulas Object::IntersectRay uses for an eye hit -- the
-		//! world width, the width in the hit object's own frame (the frame
-		//! `Po` is evaluated in), and the texcoord-chart UV Jacobian -- but
-		//! from the stored, post-modifier vertex rather than the pre-modifier
-		//! hit, so on a bump- or normal-mapped surface the two sides can
-		//! differ slightly (DL-14 doc §10, residuals).
+		//! Stamp the pixel footprint (`dpdx`, `dpdy` from
+		//! `BDPTCameraUtilities::PixelFootprintThrough`) onto a light-subpath
+		//! surface vertex before t == 1 camera-connection shading so
+		//! footprint-filtered painters match eye-path strategies. Computes
+		//! world/object widths and calls `SolveFootprintUV` from the stored
+		//! post-modifier vertex (DL-14 / DL-402).
 		inline void StampPixelFootprint( BDPTVertex& vertex, const Vector3& dpdx, const Vector3& dpdy )
 		{
 			TextureFootprint fp;
@@ -93,16 +82,10 @@ namespace RISE
 			vertex.txFootprint = rig.txFootprint;
 		}
 
-		//! The record a t == 1 (light-traced) connection shades a light
-		//! endpoint with: for a SURFACE vertex whose pixel footprint
-		//! through @a ap is defined, a copy in @a scratch carrying that
-		//! footprint (StampPixelFootprint); otherwise @a vertex itself.
-		//! Every BSDF VALUE evaluation of one t == 1 connection's light
-		//! endpoint uses this record so its factors stay consistent (the
-		//! contribution and BDPT's per-type-cap rescale).  MIS densities
-		//! (pdfRev / pdfPred, VCM's bsdfRevPdfW) still read the stored vertex:
-		//! a density that depends on a footprint-filtered painter sees the
-		//! unfiltered one there, as the light walk that sampled it did.
+		//! Returns a copy of `vertex` in `scratch` stamped with its t == 1
+		//! pixel footprint through `ap` (or `vertex` itself if not a surface or
+		//! footprint is undefined). Used for BSDF value queries only; MIS
+		//! densities still read the unfiltered stored vertex.
 		inline const BDPTVertex& WithPixelFootprint(
 			const ICamera& camera,
 			const BDPTCameraUtilities::ApertureSample& ap,
@@ -195,99 +178,23 @@ namespace RISE
 		//////////////////////////////////////////////////////////////////////
 		// PopulateRIGFromVertex
 		//
-		// Single source of truth for reconstructing a
-		// RayIntersectionGeometric from a stored BDPTVertex's surface state.
-		// Used by every BDPT/VCM site that hands a manually-built `ri` to a
-		// BSDF, painter, or material query.  Centralising the copy keeps
-		// the BDPTVertex / RayIntersectionGeometric surface-state field
-		// lists from drifting out of sync — a class of bug that previously
-		// produced silent BDPT firefly regressions when a new field
-		// (vertex color, surface derivatives, ...) was added to the
-		// intersection struct but missed at one of the manual reconstruction
-		// sites.
+		// Single source of truth for rebuilding RayIntersectionGeometric from
+		// a stored BDPTVertex across BDPT/VCM/MLT.
 		//
-		// CONTRACT — when adding any new field to RayIntersectionGeometric
-		// that is consumed by IBSDF::value / IPainter / IMaterial::Get*
-		// paths, you MUST:
-		//   1. Add the corresponding field to BDPTVertex (surface state
-		//      block).
-		//   2. Populate it during eye/light subpath generation in
-		//      BDPTIntegrator::GenerateEyeSubpath / GenerateLightSubpath
-		//      (and the spectral / VCM equivalents).
-		//   3. Add the copy below.
-		//   4. Extend tests/BDPTVertexRIGRebuildTest.cpp with a sentinel
-		//      assertion for the new field -- one per SCALAR, POINTER and
-		//      FLAG, not one per struct: a nested struct copied by
-		//      assignment still has to be checked member by member, or a
-		//      hand-rolled field-by-field copy could drop one silently.
-		// The cross-reference comment in BDPTVertex.h points the next
-		// developer at this contract.
+		// CONTRACT: when adding any field to RayIntersectionGeometric read by
+		// IBSDF / IPainter / IMaterial:
+		//   1. Add it to BDPTVertex (surface state block).
+		//   2. Populate it in eye/light subpath generation (RGB/NM/VCM).
+		//   3. Copy it below.
+		//   4. Add per-member sentinel checks to tests/BDPTVertexRIGRebuildTest.cpp.
 		//
-		// THE PAINTER-INPUT FIELDS ARE CARRIED (2026-09-11,
-		// docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md §3).  This block
-		// used to say the opposite -- `derivatives`, `signals` and
-		// `txFootprint` were DECLINED, so an expression evaluated at a
-		// BDPT / VCM / MLT vertex read the documented neutral for `curv`,
-		// `curvR`, `occlusion`, `thickness`, `convexity`, `proximity` and
-		// `interior`.  That was a BIAS, not a flat mask: the forward walk
-		// SAMPLES its continuation direction against the live record the
-		// object manager stamped and then PRICES that same sample -- and
-		// every (s,t) connection, every MIS reverse pdf, every VCM merge
-		// at the eye vertex -- against the record rebuilt here.  One
-		// material, one vertex, one path, sampled with the true roughness
-		// and weighted with the neutral one (design §1).  All three are
-		// now copied below.
-		//
-		// WHY THE COPY IS SAFE UNDER THE HYGIENE INVARIANT (§3.1).
-		// SourceHygieneTest pins the set of files that assign `signals`,
-		// and the invariant it protects is "nothing puts a
-		// DEFAULT-CONSTRUCTED channel over `ObjectManager::IntersectRay`'s
-		// stamp".  This copy does the reverse: it FORWARDS that stamp.
-		// The chain is `ObjectManager::IntersectRay` stamps
-		// `ri.geometric.signals` -> the subpath generator copies it onto
-		// the vertex -> this function copies it back into the rebuilt
-		// record.  The value a painter finally reads is the object
-		// manager's own, two hops later, never a default over a stamp.
-		// `PathVertexEval.h` and `BDPTIntegrator.cpp` are in the allowed
-		// writer set for exactly that reason.
-		//
-		// TWO HONEST DEFAULTS REMAIN, and they are defaults because no
-		// stamp exists to forward -- not because the copy declines one:
-		//
-		//   * BSSRDF ENTRY VERTICES.  Their record is built from
-		//     `BSSRDFSampling::SampleResult` (entry point, normals, ONB),
-		//     which is a sampled point on a surface, not an intersection
-		//     the object manager resolved.  PT builds its entry record by
-		//     hand the same way, so an IOR or Fresnel painter keyed on a
-		//     signal at a subsurface entry reads neutral under EVERY
-		//     integrator alike -- integrator-consistent, and disclosed as
-		//     a residual in docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md
-		//     §10.  Closing it means a probe record in
-		//     `BSSRDFSampling::SampleResult`; out of scope here.
-		//   * NON-SURFACE VERTICES -- camera, env and medium.  There is no
-		//     surface to publish signals for, so the defaults are the
-		//     whole truth.  (A rebuild is only ever handed to a
-		//     BSDF / painter at a SURFACE vertex; medium vertices go to
-		//     the phase function, which reads none of these.)
-		//   * A `type == LIGHT` ROOT VERTEX is NOT in that list any more.
-		//     It was until 2026-09-11: a mesh luminary's root IS a
-		//     surface, and `LuminaryRadiance` (BDPT's t=1 light-to-camera
-		//     splat and s=1 connections; MLT shares the generator) prices
-		//     it through THIS function -- NOT VCM: `SplatLightSubpathToCameraImpl`
-		//     skips the LIGHT root and `EvaluateS0Impl` prices a real ray
-		//     hit (DL-44 review correction, 2026-09-14) -- so leaving it
-		//     default made an emissive material keyed on a signal read
-		//     neutral there.  Slice S3
-		//     (docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md §5) has
-		//     `GenerateLightSubpathImpl` copy a PROBED payload onto it,
-		//     from `LightSample::surface`, so this function replays that
-		//     too.  A DELTA light's root, and an env root, still carry the
-		//     defaults -- correctly: neither has a surface.
-		//
-		// Camera rays carry differentials under PT, BDPT, VCM and MLT.
-		// The first eye hit therefore has a live footprint; subsequent
-		// scattering rays currently carry none (DL-14). Forward either
-		// state verbatim so relief and filtered painters see the real hit.
+		// Forwards `derivatives`, `signals`, and `txFootprint` verbatim from
+		// ObjectManager::IntersectRay (and probed `LightSample::surface` on
+		// mesh luminary roots; docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md).
+		// Safe under SourceHygieneTest's writer-set invariant because it
+		// forwards stamped data rather than overwriting with defaults.
+		// Remaining honest defaults: BSSRDF entry vertices (no probe hit) and
+		// non-surface / delta / env vertices.
 		//////////////////////////////////////////////////////////////////////
 		inline void PopulateRIGFromVertex(
 			const BDPTVertex& vertex,
@@ -299,18 +206,14 @@ namespace RISE
 			ri.ptIntersection  = vertex.position;
 			ri.vNormal         = vertex.normal;
 			ri.vGeomNormal     = vertex.geomNormal;
-			// DL-341 review round 2: the surface-identity flags, so the
-			// rebuilt record's true side (UnflippedGeomNormal), open-sheet
-			// and no-interior certificates match the live hit's.
+			// Surface-identity flags and live arrival facing (DL-341).
 			ri.bGeomNormalOrientedToRay = vertex.bGeomNormalOrientedToRay;
 			ri.bGeomNormalRayDerived    = vertex.bGeomNormalRayDerived;
 			ri.bOpenSheet               = vertex.bOpenSheet;
 			ri.bProvablyNoInterior      = vertex.bProvablyNoInterior;
-			// DL-341 round 6: this record's ray is aimed per query, so the
-			// live hit's arrival facing is replayed rather than re-derived.
 			ri.arrivalGeomFacing        = vertex.bGeomNormalOpposesArrival ? -1 : 1;
 			ri.onb             = vertex.onb;
-			// DL-302: the coat normal decodes from the same frame as the live hit.
+			// Coat normal decode frame (DL-302).
 			ri.bHasCoatDecodeOnb = vertex.bHasCoatDecodeOnb;
 			if( vertex.bHasCoatDecodeOnb ) ri.coatDecodeOnb = vertex.coatDecodeOnb;
 			ri.ptCoord         = vertex.ptCoord;
@@ -319,13 +222,7 @@ namespace RISE
 			ri.ptObjIntersec   = vertex.ptObjIntersec;
 			ri.vColor          = vertex.vColor;
 			ri.bHasVertexColor = vertex.bHasVertexColor;
-			// The painter-input triple.  `signals` here is the object
-			// manager's own stamp arriving two hops later (stamped on the
-			// live record, copied onto the vertex by the subpath
-			// generator, copied back out here) -- never a
-			// default-constructed channel placed over a stamp, which is
-			// the invariant SourceHygieneTest's writer-set check protects.
-			// See the contract block above.
+			// Forward stamped painter inputs (see contract above).
 			ri.derivatives     = vertex.derivatives;
 			ri.signals         = vertex.signals;
 			ri.txFootprint     = vertex.txFootprint;
@@ -334,13 +231,7 @@ namespace RISE
 			ri.pCamera          = vertex.pCamera;
 			ri.pObjectInfo      = vertex.pObjectInfo;
 			ri.bIsCameraRay     = vertex.bIsCameraRay;
-			// G6: replay the enclosing (ambient) medium IOR captured at trace
-			// time (BDPTVertex::mediumIOR = IORStack::top() at hit production;
-			// SetCurrentObject does NOT push, so this is the medium the ray was
-			// travelling through — the ambient index for the conductor Fresnel).
-			// This is the shared BDPT + VCM connection-time BSDF-eval path, so a
-			// single stamp here covers value()/valueNM() for both integrators.
-			// Guard a non-positive stored IOR to air (1.0).
+			// Replay enclosing medium IOR captured at trace time (fallback to air).
 			ri.ambientIOR      = ( vertex.mediumIOR > 0.0 ) ? vertex.mediumIOR : 1.0;
 		}
 
@@ -443,17 +334,9 @@ namespace RISE
 			RayIntersectionGeometric ri( evalRay, nullRasterizerState );
 			PopulateRIGFromVertex( vertex, ri );
 
-			// DL-157: a stateful BSDF (`translucent_material`) prices a hit
-			// by which side of the surface the walk is on, and the vertex
-			// carries that -- `BDPTVertex::insideObject`, the same bit
-			// `EvalPdfAtVertex` already rebuilds a stack from.  Handing it
-			// over matters MORE here than it does for PT, because the
-			// rebuilt `evalRay` above is NOT the walk's own incoming
-			// segment on the light side (`GenerateLightSubpathImpl` passes
-			// `(wi, wo)` in the opposite roles from the eye walk), so a
-			// stateful BSDF that inferred the side from that ray would
-			// invert its whole lobe frame there.  Every other BSDF ignores
-			// the argument (IBSDF's default forwards to `value`).
+			// Stateful BSDFs (e.g. translucent_material) query side via the
+			// reconstructed IORStack (critical on light subpaths where evalRay is
+			// reversed); other BSDFs ignore it via IBSDF::valueStateful default.
 			IORStack vertexStack( 1.0 );
 			BuildVertexIORStack( vertex, vertexStack );
 
@@ -526,37 +409,10 @@ namespace RISE
 		//////////////////////////////////////////////////////////////////////
 		// VertexPdfContext
 		//
-		// The reconstructed evaluation state of ONE vertex, shared across
-		// the several `EvalPdfAtVertex` / `EvalPdfAtVertexNM` queries a
-		// caller makes at that same vertex.
-		//
-		// WHY.  `EvalPdfAtVertex` has to rebuild a
-		// `RayIntersectionGeometric` (via `PopulateRIGFromVertex`, which
-		// copies the whole surface-state block including `onb`,
-		// `derivatives`, `signals` and `txFootprint`) and an `IORStack`
-		// from the stored vertex before it can ask the SPF anything.
-		// Since DL-69 both subpath generators query the SAME vertex TWICE
-		// per non-delta scatter -- once for this vertex's own `pdfFwd`
-		// (wi = -incoming, wo = scattered) and once for the predecessor's
-		// `pdfRev` (the same two directions with their roles swapped) --
-		// so that rebuild ran twice per vertex per subpath.  Measured on
-		// an all-`schlick_material` 256x256 / 256-spp BDPT render, the
-		// duplicated rebuild is worth a few percent of whole-render CPU.
-		//
-		// WHAT IS SHARED AND WHAT IS NOT.  Everything
-		// `PopulateRIGFromVertex` writes, plus the IOR stack, is a
-		// function of the VERTEX alone and is built once.  The record's
-		// `ray` is NOT: it encodes `wi` (the SPFs read `ri.ray.Dir()` to
-		// anchor their geometric frame), so it is re-aimed per query by
-		// `RecordFor`.  A context is therefore only valid while the
-		// vertex it was built from is alive and unmodified -- it stores a
-		// reference, so it must not outlive a `push_back` that could
-		// reallocate the vertex array.
-		//
-		// The state is built LAZILY, on the first query that actually
-		// needs it, so a vertex that short-circuits (MEDIUM, no material,
-		// BSSRDF entry, or a material with no SPF) pays nothing -- the
-		// same early-outs the standalone functions have always had.
+		// Lazy per-vertex cache of RayIntersectionGeometric + IORStack shared
+		// across forward/reverse EvalPdfAtVertex{,NM} queries on the same
+		// vertex. `RecordFor(wi)` re-aims `m_ri.ray` per query. Holds a
+		// reference to `vertex`; must not outlive vector reallocation.
 		//////////////////////////////////////////////////////////////////////
 		class VertexPdfContext
 		{
@@ -616,16 +472,9 @@ namespace RISE
 		// RGB PDF Evaluation
 		//////////////////////////////////////////////////////////////////////
 
-		/// The vertex kinds whose sampling PDF needs no reconstructed
-		/// record at all.  Shared by the Pel and NM evaluators and by both
-		/// their context-carrying and standalone forms, so the standalone
-		/// form never builds a `VertexPdfContext` (and therefore never a
-		/// `RayIntersectionGeometric`) for a vertex that would not use it
-		/// -- which is what the pre-context code did.  The three cases are
-		/// wavelength-independent, which is why one helper serves both.
-		///
-		/// \return true when `outPdf` is the answer; false when the caller
-		///         must go on to query the SPF.
+		/// Wavelength-independent short-circuit PDFs (medium, null material,
+		/// BSSRDF entry) that need no reconstructed record.
+		/// \return true if `outPdf` was set; false to proceed to SPF query.
 		inline bool EvalPdfAtVertexShortCircuit(
 			const BDPTVertex& vertex,
 			const Vector3& wi,
@@ -847,12 +696,7 @@ namespace RISE
 			const IBSDF* pBRDF,
 			const Vector3& wi,
 			const RayIntersectionGeometric& ri,
-			//! DL-157 P1: the LIVE stack where the caller has one.  A
-			//! stateful BSDF (`translucent_material`) prices a hit by which
-			//! side of the surface the walk is on, and PT's guiding
-			//! candidate sites hold the same `iorStack` they already hand
-			//! to `EvalPdfAtSurface` one line away.  Null reproduces
-			//! `value` exactly (IBSDF's default forwards).
+			//! Live IORStack for stateful BSDFs (null forwards to `value`).
 			const IORStack* pIORStack = 0
 			)
 		{

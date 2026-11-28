@@ -1,3 +1,14 @@
+//////////////////////////////////////////////////////////////////////
+//
+//  SimulationMesh.cpp - Binary codecs for "mesh.v1", "mesh.v2", and static topology
+//
+//  Supports inline ("RISEMESH" v1/v2) and out-of-band static topology/UV
+//  ("RISEMTOP" v1) payloads with SHA-256 topology integrity verification.
+//  Tabs: 4
+//  License Information: Please see the attached LICENSE.TXT file
+//
+//////////////////////////////////////////////////////////////////////
+
 #include "pch.h"
 #include "SimulationMesh.h"
 #include "../Utilities/RISECBOR64.h"
@@ -109,6 +120,7 @@ void CheckFrame(const MeshFrame& f, Budget& scratch, bool v2)
 			"mesh attribute components or count mismatch");
 }
 
+// Two-pass little-endian writer (null `data` sizes payload before allocation).
 struct Sink {
 	Bytes* data;
 	std::size_t count=0;
@@ -183,6 +195,7 @@ void WriteV2(Sink& dst,const MeshFrame& f,const std::uint8_t* topology,const std
 	for (const auto& a : f.attributes) { dst.Text(a.name); dst.Text(a.units); dst.Word(a.components,1); dst.Words(a.values); }
 }
 
+// Writes the out-of-band "RISEMTOP" v1 static record (counts, indices, static UVs).
 void WriteStatic(Sink& dst,const MeshFrame& f,const std::vector<const MeshUVSet*>& uvs)
 {
 	dst.Raw(StaticMagic,8); dst.Word(1,4);
@@ -282,6 +295,7 @@ template<> void ReadNamed<MeshAttribute>(Source& src,Budget& budget,std::size_t 
 	}
 }
 
+// Decodes "mesh.v1" (inline indices + positions/velocities/normals) and verifies topology hash.
 void DecodeV1(const Bytes& bytes,Source& src,const Header& h,Budget& remaining,MeshFrame& candidate)
 {
 	// Bound every array by the bytes actually present before allocating.
@@ -299,6 +313,8 @@ void DecodeV1(const Bytes& bytes,Source& src,const Header& h,Budget& remaining,M
 	CheckFrame(candidate,remaining,false);
 }
 
+// Decodes "mesh.v2": resolves optional "RISEMTOP" static topology/UVs, verifies
+// the topology digest, and merges static + per-frame UV sets in sorted name order.
 void DecodeV2(const Bytes& bytes,Source& src,const Header& h,Budget& remaining,const StaticPayloadResolver* resolve,
 	MeshFrame& candidate)
 {
@@ -364,6 +380,9 @@ bool Decode(const Bytes& bytes,std::size_t budget,const StaticPayloadResolver* r
 }
 }
 
+// ------------------------------------------------------------------ public API
+
+// Canonical SHA-256 topology digest over LE (u32 vertices, u32 triangles, u32[] indices).
 std::string RISE::Simulation::MeshTopologyDigest(std::uint32_t vertices,const std::vector<std::uint32_t>& indices)
 {
 	Bytes region;
@@ -406,6 +425,7 @@ bool RISE::Simulation::EncodeMeshV2(const MeshFrame& frame,const MeshStaticLayou
 	return EncodeV2(frame,layout,budget,nullptr,out,staticPayload,staticDigest,error);
 }
 
+// Pre-encodes and digests static topology/UVs once for reuse across fixed-topology frames.
 bool RISE::Simulation::PrepareMeshStatic(const MeshFrame& frame,const MeshStaticLayout& layout,std::size_t budget,
 	MeshStaticRecord& record,std::string& error)
 {
@@ -418,6 +438,7 @@ bool RISE::Simulation::PrepareMeshStatic(const MeshFrame& frame,const MeshStatic
 	return true;
 }
 
+// Encodes "mesh.v2" against a precomputed static record, skipping static re-serialization.
 bool RISE::Simulation::EncodeMeshV2(const MeshFrame& frame,const MeshStaticLayout& layout,std::size_t budget,
 	const MeshStaticRecord& record,Bytes& out,std::string& error)
 {
@@ -490,6 +511,7 @@ bool RISE::Simulation::DecodeMesh(const Bytes& bytes,std::size_t budget,const St
 	return Decode(bytes,budget,&resolve,out,error);
 }
 
+// Header-only topology and static-reference inspection without decoding vertex arrays.
 bool RISE::Simulation::PeekMeshTopology(const Bytes& bytes,MeshTopology& out,std::string& error)
 {
 	try {
@@ -510,6 +532,7 @@ bool RISE::Simulation::PeekMeshTopology(const Bytes& bytes,MeshTopology& out,std
 	} catch (const std::exception& e) { error=e.what(); return false; }
 }
 
+// Extracts static payload digests referenced by a "mesh.v2" frame for cache dependency checks.
 bool RISE::Simulation::MeshPayloadReferences(const Bytes& bytes,std::vector<std::string>& digests,std::string& error)
 {
 	MeshTopology t;

@@ -6,7 +6,10 @@
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: July 20, 2002
 //  Tabs: 4
-//  Comments:
+//  Comments: Windows-only (#ifdef WIN32) RichEdit GUI log viewer and
+//    interactive command console implementing ILogPrinter. Buffers up to
+//    MAXCONSOLELINES log lines / MAXCOMMANDHISTORY entries and dispatches
+//    commands on a worker thread (serialized via bCurrentlyExecuting).
 //
 //  License Information: Please see the attached LICENSE.TXT file
 //

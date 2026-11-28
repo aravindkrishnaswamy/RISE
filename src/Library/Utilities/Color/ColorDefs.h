@@ -7,7 +7,9 @@
 //  Date of Birth: October 6, 2001
 //  Tabs: 4
 //  Comments: Default definition of RGBPel used from POV Ray WITHOUT
-//            Permission
+//            Permission. Values are gamma-encoded sRGB [0, 1] constants
+//            (no include guard; intended to be included after sRGBPel is
+//            defined, e.g. via Color.h, giving per-TU static linkage).
 //
 //  License Information: Please see the attached LICENSE.TXT file
 //

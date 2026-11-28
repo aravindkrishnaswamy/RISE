@@ -5,7 +5,11 @@
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: November 6, 2003
 //  Tabs: 4
-//  Comments:
+//  Comments: RISE uses row-vector affine convention (p' = [p 1] * M):
+//    translations live in the bottom row (_20/_21 for Matrix3, _30/_31/_32
+//    for Matrix4). All rotation angles are in radians and follow right-handed
+//    CCW rotation around the positive axis. Matrix4::operator*(a,b) composes
+//    a after b (Transform(a*b, p) == Transform(a, Transform(b, p))).
 //
 //  License Information: Please see the attached LICENSE.TXT file
 //
@@ -67,7 +71,7 @@ namespace RISE
 			return ret;
 		}
 
-		// Matrix inverse
+		// Matrix inverse; returns `m` unchanged if singular (det == 0).
 		inline Matrix3 Inverse( const Matrix3& m )
 		{
 			const Scalar det = Determinant( m );
@@ -109,7 +113,7 @@ namespace RISE
 			return m;
 		}
 
-		// Rotation about the axis
+		// 2D CCW rotation by `delta` radians (row-vector convention).
 		inline Matrix3 Rotation( const Scalar delta )
 		{
 			Matrix3		m;
@@ -207,7 +211,7 @@ namespace RISE
 			return a;
 		}
 
-			// Quaternion Constructor
+		// Builds a 3D rotation matrix from unit quaternion `a` (row-vector convention).
 		inline Matrix4 mkFromQuaternion( const Quaternion& a )
 		{
 			Matrix4		m;
@@ -270,7 +274,7 @@ namespace RISE
 			return ret;
 		}
 
-		// Rotation about the X axis
+		// Right-handed CCW rotation about +X by `delta` radians.
 		inline Matrix4 XRotation( const Scalar delta )
 		{
 			Matrix4		m;
@@ -286,7 +290,7 @@ namespace RISE
 			return m;
 		}
 
-		// Rotation about the Y axis
+		// Right-handed CCW rotation about +Y by `delta` radians.
 		inline Matrix4 YRotation( const Scalar delta )
 		{
 			Matrix4		m;
@@ -302,7 +306,7 @@ namespace RISE
 			return m;
 		}
 
-		// Rotation about the Z axis
+		// Right-handed CCW rotation about +Z by `delta` radians.
 		inline Matrix4 ZRotation( const Scalar delta )
 		{
 			Matrix4		m;
@@ -330,7 +334,7 @@ namespace RISE
 			return m;
 		}
 
-		// Rotation about the vector N in the direction of T
+		// Rodrigues right-handed rotation by `T` radians around unit axis `N`.
 		inline Matrix4 Rotation( const Vector3& N, const Scalar T ) 
 		{
 			const Scalar			cosT = Scalar( cos( T ) );
@@ -468,7 +472,7 @@ namespace RISE
 		}
 
 
-		// Matrix inverse
+		// Matrix inverse via adjugate/det; returns `m` unchanged if singular (det == 0).
 		inline Matrix4 Inverse( const Matrix4& m )
 		{
 			// inverse = Adjoint * (1/determinant).

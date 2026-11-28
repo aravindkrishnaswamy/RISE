@@ -1,41 +1,20 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  ExteriorIndexCache.h - A small, lock-free-read cache of tables that
-//    were precomputed for one EXTERIOR index of refraction.
+//  ExteriorIndexCache.h - Bounded, lock-free-read cache of tables
+//    precomputed for a specific exterior index of refraction.
 //
-//  WHY (DL-291).  Some SSS models bake a boundary condition into a
-//  table at construction: the Donner-Jensen multipole's extrapolation
-//  term A = (1+Fdr)/(1-Fdr) is a function of the layer index RELATIVE
-//  to the medium surrounding the body, and the profile is a
-//  Sum-of-Gaussians fit (or a tabulated inverse Hankel transform) of
-//  the resulting reflectance.  The constructor builds the table for
-//  air; a body seen through another medium needs the same table built
-//  for that exterior.  Rebuilding per hit is prohibitive (milliseconds
-//  per build), and the set of exteriors a scene presents is small, so
-//  each distinct exterior is built once, on first use, and kept.
+//  Used by SSS models whose boundary extrapolation A = (1+Fdr)/(1-Fdr)
+//  depends on the surrounding medium IOR (air=1 is handled directly by
+//  the caller's constructor table, bypassing this cache).
 //
-//  CONTRACT.
-//    - The key is the exterior index EXACTLY (bitwise double equality):
-//      two keys that differ in the last bit are two entries.  Callers
-//      handle air (exterior == 1) themselves, from their constructor
-//      table, so the in-air path never touches this cache.
-//    - Readers never lock: an entry is fully built before its slot is
-//      published (release store of the count), and entries are never
-//      mutated or removed until the cache is destroyed.
-//    - Misses are serialized by one mutex (the build runs under it) --
-//      but only while the cache still has room.  Once full, a miss is
-//      served by a LOCK-FREE nearest-key scan: under HWSS / MLT spectral
-//      rendering a dispersive enclosure presents a new exterior on
-//      almost every hit, and taking the mutex there serialized the
-//      render (external review: skin in BK7, PT spectral hwss, 2.4x
-//      wall clock, 17-19 s of system time).
-//    - Capacity is bounded.  A scene that presents more than `Capacity`
-//      distinct exteriors (e.g. a DISPERSIVE enclosure, whose index
-//      changes with every hero wavelength) is served the cached entry
-//      with the NEAREST key once the cache is full, with a one-shot
-//      warning.  That is an approximation, bounded by the spacing of
-//      the keys already cached, and it depends on which exteriors
-//      arrived first; it is documented in docs/DEBT_LEDGER.md.
+//  CONTRACT:
+//    - Keyed by exact exterior IOR (`double` equality).
+//    - Lock-free reads: entries are immutable once published via a
+//      release store to `count` and live until cache destruction.
+//    - Builds are serialized by `buildMutex` only while `count < Capacity`.
+//    - Once full (e.g., dispersive enclosures under HWSS/MLT), misses use
+//      a lock-free nearest-key scan with a one-shot warning to avoid
+//      mutex contention (documented in docs/DEBT_LEDGER.md).
 //
 //  Author: RISE debt-cleanup, slice `debt-dl291`
 //  Tabs: 4
@@ -119,9 +98,8 @@ namespace RISE
 			}
 		}
 
-		//! Returns the table for `exteriorIOR`, building it with
-		//! `build( exteriorIOR )` (which must return a heap-allocated T*,
-		//! owned by the cache from then on) on the first request.
+		//! Returns the table for `exteriorIOR`, building and taking
+		//! ownership of the heap-allocated T* from `build(exteriorIOR)` on first use.
 		template< class Builder >
 		const T& Get( const Scalar exteriorIOR, const Builder& build ) const
 		{

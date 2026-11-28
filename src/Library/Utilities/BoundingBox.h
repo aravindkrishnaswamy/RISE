@@ -1,11 +1,11 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  BoundingBox.h - Definition of an axis aligned bounding boc
+//  BoundingBox.h - Definition of an axis aligned bounding box
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: November 27, 2003
 //  Tabs: 4
-//  Comments: 
+//  Comments: Represented by min corner `ll` and max corner `ur`.
 //
 //  License Information: Please see the attached LICENSE.TXT file
 //
@@ -26,6 +26,9 @@ namespace RISE
 		Point3	ur;				// The upper right of the bounding box
 
 	public:
+		// Default box covers all of R^3 ([-inf, +inf]), NOT an empty box;
+		// callers accumulating bounds via Include() must initialize with
+		// inverted bounds (ll = +inf, ur = -inf) or a seed point first.
 		BoundingBox()
 		{
 			ll.x = ll.y = ll.z = -RISE_INFINITY;
@@ -47,6 +50,8 @@ namespace RISE
 			return Point3((ll.x+ur.x)*0.5, (ll.y+ur.y)*0.5, (ll.z+ur.z)*0.5 );
 		}
 
+		// Closed-interval overlap test (touching faces intersect).
+		// Assumes both boxes are finite and well-ordered (ll <= ur).
 		bool DoIntersect( const BoundingBox& other ) const
 		{
 			const Vector3& T = Vector3Ops::mkVector3( GetCenter(), other.GetCenter() );
@@ -124,6 +129,7 @@ namespace RISE
 			}
 		}
 
+		// Ensures ll <= ur per axis by swapping any inverted components.
 		void SanityCheck()
 		{
 			if( ll.x > ur.x ) {
@@ -145,6 +151,7 @@ namespace RISE
 			}
 		}
 
+		// Pads any zero-thickness axis by +/-NEARZERO to prevent degenerate slabs.
 		void EnsureBoxHasVolume()
 		{
 			if( ll.x == ur.x ) {
@@ -163,6 +170,8 @@ namespace RISE
 			}
 		}
 
+		// Pushes ll and ur radially outward from GetCenter() by distance `s`
+		// along the corner diagonals (not per-axis +/-s).
 		inline void Grow( const Scalar s )
 		{
 			ll = Point3Ops::mkPoint3( ll, Vector3Ops::Normalize(Vector3Ops::mkVector3(ll,GetCenter()))*s );

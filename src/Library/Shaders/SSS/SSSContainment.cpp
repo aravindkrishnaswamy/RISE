@@ -1,6 +1,12 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  SSSContainment.cpp - Phase-B preview containment for nonlocal SSS.
+//  SSSContainment.cpp - Phase-B preview containment for nonlocal SSS:
+//    fail-closed shader/op classification, TLS SSSContainmentScope
+//    disabling thermal-volume NEE during nested SSS evaluation so
+//    continuations use march-only emission, and diagnostic counters.
+//
+//  Tabs: 4
+//  License Information: Please see the attached LICENSE.TXT file
 //
 //////////////////////////////////////////////////////////////////////
 
@@ -46,6 +52,8 @@ namespace
 	std::atomic<bool> g_childCompetitionObserved( false );
 	std::atomic<bool> g_diagnosticEmitted( false );
 
+	// Recursively classifies whether a shader may invoke nonlocal SSS;
+	// cycles and unrecognized shader concrete types fail closed (return true).
 	bool ShaderRequiresSSSContainmentImpl(
 		const IShader& shader,
 		std::set<const IShader*>& activeShaders )
@@ -89,6 +97,8 @@ namespace
 	}
 }
 
+// Explicitly flags SSS ops and fails closed for any op outside the audited
+// local allowlist so new nonlocal ops cannot bypass containment silently.
 bool RISE::Implementation::ShaderOpRequiresSSSContainment(
 	const IShaderOp& shaderOp )
 {
@@ -123,6 +133,8 @@ bool RISE::Implementation::ShaderRequiresSSSContainment(
 	return ShaderRequiresSSSContainmentImpl( shader, activeShaders );
 }
 
+// RAII TLS guard: clears nested VolumeEmissionSegmentState so child rays use
+// march-only emission instead of thermal-volume NEE, logging once per process.
 SSSContainmentScope::SSSContainmentScope() :
 	volumeStateScope_( VolumeEmissionSegmentState() )
 {

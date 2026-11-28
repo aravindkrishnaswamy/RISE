@@ -75,10 +75,13 @@ namespace RISE
 #endif
 	}
 
+	// ------------------------------------------------------------------ resident step request and result application
+
 	namespace ProductionStep
 	{
 	// Moved from tests/FireProductionDyadicCalibrationFixture.h; the fixture now uses these.
 	static constexpr double Gravity=9.80665;
+	// Constructs 300 K ideal-gas ambient air and tagged injected methane states closing mixture enthalpy.
 	bool AmbientAndInjected(MethaneCellState& ambient,MethaneCellState& injected,
 		std::string& error)
 	{
@@ -146,6 +149,8 @@ namespace RISE
 			a.restoreManifoldOutliers==b.restoreManifoldOutliers;
 	}
 
+	// Packs checkpoint cells/MAC faces into a validated binary32 resident step request
+	// (kinematic viscosity, face-averaged densities, and manifold-restoration targets).
 	bool BuildProductionRequest(const MethaneRunCheckpoint& state,
 		const std::vector<double>& divergenceTarget,const double timeStepS,
 		RISE::FireProductionResidentStepRequest& request,std::string& error,
@@ -281,6 +286,7 @@ namespace RISE
 			RISE::ValidateFireProductionDualMomentumRequest(request.dualTransport,&error);
 	}
 
+	// Unpacks binary32 conservative/MAC fields into state and inverts cell temperatures.
 	bool ApplyProductionResultUnchecked(const RISE::FireProductionResidentStepResult& production,
 		MethaneRunCheckpoint& state,std::string& error,
 		const bool enforceOracleEOSValidityDetector,
@@ -344,6 +350,9 @@ namespace RISE
 		return false;
 	}
 
+	// ------------------------------------------------------------------ oracle audit, burner boundary, and owner request
+
+	// Appends per-face z-column and summary momentum budgets for the binary64 oracle path.
 	bool AppendOracleMomentumBudget(const std::filesystem::path& path,
 		const PeriodicMACShape& shape,const PeriodicMACField& beginningMomentum,
 		const ConservativeAdvance3DConfig& config,const ConservativeAdvance3DResult& advanced,
@@ -485,6 +494,7 @@ namespace RISE
 		escape.accepted=source.RadiationEscapeFactor();return true;
 	}
 
+	// Validates and binds the adiabatic bottom burner inlet mask, prescribed mass flux, and gas-only injected tuple.
 	bool BindProductionBurnerBoundary(const OpenBoundaryConfig3D& boundary,
 		RISE::FireProductionProjectedHeunMetalOwnerRequest& owner,std::string& error)
 	{
@@ -542,6 +552,7 @@ namespace RISE
 	}
 
 
+	// Measures caller-ingress memory/layout lower bounds and refuses before copying request buffers.
 	bool RefuseProductionCallerIngressBeforeCopy(
 		const FireProductionResidentStepRequest& ordinary,
 		const FireProductionFrozenSourcePacketSeal& source,
@@ -610,6 +621,8 @@ namespace RISE
 		return false;
 	}
 
+	// Assembles a projected-Heun owner request from the ordinary resident request, sealed frozen
+	// source packet, nullspace projector, and optional prescribed burner boundary.
 	bool BuildProductionProjectedHeunOwnerRequest(
 		const RISE::FireProductionResidentStepRequest& ordinary,
 		const RISE::FireProductionFrozenSourcePacketSeal& source,
@@ -685,6 +698,10 @@ namespace RISE
 		return !burnerBoundary||BindProductionBurnerBoundary(*burnerBoundary,owner,error);
 	}
 
+	// ------------------------------------------------------------------ crossing convergence, source evidence, and step alignment
+
+	// Performs an observational rerun with iteration-trace capture, verifies bit-identity against
+	// the accepted owner, and writes v2 convergence, R1 CH4 budget, and tail-target artifacts.
 	bool WriteProductionCrossingConvergence(const std::filesystem::path& auditPath,
 		const RISE::FireProductionProjectedHeunMetalOwnerRequest& liveRequest,
 		const RISE::FireProductionProjectedHeunMetalOwnerResult& accepted,
@@ -1060,6 +1077,7 @@ namespace RISE
 		return RISECBOR64::SHA256Hex(bytes);
 	}
 
+	// Aligns binary32 trial dt to an upcoming event without leaving a microscopic sliver step.
 	bool LimitBinary32ProductionStepToEvent(const double simulationTimeS,
 		const double eventTimeS,double& timeStepS)
 	{
@@ -1136,6 +1154,9 @@ namespace RISE
 	}
 
 
+	// ------------------------------------------------------------------ spectral puffing and McCaffrey plume analysis
+
+	// Uniformly resamples a probe series, removes its affine trend, and computes a Hann-windowed DFT.
 	bool ComputeUniformHannSpectrum( const std::vector<double>& time,
 		const std::vector<double>& signal,const std::size_t sampleCount,
 		UniformHannSpectrum& spectrum )
@@ -1224,6 +1245,7 @@ namespace RISE
 			spectrum.frequencyHz[spectrum.dominantBin]:0.0;
 	}
 
+	// Fits log-log centerline temperature excess vs. height above the flame tip over virtual origins.
 	void FitCenterlineTemperaturePowerLaw( SolverFrameValues& values )
 	{
 		if(values.centerlineHeightM.size()!=values.centerlineTemperatureK.size()) return;
@@ -1257,6 +1279,7 @@ namespace RISE
 		}
 	}
 
+	// Compares time-averaged centerline plume stations against McCaffrey (NBSIR 79-1910) 33 kW scaling.
 	void EvaluateMcCaffreyPlumeStations( SolverFrameValues& values,
 		const double heatReleaseRateKW )
 	{
@@ -1407,6 +1430,10 @@ namespace RISE
 	}
 
 
+	// ------------------------------------------------------------------ fast-mode conservation and r245/r246 budget publication
+
+	// Reduces an accepted projected-Heun step into pending r245 budget rows and, on retained frames,
+	// independently verifies GPU Merkle roots and captures central-column momentum/payload dumps.
 	bool PrepareR245Budget(const FireProductionProjectedHeunMetalOwnerRequest& request,
 		FireProductionProjectedHeunMetalOwnerResult& owner,std::uint64_t stepIndex,
 		const std::vector<double>& sourcePattern,bool frameDue,std::uint64_t frameIndex,
@@ -1619,6 +1646,12 @@ namespace RISE
 		return option>0.0?option:certifiedCapS;
 	}
 
+	// ------------------------------------------------------------------ main methane fire driver
+
+	// Runs a methane pool-fire simulation end-to-end: validates mode scopes, derives the canonical
+	// case/grid/boundaries, handles checkpoint resume/migration, executes the adaptive time-stepping
+	// and retry loop (projected-Heun Metal/CPU or binary64 oracle), publishes temporal VDB frames
+	// and durable checkpoints, and evaluates post-run spectral and McCaffrey plume diagnostics.
 	SolverFrameValues RunFireMethaneDriver( const unsigned int workerCount,
 		const unsigned int minimumStepCount,const double targetTimeS,
 		const double caseDurationS,const double caseFramesPerS,
@@ -2151,6 +2184,7 @@ namespace RISE
 		values.checkpointCadenceWallS=persistence.checkpointCadenceWallS;
 		values.streamedFrameCount=persistence.streamedFrameCountAtStart;
 		values.workerCountHistory.push_back(workerCount);
+		// --- Phase 2: optional checkpoint resume and build-migration validation ---
 		// The general resume (M2 track C) loads its own path; every other resume
 		// reads checkpointPath as before.
 		const std::filesystem::path& resumeCheckpointPath=persistence.generalResume?
@@ -2517,6 +2551,7 @@ namespace RISE
 				}
 			}
 		}
+		// --- Phase 3: adaptive time-stepping, solver retry, statistics, and publication loop ---
 		bool cooperativeStopObserved=false;
 		while(advancedOK&&!productionOnsetStopReached&&
 			(!persistence.projectedHeunCostDiagnostic||acceptedSteps<3u)&&
@@ -4539,6 +4574,7 @@ namespace RISE
 			advanced.effectiveWorkerCount==std::max(1u,std::min(workerCount,
 			static_cast<unsigned int>(shape.CellCount()))),
 			"capstone one-vs-N fixture selects the owning solver worker path");
+		// --- Phase 4: final field export, puffing spectrum, and McCaffrey plume analysis ---
 		if(advancedOK) {
 			values.dimensions={{shape.nx,shape.ny,shape.nz}}; values.cellWidthM=shape.cellWidthM;
 			values.caseRecordId=caseRecord.caseRecordId;
@@ -4685,6 +4721,10 @@ namespace RISE
 			ReadUnsignedMember(payload,"schema_version",schema)&&schema==1u&&
 			ReadUnsignedArray(payload,"time_step_s_bits",certificate.timeStepBits);
 	}
+	// ------------------------------------------------------------------ resume-equivalence certificate loader (v1/v2)
+
+	// Decodes a canonical CBOR resume-equivalence envelope, verifies certificate_id SHA-256,
+	// and parses either v1 (binary64) or v2 (resident r78) equivalence payloads.
 	bool LoadResumeEquivalenceCertificate(const std::filesystem::path& path,
 		ResumeEquivalenceCertificate& certificate,std::string& error)
 	{

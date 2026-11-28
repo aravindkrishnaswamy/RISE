@@ -1,122 +1,28 @@
 //////////////////////////////////////////////////////////////////////
 //
 //  IORStackSeeding.h - Seed a light / eye subpath's optical and enclosure
-//    stacks so that refraction and medium lookup both start from the
-//    correct nested-object state.
+//    stacks so refraction and medium lookup start from the true nested-
+//    object state (e.g., submerged cameras, enclosed luminaires).
 //
-//  Why this exists
-//
-//    BDPT (and integrators that reuse its light subpaths, e.g. VCM)
-//    used to initialize transport state to just the environment IOR
-//    and rely on later boundary hits to establish both logical stacks.
-//    That works for rays starting in free space — both stacks grow as
-//    the ray enters dielectrics and shrink as it exits them.  It FAILS
-//    silently for light subpaths whose origin is a luminaire sealed
-//    inside nested dielectrics, and for eye subpaths whose camera
-//    sits inside a dielectric (submerged camera, camera inside a
-//    medium-filled room, etc.).
-//
-//    Symptom: the first hit on an enclosing boundary comes back with
-//    bFromInside=false (the stack doesn't know we started inside),
-//    which routes DielectricSPF through its "entering" branch.  For
-//    an IOR-matched inner boundary (e.g. an `air_cavity` dielectric
-//    with ior=1.0 surrounding a light in a glass egg), that branch's
-//    Fresnel formula returns floating-point cancellation noise
-//    instead of exact zero, the transmission lobe fails the sign
-//    check that assumes refracted ≠ incoming, and the path is left
-//    with a reflection whose kray equals that noise.  Throughput dies
-//    by ~32 orders of magnitude per bounce and no photon reaches the
-//    rest of the scene.
-//
-//  Algorithm
-//
-//    Shoot a probe ray in a fixed direction from the seed point and
-//    count, PER OBJECT, the net parity of exits-vs-entries along the
-//    probe.  An object contains the seed iff its net parity is
-//    positive (with inward closed-solid winding normalized by signed containment;
-//    more exits than entries — the probe must cross its
-//    boundary one more time outward than inward to leave).
-//
-//    Counting exits-only is INCORRECT.  A probe that passes
-//    THROUGH an object (camera in front of a glass sphere, probe
-//    direction going +Z through it) sees one entry and one exit;
-//    counting only the exit would treat the object as containing
-//    the seed.  That bug caused every BDPT/VCM/MLT sphere render
-//    where the camera sat behind a glass object to compute the
-//    first refraction at the sphere with reversed IORs (glass→air
-//    instead of air→glass), missing ~66% of the scene radiance.
-//    See `tests/IORStackSeedingRegressionTest.cpp` for the pinning
-//    regression test.
-//
-//    Per-object tallying:
-//      - cosN > 0 (probe aligned with outward normal): EXIT, parity++.
-//      - cosN < 0 (probe opposite to outward normal):  ENTRY, parity--.
-//
-//    A single probe only decides containment for a CLOSED surface,
-//    so an object is seeded only when BOTH the probe and its REVERSE
-//    report positive parity (P2-4).  A closed manifold agrees in both
-//    directions by construction; an OPEN sheet (a translucent leaf,
-//    curtain or card -- every `translucent_material` object is a probe
-//    participant since DL-46) is met by only one of the two and is
-//    rejected.  The reverse probe runs only when the forward one found
-//    a candidate at all.  See the rule's documented limit at its
-//    implementation in `SeedFromPoint`.
-//
-//    Hits whose geometric normal is RAY-DERIVED rather than a static
-//    surface property (`RayIntersectionGeometric::bGeomNormalRayDerived`
-//    -- `HairGeometry`) are skipped outright: un-flipping such a normal
-//    reads "exit" at every crossing, so a hair curtain between the seed
-//    and infinity would tally unbounded positive parity.  A 1-D curve
-//    has no interior to be inside.
-//
-//    Objects confirmed in both directions are pushed in OUTERMOST-FIRST
-//    order (stack convention: bottom = outermost, top = innermost).
-//    The dielectric push operation seeds both logical stacks.
-//    Order is determined by each containing object's FIRST exit's
-//    probe-step index: smaller index = closer to seed = innermost.
-//    Insertion-sort by firstExitStep descending and push in that order.
-//
-//    A small iteration cap prevents pathological geometry (e.g.
-//    coincident surfaces, self-intersecting objects) from spinning
-//    forever.  Probe direction +Z is arbitrary but deterministic; any
-//    fixed direction that isn't degenerate for the scene works, and
-//    we accept the rare case where a probe grazes a tangent — the
-//    worst outcome is a slightly-incorrect stack at that specific
-//    pathological ray, which the rest of the path walk then corrects
-//    as it enters/exits real boundaries.
-//
-//    The probe only considers materials whose GetSpecularInfo reports
-//    canRefract=true OR hasInterior=true (DL-46).  Pure reflectors
-//    (mirrors) and lambertian surfaces report neither and are skipped
-//    — they are not media and their "interior" is not a place rays
-//    travel through with a different IOR.  `hasInterior` covers a
-//    second, narrower case: a material that is NOT specular (its
-//    lobes are stochastic, never delta) and carries no distinct IOR
-//    of its own, but still classifies entry/exit from
-//    ior_stack.containsCurrent() exactly like a refractor does —
-//    TranslucentSPF's diffuse lampshade model is the motivating
-//    example.  For a `canRefract` object the probe pushes that
-//    object's OWN captured `ior`; for a `hasInterior`-only object it
-//    instead re-pushes whatever IOR is already on the stack (see the
-//    push loop below), because such a material never introduces a
-//    new numeric medium — only membership changes.
-//
-//    DL-618: a CERTIFIED OPEN refractive sheet (`bProvablyNoInterior`)
-//    encloses no volume, so it takes no part in the parity vote above.
-//    Its medium (the sheet's BACK side, DL-345) holds the seed point by
-//    a separate convention -- the ray from the point along the sheet's
-//    own normal reaches the sheet's back face with nothing but other
-//    media in between -- documented above `ClassifyMembershipHit` and
-//    shared with the walks' unpushed-exit resolution
-//    (`OpenSheetEnclosesCrossing`).
-//
-//    Fire r40: exact NullBoundaryMaterial objects (`null_boundary`) are
-//    also probe participants.  They are closed enclosure-only boundaries:
-//    a containing null boundary seeds the ENCLOSURE stack only
-//    (`IORStack::pushEnclosure`), never the optical stack, so refraction
-//    decisions are unchanged while innermost-exclusive medium lookup
-//    starts from the right nested object.  Lanes that meet one seed on
-//    their own (the shared lane record has no enclosure-only flag).
+//  Algorithm (closed media):
+//    - Cast deterministic axis probe rays from the seed point and tally
+//      per-object exit-minus-entry parity (`cosN > 0` exit: +1; `cosN < 0`
+//      entry: -1).  Exits-only counting is wrong because passing through
+//      an exterior object would misclassify it as containing
+//      (`tests/IORStackSeedingRegressionTest.cpp`).  Inward-wound closed
+//      solids are normalized via exact signed-distance containment.
+//    - An object is seeded only when all six axis probes (±Z, ±X, ±Y)
+//      confirm positive parity (reverse/lateral probes run lazily only
+//      when +Z finds candidates), rejecting open surfaces.  Hits with
+//      ray-derived normals (`bGeomNormalRayDerived`, e.g. hair) are skipped.
+//    - Confirmed objects are pushed outermost-first (descending
+//      `firstExitStep`).
+//    - Trackable materials:
+//        * `canRefract` (ior > 0): pushes own IOR onto optical + enclosure.
+//        * `hasInterior`-only (e.g. `TranslucentSPF`): re-pushes `stack.top()`.
+//        * `NullBoundaryMaterial`: seeds enclosure stack only (`pushEnclosure()`).
+//        * Certified open refractive sheets (`bProvablyNoInterior`): handled
+//          separately via the sheet-normal convention below.
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: April 23, 2026
@@ -164,46 +70,18 @@ namespace RISE
 
 	namespace IORStackSeeding
 	{
-		// Per-object containment is determined by per-object PARITY of
-		// exits-vs-entries along a probe ray.  An object contains the
-		// seed point iff the probe sees one more exit than entry (i.e.
-		// it must cross the boundary one more time outward than inward
-		// to leave the object).
-		//
-		// Counting exits only (or deduping per object) is INCORRECT
-		// because a probe that simply *passes through* an object —
-		// camera in front of a glass sphere with probe direction
-		// going through it — sees one entry and one exit.  Without
-		// parity tracking, that probe would record the sphere as
-		// "containing" the camera and pre-seed the stack with it,
-		// causing the first eye-ray hit on the sphere to be treated
-		// as an exit (refraction direction computed glass→air
-		// instead of air→glass).
-		//
-		// The `parity` field is +1 per exit, -1 per entry.  A net
-		// positive value means the seed is inside that object along
-		// this probe.
+		//! Per-object probe tally (`parity`: +1 per exit, -1 per entry).
 		struct ProbeEntry {
 			const IObject* pObj;
 			Scalar ior;
 			int parity;
-			int firstExitStep;  // probe step of FIRST exit, for stack-order sort
-			int firstEntryStep; // inward-wound closed solids reverse these faces
-			// DL-46: true for a `hasInterior`-only (non-refracting,
-			// stateful) material -- push re-pushes the stack's CURRENT
-			// top instead of this entry's captured `ior`, matching
-			// TranslucentSPF::Scatter's own `push(ior_stack.top())`.
-			// False for an ordinary `canRefract` medium, which pushes
-			// its own distinct `ior` as before.
-			bool repushParentIor;
-			// Fire r40: true for an exact NullBoundaryMaterial object --
-			// seeded with `pushEnclosure()` (enclosure stack only), never
-			// onto the optical stack.
-			bool enclosureOnly;
+			int firstExitStep;  // probe step of first exit (stack-order sort)
+			int firstEntryStep; // inward-wound closed solids swap entry/exit
+			bool repushParentIor; // true for `hasInterior`-only materials (re-push stack.top())
+			bool enclosureOnly;   // true for `NullBoundaryMaterial` (enclosure stack only)
 		};
 
-		//! Pushes one confirmed closed probe entry onto @a stack (whose
-		//! current object the caller has set to the entry's object).
+		//! Pushes one confirmed closed probe entry onto @a stack (current object already set).
 		inline void PushProbeEntry( IORStack& stack, const ProbeEntry& e )
 		{
 			if( e.enclosureOnly ) {
@@ -213,53 +91,18 @@ namespace RISE
 			}
 		}
 
-		// Safety cap on the surface hits one probe walks: guards against
-		// pathological geometry (coincident faces, self-intersections)
-		// that could loop indefinitely.
+		// Base step cap per probe (guards against coincident/self-intersecting geometry).
 		static const int kMaxProbeSteps = 32;
 
-		// Per-probe entry table, stack-allocated.  Sized to the STEP cap,
-		// not to a nesting depth (DL-09 slice, 2026-09-28): the table holds
-		// one entry per DISTINCT trackable object the probe MEETS, and a
-		// probe meets every refractor between the seed and the scene edge
-		// -- including the ones in front of it that do not contain it at
-		// all.  An 8-entry table (the old `kMaxNestingDepth`) filled up with
-		// those and silently dropped the containing objects the probe only
-		// reaches afterwards: a camera inside 5 of 17 nested boxes, 12 of
-		// them above it along +z, seeded as bare AIR, and the render read
-		// 0.39x its closed form (tests/GradedIndexInteriorFactorTest.cpp row
-		// E).  One step adds at most one entry, so a table with as many
-		// entries as the probe has steps can never overflow.  The probe's
-		// step budget is `MaxSceneWalkSteps` (DL-622: kMaxProbeSteps plus
-		// two per open sheet in the scene, since every sheet a probe passes
-		// costs a step); `SeedFromPointImpl` uses stack tables of this size
-		// while that budget fits (every scene without open sheets: the
-		// pre-DL-622 cost) and heap tables sized to the budget otherwise,
-		// and `TallyProbe` never walks more steps than its table holds.
+		// Sized to step cap (not nesting depth) because one step adds at most
+		// one distinct object; scenes with open sheets scale via `MaxSceneWalkSteps`.
 		static const std::size_t kMaxProbeEntries = static_cast<std::size_t>( kMaxProbeSteps );
 
-		//! Probe-table entries `SeedFromPointImpl` keeps on the stack: the
-		//! base budget plus 16 open sheets (6 tables x 64 x 32 bytes), so a
-		//! scene with a handful of sheets seeds without heap tables.
+		//! Stack-allocated table capacity (base budget + 16 open sheets) before heap spill.
 		static const std::size_t kStackProbeEntries = 2 * kMaxProbeEntries;
 
-		// Probe-trace counter (2026-09-14, DL-76 perf follow-up).  This
-		// compiles and increments UNCONDITIONALLY in every build -- it
-		// is not behind a test-only `#ifdef`, so production code takes
-		// the exact same path the regression test measures.  Cost: one
-		// thread_local `std::size_t` increment per scene ray walk,
-		// sitting next to the ray-vs-scene intersection query that walk
-		// performs -- negligible by construction relative to that query,
-		// which walks the object manager's acceleration structure doing
-		// real ray-primitive tests.  Thread-local: no atomics or
-		// locking, correct under the render thread pool since each
-		// thread seeds its own subpaths independently.  Counts EVERY
-		// scene ray walk `SeedFromPoint` makes -- `TallyProbe` calls
-		// and the DL-618 sheet-normal confirmations (`OpenSheetNormalRayReaches`)
-		// -- so regression tests can assert its total probe-trace budget
-		// stays bounded.  Its consumers are
-		// `TranslucentInitialContainmentTest` and
-		// `OpenSheetHalfSpaceSeedingTest`.
+		// Always-on thread-local probe/ray counters for budget regression tests
+		// (negligible cost alongside scene ray casts; no atomics or locking).
 		namespace Diagnostics
 		{
 			inline std::size_t& ProbeTraceCounter()
@@ -268,18 +111,14 @@ namespace RISE
 				return counter;
 			}
 
-			//! DL-622 review: every scene IntersectRay this header makes
-			//! (probe steps, normal-ray and detour walks, exit resolution),
-			//! for cost regression tests.  Same thread-local, always-on
-			//! convention as ProbeTraceCounter.
+			//! Counts every scene `IntersectRay` performed by this header.
 			inline std::size_t& SceneRayCounter()
 			{
 				static thread_local std::size_t counter = 0;
 				return counter;
 			}
 
-			//! DL-626: counts object-only coplanar verification ray casts in
-			//! `ProbeCoplanarObjectAt`, for O(1) vs O(N^2) tilted-stack checks.
+			//! Counts object-only coplanar verification rays in `ProbeCoplanarObjectAt`.
 			#define RISE_HAS_COPLANAR_OBJECT_RAY_COUNTER 1
 			inline std::size_t& CoplanarObjectRayCounter()
 			{
@@ -288,14 +127,12 @@ namespace RISE
 			}
 		}
 
-		//! The most scene rays one detour certificate (group or single-sheet)
-		//! spends beyond its column walk.
+		//! Max scene rays one detour certificate spends beyond its column walk.
 		static const int kGroupDetourRayBudget = 1024;
 
 		namespace Diagnostics
 		{
-			//! Test hook: the group certificate's ray budget on this thread
-			//! (defaults to kGroupDetourRayBudget).
+			//! Per-thread test hook overriding `kGroupDetourRayBudget`.
 			inline int& GroupDetourRayBudget()
 			{
 				static thread_local int budget = kGroupDetourRayBudget;
@@ -311,93 +148,30 @@ namespace RISE
 			return Diagnostics::ProbeTraceCounter();
 		}
 
-		//! DL-622 / DL-626: the free-space detour certificate.  A sheet whose
-		//! normal ray from the seed is blocked by an opaque body (including a
-		//! luminaire seed's own body exited through its far face) may still hold
-		//! the seed if a free-space walk around the body reaches its back face.
-		//! A co-normal group whose SHARED normal ray is blocked runs ONE group
-		//! certificate for its remaining sheets (`HasFreeSpaceDetourToSheets`);
-		//! every other sheet runs the single-sheet certificate
-		//! (`HasFreeSpaceDetourToSheet`) -- including a group's sheets when a
-		//! member was re-posed or shape-edited since the catalog was built (the
-		//! group path's `poseValid` check).  Each certificate spends at most
-		//! `GroupDetourRayBudget()` (default `kGroupDetourRayBudget`) scene rays
-		//! beyond its column walk and then REFUSES whatever it has not yet
-		//! confirmed, so:
-		//!  - a sheet confirmed by a clear normal ray never depends on any
-		//!    certificate;
-		//!  - while no budget is exhausted the group certificate answers each
-		//!    sheet exactly as its own single-sheet certificate would (A35);
-		//!  - once a group's budget is exhausted the reached sheets are visited
-		//!    in pure geometric order along the column ray (`columnDist`,
-		//!    tie-broken by world AABB), never in catalog / chunk declaration
-		//!    order (DL-626, A52).  The re-posed single-sheet fallback still
-		//!    grants each sheet its own per-sheet budget.  Both refusals mean
-		//!    "not in that medium".
-		//! Seeds and exit resolutions decide membership through
-		//! `ConfirmOpenSheetsAt`, so they make the same choices at a point.
-
 		//////////////////////////////////////////////////////////////////
-		// DL-618: medium membership of a certified OPEN refractive sheet.
+		// Certified open refractive sheets (`bProvablyNoInterior`):
 		//
-		// An open sheet (`RayIntersectionGeometric::bProvablyNoInterior`
-		// on a refracting material) is an interface whose BACK side is
-		// the sheet's medium (DL-345's face rule).  It encloses no
-		// volume, so "is `pos` inside it" has no parity answer; the
-		// walks decide it by history -- a walk that crossed the sheet
-		// front -> back carries its index until it crosses back.  A seed
-		// point has no history, so it gets the following CONVENTION,
-		// which is the one `SeedFromPoint` and `OpenSheetEnclosesCrossing`
-		// share (so the eye walk, the light walk and an exit resolution
-		// agree on every point):
-		//
-		//   `pos` is in sheet S's medium iff the ray from `pos` along S's
-		//   OWN true geometric normal N (back -> front: "the sheet's
-		//   normal ray") reaches S on its BACK face, with every surface
-		//   it meets first being MEMBERSHIP-TRANSPARENT.
-		//
-		// Membership-transparent: a hit with no true side (hair, skipped
-		// outright), a trackable closed medium (`canRefract` with ior > 0,
-		// or `hasInterior`, without `bProvablyNoInterior` -- a glass
-		// sphere or a translucent card under the sheet sits INSIDE its
-		// medium, it does not bound it), and another open sheet met on
-		// its BACK face (leaving that sheet's medium, which may itself be
-		// inside S's: nested lone sheets).  Everything else BLOCKS: an
-		// opaque / non-trackable surface (a ceiling between `pos` and the
-		// sheet -- the room below it is not the sea above it), and any
-		// open sheet met on its FRONT face (a two-sheet slab seen from
-		// outside).
-		//
-		// Consequences, stated so they are not rediscovered as bugs:
-		//  - A point that cannot see S along S's normal is never seeded
-		//    into S: neither through an opaque surface, nor from beside
-		//    the sheet (outside its normal prism), nor from its front.
-		//  - For a planar S the predicate depends on `pos` and S only --
-		//    not on any probe axis -- so it is invariant under rotating
-		//    the scene, and it changes only where `pos` crosses the
-		//    boundary of S's normal prism (or an occluder's shadow along
-		//    N), which IS the medium boundary of this convention.
-		//  - CANDIDATES are the scene's open refractive sheets, listed once
-		//    per scene state by `OpenSheetCatalog` (no per-seed discovery,
-		//    so every sheet is tested whatever its orientation, and a scene
-		//    with none pays nothing).  N is each sheet's true normal where
-		//    the catalog's probe met it: exact for a planar sheet, an
-		//    approximation of "its normal" for a curved one (displaced,
-		//    Bezier, non-planar mesh).
-		//  - Two confirmed sheets are NESTED when one's back face is on
-		//    the other's normal ray before it (the passed one is inner).
-		//    Two confirmed sheets neither of which is on the other's ray
-		//    are SIBLINGS bounding one region (a two-sheet slab, or two
-		//    sheets meeting at a wedge): a walk entering that region
-		//    pushes ONE of them, so siblings of one material seed one
-		//    entry; siblings of DIFFERENT materials have a walk-history-
-		//    dependent interior index (which sheet was crossed last), so
-		//    seeding declines every open sheet at `pos` rather than pick
-		//    one arbitrarily (closed media are still seeded).  Mutually
-		//    nested sheets (curved pathologies) decline the same way.
-		//  - Relative to closed media: if S's normal ray leaves a closed
-		//    medium C that contains `pos` before reaching S, C sits inside
-		//    S's half-space and S is OUTER to C; otherwise S is inside C.
+		// An open sheet's BACK side is its medium.  Both `SeedFromPoint`
+		// and unpushed-exit resolution (`ConfirmOpenSheetsAt`) share this
+		// convention so eye/light seeds and walks agree at every point:
+		//   - `pos` is in sheet S's medium iff the ray from `pos` along S's
+		//     true geometric normal N (back -> front) reaches S's back face
+		//     through only membership-transparent surfaces (ray-derived
+		//     normals, closed trackable media, other open sheets' back faces).
+		//     Opaque/non-trackable surfaces and open-sheet front faces block.
+		//   - Blocked normal rays may confirm via a bounded free-space detour
+		//     certificate (`HasFreeSpaceDetourToSheets` for un-reposed planar
+		//     co-normal groups, `HasFreeSpaceDetourToSheet` otherwise), capped
+		//     at `GroupDetourRayBudget()` scene rays beyond the column walk
+		//     and ordered geometrically (`columnDist`, then AABB/transform);
+		//     budget refusal means "not in that medium".
+		//   - Candidates are cached per scene state in `OpenSheetCatalog`
+		//     (zero per-seed overhead in scenes without open sheets).
+		//   - Pairwise relations: A is nested inside B iff A's back face lies
+		//     on B's normal ray before B.  Same-material siblings keep one
+		//     canonical representative; different-material siblings or mutual
+		//     nesting decline all open sheets at `pos`.  A closed medium C
+		//     crossed before S is inner to S.
 		//////////////////////////////////////////////////////////////////
 
 		//! DL-618: how one hit affects open-sheet medium membership along a
@@ -597,17 +371,9 @@ namespace RISE
 			outV = Vector3Ops::Cross( n, outU );
 		}
 
-		//! DL-622: probes @a object directly to obtain a representative
-		//! RayIntersection on its surface (from @a anchor along the 26 cube
-		//! directions -- 6 principal axes, 12 face-diagonals, 8 body-diagonals --
-		//! toward its bounds centre, or via UniformRandomPoint / grid
-		//! sampling).  Used by RefreshLegacySeedFallbackNM, SMSCaptureUncached
-		//! and ReindexStackForWavelength when no EntryContext was recorded on
-		//! the stack.  Object-only rays (no scene walk), at most
-		//! kMaxSurfaceProbeRays of them: 26 + 1 + 16 Halton samples + a
-		//! 3 x 3 grid per axis (27).  The first stage stops at the first
-		//! principal-axis hit, which is the common case (an anchor inside or
-		//! beside the object).
+		//! Probes @a object alone (no scene walk; up to `kMaxSurfaceProbeRays`)
+		//! from @a anchor along 26 cube dirs, bounds center, 16 Halton samples,
+		//! or a 3x3 axis grid to obtain a representative surface hit.
 		static const int kMaxSurfaceProbeRays = 26 + 1 + 16 + 27;
 
 		inline bool ProbeObjectSurfaceHit(
@@ -724,24 +490,11 @@ namespace RISE
 			return pObj && ProbeObjectSurfaceHit( *pObj, anchor, outRi );
 		}
 
-		//! DL-618 / DL-622 / DL-626: describes @a object if it is a certified open
-		//! refractive sheet (returns false otherwise).
-		//!
-		//! Stage 1 probes @a object ALONE from outside its bounds along each
-		//! principal axis, toward its centre and four quarter points (15
-		//! rays).  Stage 2 (DL-622 Gap 6 / DL-626) always supplements the
-		//! normal-diversity sample pool with 64 deterministic Halton surface
-		//! samples via `UniformRandomPoint` (or a 5 x 5 x 4 lateral probe grid
-		//! across the 3 axes — or 11 x 11 when Stage 1 missed completely — for
-		//! CSG composites where `GetGeometry() == 0`).
-		//!
-		//! The representative NORMAL is that of the least-squares plane through
-		//! a 9 x 9 grid of hits along the axis whose hits meet the sheet most
-		//! squarely (largest mean |N . axis|), and `p0` their centroid (DL-618
-		//! review round 2, P2-1), supplemented by the Stage 1/2 hits when the
-		//! 9 x 9 grid meets fewer than 3 points.  Also records whether the
-		//! sheet is planar (`isPlanar`) and, for non-planar/folded sheets, up
-		//! to 32 farthest-point-selected auxiliary facet normals (`auxNormals`).
+		//! Describes @a object if it is a certified open refractive sheet (false
+		//! otherwise).  Probes @a object alone along principal axes (with Halton
+		//! / grid fallback), fits a least-squares representative plane on a 9x9
+		//! face-on grid, samples surface facets for planarity (`isPlanar`), and
+		//! clusters up to 32 farthest-point auxiliary normals for folded sheets.
 		inline bool DescribeOpenSheet( const IObject& object, OpenSheetCatalogEntry& out )
 		{
 			const BoundingBox box = object.getBoundingBox();
@@ -920,14 +673,8 @@ namespace RISE
 			if( !sheet || bestScore < 0 || bestAxis < 0 ) {
 				return false;
 			}
-			// Least-squares PLANE through a 9 x 9 grid of hits along the
-			// face-on axis: a = c0 + c1 u + c2 v in that axis's frame.  For a
-			// planar sheet this is its plane; for a height field (a displaced
-			// sea) the fitted slope is the sheet's large-scale tilt, which
-			// wave slopes perturb only through their covariance with
-			// position across the whole extent, not pointwise as a sampled
-			// normal does.  Falls back to the mean normal above when the fit
-			// is degenerate.
+			// Fit least-squares plane on a 9x9 grid along bestAxis (falls back
+			// to mean hit normal if degenerate or eigenvalue ratio < 1:100).
 			{
 				const int a = bestAxis, ua = ( bestAxis + 1 ) % 3, va = ( bestAxis + 2 ) % 3;
 				const Scalar ctr[3] = { c.x, c.y, c.z };
@@ -968,11 +715,7 @@ namespace RISE
 					const Scalar cuu = suu / n - mu * mu, cvv = svv / n - mv * mv, cuv = suv / n - mu * mv;
 					const Scalar cua = sua / n - mu * ma, cva = sva / n - mv * ma;
 					const Scalar det = cuu * cvv - cuv * cuv;
-					// Conditioning (round 3, P3-4): the fit's slope across the
-					// sample spread's NARROW direction is unreliable when the
-					// hits span a thin band (a narrow strip, or a sheet the grid
-					// mostly misses); below a 1:100 eigenvalue ratio keep the
-					// mean hit normal.
+					// Keep mean hit normal when sample spread is too narrow (< 1:100).
 					const Scalar tr = cuu + cvv;
 					const Scalar disc = std::sqrt( std::max( Scalar( 0 ), tr * tr - 4 * det ) );
 					const Scalar lmax = ( tr + disc ) / 2, lmin = ( tr - disc ) / 2;
@@ -993,11 +736,8 @@ namespace RISE
 				}
 			}
 
-			// DL-622 Gap 2 / DL-626: sample surface facets directly via
-			// UniformRandomPoint (or multi-axis lateral probes on CSG sheets) so
-			// folded / overhanging facets hidden from the single-axis grid also
-			// contribute their points and normals to the planarity check and
-			// farthest-point auxiliary normal set.
+			// Sample surface facets directly (Halton or CSG lateral grid) so
+			// overhanging/folded facets feed planarity and `auxNormals`.
 			if( object.GetGeometry() != 0 ) {
 				const Scalar probeClose = std::max( Scalar( 1e-4 ), Scalar( 1e-3 ) * diag );
 				const Scalar probeBack = std::max( Scalar( 1e-2 ), Scalar( 0.05 ) * diag );
@@ -1344,32 +1084,11 @@ namespace RISE
 			{}
 		};
 
-		//! DL-618 (review P2-1): the scene's certified open refractive sheets,
-		//! found ONCE per scene state instead of by per-seed discovery walks
-		//! (which made `SeedFromPoint` -- run per camera sample, per HWSS lane
-		//! and per subpath -- cost several extra BVH traversals in EVERY scene;
-		//! measured +66 % CPU on an open scene with no sheet at all).
-		//!
-		//! Built by `DescribeOpenSheet` on every world-visible object whose
-		//! material can refract (round 2, P2-4 / P3-e: an object whose own
-		//! material reports no refraction is skipped without a ray; an object
-		//! without a material of its own, e.g. a CSG composite, is probed).
-		//!
-		//! Thread-local, keyed on the object manager, its spatial-structure
-		//! generation (process-unique, advanced by every spatial edit) and its
-		//! item count, and on `OpenSheetCatalogEpoch`, which the object
-		//! manager's PrepareForRendering advances so a MATERIAL-only edit
-		//! (opaque <-> glass, invisible to the spatial generation) rebuilds
-		//! the listing at the next render pass.  An edit made between
-		//! passes and observed before the next PrepareForRendering keeps
-		//! the old listing until then.
-		//!
-		//! MOTION BLUR (round 2, P3-b): inside a time-indexed pass every
-		//! render thread re-poses its own clones per pixel sample while the
-		//! generation stays put, so the LIST (which objects are sheets; a pose
-		//! does not change it) is kept but each listed sheet's geometry is
-		//! re-described at the thread's current pose where it is used
-		//! (`PosedOpenSheet`).
+		//! Per-thread scene catalog of certified open sheets and trackable closed
+		//! objects, built once per `(pObjects, generation, epoch, itemCount,
+		//! materialEpoch, patchCertEpoch)` so seeds pay zero discovery rays.
+		//! Motion-blur per-thread pose changes refresh sheet/box geometry lazily
+		//! via `PosedOpenSheet` / `EnsureCatalogPoseState`.
 		struct OpenSheetCatalog
 		{
 			struct ClosedTrackableEntry
@@ -1449,11 +1168,8 @@ namespace RISE
 			return catalog;
 		}
 
-		//! DL-618 (round 3): a process-wide epoch every thread's catalog is
-		//! keyed on.  `ObjectManager::PrepareForRendering` advances it, so an
-		//! edit the spatial generation does not see -- an object's MATERIAL
-		//! swapped opaque <-> glass -- is picked up by the next render pass
-		//! (every rasterizer prepares the object manager before rendering).
+		//! Process-wide epoch bumped by `ObjectManager::PrepareForRendering`
+		//! so material-only edits invalidate every thread's `OpenSheetCatalog`.
 		inline std::atomic<unsigned long long>& OpenSheetCatalogEpoch()
 		{
 			static std::atomic<unsigned long long> epoch( 1 );
@@ -1852,18 +1568,9 @@ namespace RISE
 			return EnsureOpenSheetCatalog( pObjects ).sheets;
 		}
 
-		//! DL-618 round 2 (P3-b) / DL-626: @a entry at the calling thread's
-		//! pose and shape revision.
-		//!
-		//! A sheet is re-described only when its pose or geometry shape
-		//! revision differs from the one it was described at; the key is its
-		//! world transform, its world bounds (round 3 review, P2-b: a keyframed
-		//! clipped plane's corners move the sheet without moving its transform),
-		//! AND `IObject::ShapeRevision` (DL-626: an in-place vertex, corner,
-		//! patch or operand edit that preserves both transform and world AABB
-		//! still refreshes the sheet without advancing the process-wide epoch).
-		//! Returns false -- the sheet is ABSENT at this pose -- when its
-		//! re-description fails (round 3 review, P3-4), never a stale entry.
+		//! Returns @a entry at the calling thread's current `(xform, box, shapeRev)`,
+		//! re-describing lazily on pose/shape changes.  Returns false if re-description
+		//! fails (negative-cached; never returns stale geometry).
 		inline bool PosedOpenSheet( const OpenSheetCatalogEntry& entry, OpenSheetCatalogEntry& out )
 		{
 			const Matrix4 now = entry.pObj->GetFinalTransformMatrix();
@@ -1902,13 +1609,8 @@ namespace RISE
 			return fresh.valid;
 		}
 
-		//! O(1) epoch-guarded refresh of `cat.closedTrackableBoxes`,
-		//! `cat.closedTrackableBvh`, `cat.posedSheets`, `cat.posedSheetBoxes`,
-		//! `cat.sheetBoxBvh`, and `cat.confirmGroupPoseValid` (DL-626 / DL-631).
-		//! On static renders, returns after four integer/pointer comparisons
-		//! with zero virtual calls and zero heap allocations; rebuilds the
-		//! cached 3D AABB BVHs only when geometry shapes or transform poses
-		//! actually move.
+		//! O(1) epoch-guarded refresh of posed sheets, BVHs, and group validity;
+		//! rebuilds only when geometry shapes or transform poses move.
 		inline void EnsureCatalogPoseState( OpenSheetCatalog& cat )
 		{
 			const unsigned long long sEpoch = Implementation::Geometry::GlobalGeometryShapeEpoch();
@@ -2045,18 +1747,10 @@ namespace RISE
 			return pObjects ? EnsureOpenSheetCatalog( pObjects ).walkSteps : kMaxProbeSteps;
 		}
 
-		//! DL-622 review round 3: several wavelengths seeded by ONE probe walk.
-		//! The probes' paths and every membership decision depend on the
-		//! wavelength only through each hit's classification
-		//! (`ClassifyMembershipHit`: trackable or not, refracting or a re-push)
-		//! and the index it reports.  `SeedFromPointImpl` given a LaneSeed
-		//! classifies every hit at each lane's wavelength too; when every
-		//! classification agrees with the primary one (`diverged` false) each
-		//! lane's seed has the primary's membership exactly, and only the
-		//! indices differ -- recorded per lane at the same hit the primary
-		//! took its index from.  Open sheets are not covered (their
-		//! confirmation compares indices between sheets): a scene with any
-		//! sets `diverged`, and the caller seeds each lane on its own.
+		//! Multi-wavelength lane sharing for one probe walk: when every hit's
+		//! classification matches across lanes (`!diverged`), companion lanes
+		//! reuse the primary membership with per-lane IORs.  Open sheets and
+		//! enclosure-only boundaries set `diverged` so lanes seed independently.
 		static const unsigned int kMaxSeedLanes = 8;
 		struct LaneSeed
 		{
@@ -2209,13 +1903,8 @@ namespace RISE
 					}
 				}
 
-				// DL-626: if another closed trackable object shares a coplanar face at
-				// `ri.geometric.ptIntersection` (e.g. an open sheet or opaque wall wins
-				// the TLAS tie over a flush closed dielectric face, or two closed
-				// dielectrics share a flush face), `probe.Advance(kSeedEps)` would step
-				// past it.  Query `cat.closedTrackableBvh` in O(log M + K_box) with
-				// O(1) epoch validation, zero per-ray allocations for K_box <= 32, and
-				// zero per-ray virtual calls when no box overlaps `ptIntersection +- 2e-5`.
+				// Check `cat.closedTrackableBvh` for flush/coplanar closed media at
+				// `ptIntersection` that `probe.Advance(kSeedEps)` would step past.
 				if( !closedTrackable.empty() &&
 					!( closedTrackable.size() == 1 && closedTrackable[0].pObj == ri.pObject ) )
 				{
@@ -2641,15 +2330,10 @@ namespace RISE
 			return Point3Ops::mkPoint3( pos, -normal * maxStep );
 		}
 
-		//! DL-622 Gap 1 / DL-626: 2-segment free-space detour witness around a finite
-		//! submerged opaque obstacle @a pObstacle (`detourOrigin -> w_m -> pSheet`).
-		//! Preserves closed-room blocking (both single `box_geometry` rooms and
-		//! 6-quad rooms `A23`/`A24`), dry-room roof-luminaire blocking (`A55`),
-		//! and self-reentry blocking (`A18` torus hole) while seeding points
-		//! beneath submerged opaque bodies and submerged luminaires (`A12`, `A19`,
-		//! `A22`, `A27`).  The lateral leg `detourOrigin -> w_m` must cross NO
-		//! surface with a side (a sealed habitat's glass window is not a way out,
-		//! `A34`).
+		//! 2-segment free-space detour witness (`detourOrigin -> w_m -> pSheet`)
+		//! around a finite submerged opaque obstacle @a pObstacle.  The lateral
+		//! leg must cross no sided surface (blocks sealed rooms/windows and
+		//! concave self-reentry; allows submerged bodies and luminaire exits).
 		inline bool HasFreeSpaceDetourToSheet(
 			const IObjectManager* pObjects,
 			const Point3& pos,
@@ -2683,14 +2367,9 @@ namespace RISE
 			if( !obstacleIsSeedExit && pSeedObject && pObstacle == pSeedObject ) {
 				return false;
 			}
-			// An EXIT hit (`TrueGeomFacing > 0`) on a non-open obstacle other
-			// than `pSeedObject`'s first exit means `pos` is strictly inside a
-			// closed opaque room (`A1`, `A12`, `A21`, `A22`, `A25`, `A26`) --
-			// UNLESS an earlier `probe.Advance(kSeedEps)` step jumped over
-			// `pObstacle`'s flush entry face (`obsDist > range + 0.5 * kSeedEps`,
-			// `A68b`), in which case `Ray(pos, normal)` on `pObstacle` meets an
-			// entry face (`TrueGeomFacing <= 0`) first and `obstacleHit` is
-			// already `pObstacle`'s exit (`initialObstacleParity = 0`).
+			// An exit hit on a closed non-seed obstacle means `pos` is inside a
+			// closed opaque room — unless `probe.Advance` stepped past a flush
+			// entry face on `pObstacle` (`initialObstacleParity = 0`).
 			const Scalar kSeedEps = Scalar( 1e-4 );
 			const Scalar obsDist = Vector3Ops::Dot(
 				Vector3Ops::mkVector3( obstacleHit.geometric.ptIntersection, pos ), normal );
@@ -3108,27 +2787,11 @@ namespace RISE
 			DetourResult() : ok( false ), ior( 0 ) {}
 		};
 
-		//! DL-622 review: `HasFreeSpaceDetourToSheet` for SEVERAL planar co-
-		//! normal sheets at once (a normal group whose shared normal ray from
-		//! @a pos is blocked by @a pObstacle), answering each sheet exactly as
-		//! its own certificate would, in one column walk plus, per distinct
-		//! obstacle box, at most eight waypoints each with one lateral and one
-		//! normal walk -- instead of one full certificate per sheet (2652 scene
-		//! rays per seed for 50 panes over a rock at the DL-622 commit).
-		//!
-		//! Why the answers are identical: the single-sheet certificate for
-		//! sheet k walks the column from the obstacle and stops at k; every
-		//! decision it makes before k (an opaque parity going positive, any
-		//! other sheet's front face, the seed object) is a property of that
-		//! PREFIX of one shared column walk, so k's verdict, obstacle box and
-		//! passed/crossed lists are a snapshot taken when the shared walk
-		//! reaches k.  Its waypoints depend only on that box, so sheets
-		//! reached with the same box share waypoints and lateral legs; and its
-		//! normal walk from a waypoint is again a prefix of one shared walk,
-		//! confirming each candidate (one whose own sheet-alone test passes
-		//! at that waypoint) at its back face.  A sheet takes the FIRST
-		//! waypoint that confirms it, as in the single-sheet loop.
-		//! @a out receives one result per entry of @a sheets.
+		//! Batched `HasFreeSpaceDetourToSheet` for a planar co-normal group:
+		//! snapshots each sheet's obstacle box and passed/crossed prefix during
+		//! one shared column walk, then shares waypoints, lateral legs, and
+		//! normal walks per distinct box (capped at `GroupDetourRayBudget()`,
+		//! matching single-sheet verdicts while within budget).
 		inline void HasFreeSpaceDetourToSheets(
 			const IObjectManager* pObjects,
 			const Point3& pos,
@@ -3387,18 +3050,8 @@ namespace RISE
 				vertProbe.Advance( kSeedEps );
 			}
 
-			// Waypoints, per distinct obstacle box.  Interleaved opaque
-			// obstacles (glass shelves carrying vases) give every sheet its
-			// own box, and when waypoints keep failing trying them all costs
-			// O(N * 8 * MaxSceneWalkSteps) scene rays.  So the certificate
-			// spends at most kGroupDetourRayBudget scene rays beyond its
-			// column walk; once they are spent every sheet it has not yet
-			// confirmed is REFUSED (not in its medium).  The refusal is
-			// deterministic in (point, group), touches only this group's
-			// detour-confirmed sheets (a sheet its shared normal ray reached
-			// directly is unaffected), and seeds and unpushed-exit resolutions
-			// both decide membership through ConfirmOpenSheetsAt, so they
-			// refuse alike.
+			// Waypoints per distinct obstacle box, bounded by `rayBudget`
+			// (unconfirmed sheets after budget exhaustion are deterministically refused).
 			bool seedExitBudgetExhausted = false;
 			const Point3 detourOrigin = obstacleIsSeedExit
 				? DetourOriginForSeedExit(
@@ -3672,20 +3325,11 @@ namespace RISE
 			}
 		}
 
-		//! DL-618 / DL-622: the sheet-normal confirmation of the convention
-		//! above.  Walks the ray from @a pos along @a normal (the candidate
-		//! sheet's own true normal or an auxiliary facet normal) and returns
-		//! true iff @a pSheet is reached on its BACK face with net positive
-		//! back-minus-front parity across @a expectedSheetCrossings crossings.
-		//!
-		//! DL-622 Gap 4: only an explicit @a pSeedObject (passed by luminaire
-		//! light-root and photon callers) may be exempted on its initial self-hit
-		//! or first exit face; callers with `pSeedObject == 0` never guess own-body
-		//! membership geometrically (`A22`).
-		//!
-		//! DL-622 Gap 1: when @a allowDetour is true and the normal ray hits a
-		//! non-exempt opaque obstacle, tests `HasFreeSpaceDetourToSheet` around
-		//! the obstacle's lateral bounds.
+		//! Walks from @a pos along @a normal and returns true iff @a pSheet is
+		//! reached on its back face with positive back-minus-front parity across
+		//! @a expectedSheetCrossings.  Only an explicit @a pSeedObject is exempt
+		//! on its near-origin self-hit; opaque blockers optionally invoke
+		//! `HasFreeSpaceDetourToSheet` when @a allowDetour is true.
 		inline bool OpenSheetNormalRayReaches(
 			const IObjectManager* pObjects,
 			const Point3& pos,
@@ -4380,25 +4024,12 @@ namespace RISE
 			}
 		}
 
-		//! DL-618 / DL-622 / DL-626: the certified open sheets whose medium holds
-		//! @a pos under the sheet-normal convention, with the pairwise relations
-		//! the seed uses (same-material siblings keep the geometrically canonical
-		//! one (`A52b`); different-material siblings or mutual nesting set
+		//! Confirms all certified open sheets holding @a pos and resolves
+		//! nesting/sibling relations (same-material siblings keep the nearest
+		//! canonical one; different-material siblings or mutual nesting set
 		//! @a declineSheets).  Shared by `SeedFromPointImpl`,
-		//! `ResolveOpenSheetCrossing`, and `OpenSheetEnclosesCrossing` (`DL-622`
-		//! review round 3, `DL-626`), so a seed at a point and an exit resolution
-		//! there run the same confirmation:
-		//!  - planar exits pass the crossed sheet as @a pExclude (leaving through
-		//!    a planar sheet's back face cannot remain on its back side), whereas
-		//!    `ResolveOpenSheetCrossing` passes `pExclude = 0` when crossing a
-		//!    non-planar sheet so an overhanging outer fold of the same curved /
-		//!    pleated sheet keeps enclosing @a pos (`A53`);
-		//!  - a luminaire seed passes its own object as @a pSeedObject, exempting
-		//!    only its near-origin self-hit and starting any free-space detour
-		//!    past @a pSeedObject's exit face (`DetourOriginForSeedExit`, `A55`)
-		//!    without tunneling through an enclosing room ceiling/wall.
-		//! @a ordered / @a orderedCount (the closed media containing @a pos)
-		//! only feed each sheet's `closedInner`.
+		//! `ResolveOpenSheetCrossing`, and `OpenSheetEnclosesCrossing`; planar
+		//! exits pass the crossed sheet in @a pExclude, non-planar exits pass 0.
 		inline void ConfirmOpenSheetsAt(
 			const IObjectManager* pObjects,
 			const std::vector<OpenSheetCatalogEntry>& sceneSheets,
@@ -4610,20 +4241,11 @@ namespace RISE
 				return;
 			}
 
-			// DL-631 fast paths:
-			//  1. When the scene has no trackable refractive / interior media at
-			//     all (`!cat.hasTrackableMedia`), return in O(1) with zero BVH
-			//     ray casts.
-			//  2. When the scene has closed trackable media but no certified
-			//     open sheets (`!cat.hasSheets`), run the initial +z probe into
-			//     a single 32-entry stack table (~1 KB touched on free-space
-			//     early return, 6.25 KB POD stack slots when enclosed, zero heap
-			//     vectors) and return immediately when no closed candidate has
-			//     positive exit parity (every free-space camera / light ray).
-			//     Note: scenes WITH open sheets that pass `seedOpenSheets == false`
-			//     still take the `cat.walkSteps` path below so >32 open panes
-			//     cannot exhaust `kMaxProbeSteps` before reaching an enclosing
-			//     closed dielectric.
+			// Fast paths:
+			//  1. `!cat.hasTrackableMedia`: return in O(1) with zero ray casts.
+			//  2. `!cat.hasSheets`: probe into fixed 32-entry POD stack tables
+			//     (zero heap; early-out on free-space seeds).  Scenes with open
+			//     sheets always use the `cat.walkSteps` path below.
 			const OpenSheetCatalog& cat = EnsureOpenSheetCatalog( pObjects );
 			if( !cat.hasTrackableMedia ) {
 				GradedIndexMedium::RecordAt( stack, pos );
@@ -4906,27 +4528,11 @@ namespace RISE
 			return false;
 		}
 
-		//! DL-622: @a source's MEMBERSHIP (objects, order, open-sheet flags)
-		//! with each entry's index re-evaluated at companion wavelength @a nm.
-		//! False (and @a dest unspecified) when an entry cannot be evaluated;
-		//! the caller then falls back to seeding.
-		//!
-		//! Per entry, outermost first, with the stack's current object set to
-		//! the entry and the partial stack below it as the query stack (so a
-		//! non-refracting `hasInterior` entry -- DL-46's translucent re-push --
-		//! takes its refreshed parent's index, exactly as SeedFromPoint does):
-		//!  - a GRADED medium (its ior is a world-position field, DL-09) keeps
-		//!    @a source's recorded value: the field is wavelength-independent,
-		//!    and that value is the one the walk tracked (GradedIndexMedium::
-		//!    Advance / DL-335's RecordEnclosingAt), not the entry point's;
-		//!  - an entry with a recorded EntryContext (open-sheet pushes) is
-		//!    evaluated at that recorded crossing, in 0 rays;
-		//!  - any other scene object is evaluated at a surface hit found by
-		//!    probing the object ALONE from @a anchor (ProbeObjectSurfaceHit:
-		//!    object-only rays, no scene walk), as SeedFromPoint evaluates a
-		//!    closed medium at the probe's hit on it;
-		//!  - a key that is not a scene object (a composite's internal layer)
-		//!    is never dereferenced: false.
+		//! Copies @a source's membership with each entry's IOR re-evaluated at
+		//! wavelength @a nm (outermost first; returns false if any key is not a
+		//! scene object or cannot be evaluated).  Graded media keep their tracked
+		//! IOR; entries with `EntryContext` evaluate in 0 rays; other scene
+		//! objects probe locally via `ProbeObjectSurfaceHit`.
 		inline bool ReindexStackForWavelength(
 			const IORStack& source,
 			IORStack& dest,
@@ -4997,20 +4603,10 @@ namespace RISE
 			return true;
 		}
 
-		//! DL-618 / DL-622: the stack an HWSS COMPANION lane delegates with
-		//! when the hero walk hands its segment to per-wavelength walks.
-		//!
-		//! A hero stack holding an OPEN-SHEET entry carries walk-history
-		//! membership no seed point reproduces (a walk that crossed a sheet
-		//! and moved outside its normal prism, or under an overhang): the
-		//! lane takes the hero's membership re-indexed at @a nm
-		//! (ReindexStackForWavelength, no scene walk), falling back to the
-		//! seeding below only if an entry cannot be evaluated.  Every other
-		//! stack keeps the pre-DL-622 rule unchanged: the hero's seed point
-		//! and rule when they reproduce the hero's membership, else the
-		//! segment's midpoint (DL-622 review: a re-index would change HWSS
-		//! output on walk-dependent closed stacks -- uncertified meshes,
-		//! translucent re-pushes, DL-370 neighbour crossings).
+		//! Seeds an HWSS companion lane at wavelength @a nm from @a hero's state:
+		//! open-sheet stacks re-index in place via `ReindexStackForWavelength`
+		//! (preserving walk history); closed stacks seed at @a origin if that
+		//! matches @a hero's membership/enclosure, else at @a midpoint.
 		inline void SeedCompanionLane(
 			IORStack& lane,
 			const IORStack& hero,
@@ -5355,15 +4951,8 @@ namespace RISE
 						if( !pStack->isOpenSheetAt( i ) || !pExisting || pExisting == pObj ) {
 							continue;
 						}
-						// Check whether `pExisting` is a confirmed sibling of `pObj`
-						// at `pAfter` (every entry in `confirmed` encloses `pAfter`,
-						// regardless of which sibling `ConfirmOpenSheetsAt` flagged
-						// `keep` for `SeedFromPoint`): if neither passed before the
-						// other, `pStack` already holds a representative for that
-						// sibling medium.  Nested sheets (`passes` true in one
-						// direction) are distinct layers; unconfirmed stack entries
-						// (`csExisting == 0`) do not enclose `pAfter` and cannot
-						// stand in as sibling representatives.
+						// Skip retention if `pStack` already holds a confirmed sibling
+						// (same material, neither nested inside the other) at `pAfter`.
 						const ConfirmedSheet* csExisting = 0;
 						for( std::size_t c = 0; c < confirmed.size(); ++c ) {
 							if( confirmed[c].pObj == pExisting ) {
@@ -5386,18 +4975,10 @@ namespace RISE
 				return csSelf;
 			}
 
-			//! Does open sheet @a pY (on @a pStack) stay past the crossing?
-			//!
-			//! A confirmed sheet S stands in for pY when it is the same
-			//! MATERIAL (identity, no index comparison) and not already on the
-			//! stack.  The index is deliberately not compared: the walk's entry
-			//! for pY was recorded at whatever wavelength convention the walk
-			//! used (an RGB walk's nm = 0, a dispersive RGB SPF's per-channel
-			//! 611/549/465 nm, a spatially varying painter at pY's own hit),
-			//! while S's confirmation reads S's hit at the exit's wavelength, so
-			//! an exact index match would pop pY on two of three RGB channels
-			//! where a seed keeps the medium (DL-622 review round 4).  pY keeps
-			//! its recorded index for that medium.
+			//! Returns true if open sheet @a pY (on @a pStack) stays past the
+			//! crossing; a confirmed same-material sheet not on @a pStack may
+			//! stand in for @a pY (material identity only — never index equality,
+			//! which would diverge across RGB/spectral/spatially-varying hits).
 			bool Keeps( const IObject* pY, const IObject* pSheet, const IORStack* pStack ) const
 			{
 				if( decline ) {

@@ -1,3 +1,15 @@
+//////////////////////////////////////////////////////////////////////
+//
+//  SimulationGroup.cpp - Multi-solver co-stepping group host supporting
+//  explicit Jacobi/Gauss-Seidel, implicit Aitken-relaxed sub-iteration,
+//  owned-implicit exchanges, cache recording, and checkpointing.
+//
+//  Tabs: 4
+//
+//  License Information: Please see the attached LICENSE.TXT file
+//
+//////////////////////////////////////////////////////////////////////
+
 // Simulation M6: see SimulationGroup.h.
 #include "pch.h"
 #include "SimulationGroup.h"
@@ -217,6 +229,8 @@ bool RegisterCouplingEvidence(const std::string& kind, std::function<bool(Eviden
 	return true;
 }
 
+// Lazily computes and memoizes coupling evidence by kind; a recursion guard
+// ensures self-hosted evidence computations treat nested groups as preview.
 bool CouplingEvidence(const std::string& kind, Evidence& evidence, std::string& error)
 {
 	std::shared_ptr<EvidenceEntry> entry;
@@ -261,6 +275,8 @@ std::future<void> PrefetchCouplingEvidence(const std::string& kind)
 
 // ------------------------------------------------------------------ members and links
 
+// Per-member runtime state: live solver or cached feed, port offers/statics,
+// optional disk recorder, rollback token, and buffered frames during sub-iteration.
 struct SimulationGroup::Member {
 	std::string name;
 	bool cached = false, foreign = false;
@@ -299,6 +315,8 @@ private:
 };
 } // namespace
 
+// Directed port connection with resolved adapter, auxiliary feeds, owned-exchange
+// metadata, and last-input conversion memo.
 struct SimulationGroup::Link {
 	PortConnection c;
 	std::size_t from = 0, to = 0;
@@ -315,6 +333,8 @@ struct SimulationGroup::Link {
 	std::string identity;
 };
 
+// Per-member IPortExchange facade routing offers into sorted time tables and
+// accepts through SimulationGroup::Serve.
 class SimulationGroup::Exchange final : public IPortExchange {
 public:
 	Exchange(SimulationGroup& g, std::size_t member) : g_(g), m_(member) {}
@@ -459,6 +479,9 @@ bool SimulationGroup::Connect(const PortConnection& connection, std::string& err
 	return true;
 }
 
+// Configures all live members, validates stepping/rollback capabilities, resolves
+// port adapters and owned exchanges, computes upstream-closure coupling keys,
+// and assigns predictive vs. preview fidelity.
 bool SimulationGroup::Configure(const GroupPolicy& policy, const ISceneInputs& inputs, std::string& error)
 {
 	if (configured_) return Fail(error, "the group is already configured");
@@ -735,6 +758,8 @@ bool SimulationGroup::Configure(const GroupPolicy& policy, const ISceneInputs& i
 	return true;
 }
 
+// Attaches a disk CacheWriter to a live member (starting a new epoch or resuming
+// a matching partial cache). Must be called after Configure and before Start.
 bool SimulationGroup::Record(const std::string& member, const fs::path& root, std::size_t budget, bool resume, std::string& error)
 {
 	if (!configured_ || started_) return Fail(error, "record after Configure and before Start");
@@ -847,6 +872,8 @@ PortStatus SimulationGroup::ResolveStatic(const std::string& digest, std::size_t
 	return PortStatus::Unavailable;
 }
 
+// Delivers a link's current payload: relaxed iterate when sub-iterating, or the
+// latest offer up to step-start/step-end, running and memoizing any port adapter.
 bool SimulationGroup::Serve(Link& l, std::shared_ptr<const Bytes>& value, std::string& error)
 {
 	value.reset();
@@ -918,6 +945,8 @@ void SimulationGroup::Prune(double t)
 		}
 }
 
+// Advances all members over [a, b]: single pass for explicit/owned coupling, or
+// rollback-based Aitken-relaxed fixed-point sub-iteration with optional halving.
 bool SimulationGroup::StepInterval(double a, double b, int depth, std::string& error)
 {
 	stepStart_ = a;
@@ -1113,6 +1142,9 @@ bool SimulationGroup::SealRecordings(std::string& error)
 	return true;
 }
 
+// ------------------------------------------------------------------ checkpointing and streaming restore
+
+// Serializes all live members, active offers, and statics into one CBOR blob.
 bool SimulationGroup::Checkpoint(Bytes& state, std::string& error)
 {
 	if (!started_) return Fail(error, "nothing to checkpoint");
@@ -1221,6 +1253,8 @@ private:
 };
 }
 
+// Two-pass streamed checkpoint: pass 1 measures each member's byte length to
+// write a length-indexed CBOR header, pass 2 streams member states directly.
 bool SimulationGroup::CheckpointTo(ICheckpointSink& sink, std::string& error)
 {
 	if (!started_) return Fail(error, "nothing to checkpoint");

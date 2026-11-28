@@ -1,3 +1,18 @@
+//////////////////////////////////////////////////////////////////////
+//
+//  HyLIoSLocalResponseAsset.cpp - Binary codec (`HYLOCAL\0` v1) for
+//    HyLIoS baked local response assets.
+//
+//  Wire format: 80-byte LE header (magic, version, endian tag, sizes,
+//  5 axis/node counts, reserved) + canonical CBOR metadata (<= 64 KiB) +
+//  downward-quantized LE IEEE float32 payload (continuous, mirror,
+//  normal-incidence guide) + trailing 32-byte raw SHA-256 digest.
+//
+//  Tabs: 4
+//  License Information: Please see the attached LICENSE.TXT file
+//
+//////////////////////////////////////////////////////////////////////
+
 #include "pch.h"
 #include "HyLIoSLocalResponseAsset.h"
 #include "Utilities/RISECBOR64.h"
@@ -314,6 +329,8 @@ void WorkCardinality(const LocalAssetProductionIdentity& p,const Dimensions& d)
     // producer mapping is a claim, not a certification of its implementation.
     Mul(Add(main,guide),p.maximumWorkPerHistory);
 }
+// Enforces file and conservative peak resident-memory budgets prior to
+// allocating CBOR Value trees, wire buffers, or response tables.
 std::uint64_t Preflight(const Dimensions& d,std::uint64_t metadata,const LocalAssetLimits& limits)
 {
     if(!limits.maximumMetadataBytes || limits.maximumMetadataBytes>64*1024 ||
@@ -407,6 +424,8 @@ V ProductionKey(const V& manifest)
         members.push_back({key,*manifest.Find(key)});
     return V::MapValue(members);
 }
+// Validates source physics before downward float32 quantization, computes the
+// conservative upward-rounded row error bound, and packs header/metadata/payload/SHA.
 Bytes MakeFile(const LocalAssetDefinition& input,const LocalAssetLimits& limits)
 {
     const auto& r=input.response;
@@ -489,6 +508,8 @@ double QuantizeCoefficient(double value){return PhysicalBits(DownBits(value));}
 double ForwardEncodingErrorBound(double error,const HyLIoSLocalResponse& core){return EncodingRowBound(error,core);}
 }
 
+// Single-descriptor asset loader: validates header/budgets, verifies exact
+// field-by-field semantic identity and whole-file SHA-256, and builds the response.
 std::shared_ptr<const HyLIoSLocalResponseAsset> LoadLocalResponseAsset(const std::string& path,
     const LocalAssetSemanticIdentity& expected,const LocalAssetLimits& limits)
 {

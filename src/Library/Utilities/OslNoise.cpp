@@ -158,14 +158,8 @@ namespace RISE
 		}
 
 		//////////////////////////////////////////////////////////////
-		// kernel/svm/white_noise.h (Apache-2.0): svm_node_tex_white_noise,
-		// with util/hash.h's hash_floatN_to_float and
-		// hash_floatN_to_float3.  Integer hashing of float bit patterns,
-		// so floating-point rules do not enter: the only roundings are the
-		// double-to-float input conversion and UintToFloatIncl's
-		// uint-to-float conversion, both correctly rounded (its multiply,
-		// by 1/(2^32-1) rounded to float, which is exactly 2^-32, is
-		// exact).
+		// kernel/svm/white_noise.h (Apache-2.0): svm_node_tex_white_noise
+		// Integer lookup3 hashing of 32-bit float bit patterns.
 		//////////////////////////////////////////////////////////////
 
 		void WhiteNoise( const int dims, const Scalar* p, Scalar& value, Scalar* color )
@@ -217,45 +211,14 @@ namespace RISE
 			}
 		}
 
-		//////////////////////////////////////////////////////////////
-		// Everything below evaluates in 32-bit float, in Cycles' order of
-		// operations, because Cycles' float rounding IS part of the
-		// pattern: the Color and distortion offsets move a coordinate to
-		// about |p| + 150, where a float ulp is ~1.5e-5, and octave i
-		// multiplies that rounding by lacunarity^i.  A double evaluation
-		// rounds somewhere else, so at roughness near 1 it is a different
-		// pattern.  Rounding where Cycles rounds removes that.
-		//
-		// STRICT IEEE, NO CONTRACTION.  The rest of this file is plain
-		// IEEE single precision in Cycles' operation order: no
-		// reassociation, no reciprocal substitution, and no fused
-		// multiply-add.  Cycles itself is not one arithmetic -- its clang
-		// builds contract multiply-adds within an expression
-		// (-ffp-contract=on), which needs FMA hardware -- and where the
-		// result depends on the last bit (OslNoise.h, PRECISION) that
-		// shows.  Strict IEEE is the one evaluation every RISE platform
-		// can reproduce, so by construction RISE renders the same pattern
-		// on every platform (built and run so far on macOS arm64 only);
-		// its distance from Cycles rebuilt with Blender's flags is
-		// measured in tests/OslNoiseTest.cpp and quoted in OslNoise.h.
-		// How it is enforced is described just below.
-		//////////////////////////////////////////////////////////////
 	}
 }
 
-// HOW THE STRICT ARITHMETIC IS ENFORCED.  Clang ignores `#pragma clang fp
-// contract(off)` under -ffast-math, whose -ffp-contract=fast disregards
-// pragmas by design: with the pragma in place this file still compiled to
-// 51 scalar and 7 vector fused multiply-adds under the Makefile's flags
-// (-O3 -ffast-math -fno-finite-math-only -funroll-loops, Apple clang 21).  So
-// every build compiles THIS FILE with -fno-fast-math -ffp-contract=off
-// (Makefile, Xcode, Android CMake) or /fp:strict (VS2022) -- the
-// per-file mechanism the fire solver's strict sources already use.  The
-// #error below makes a fast-math build that forgets the flag fail to
-// compile (__FAST_MATH__ for clang and GCC, _M_FP_FAST for MSVC's
-// /fp:fast), and the clang pragma covers a clang build that merely omits
-// -ffp-contract=off.  A GCC build that omitted it would not be caught
-// here (GCC's GNU-mode default contracts); every build file passes it.
+// Strict IEEE float32 contract (no FMA, reassociation, or reciprocal math):
+// Clang ignores `#pragma clang fp contract(off)` under -ffast-math, so every
+// build compiles this TU with -fno-fast-math -ffp-contract=off (or /fp:strict).
+// The #error guard rejects fast-math builds; the pragma catches clang builds
+// that omit -ffp-contract=off.
 #if defined(__FAST_MATH__) || defined(_M_FP_FAST)
 #error "OslNoise.cpp must be compiled without fast-math (-fno-fast-math -ffp-contract=off, or /fp:strict): its kernels are strict IEEE ports of Cycles' noise"
 #endif
@@ -268,16 +231,9 @@ namespace RISE
 	namespace OslNoise
 	{
 		//////////////////////////////////////////////////////////////
-		// kernel/svm/noise.h -- the Perlin core.  BSD-3-Clause, adapted
-		// by Blender from Open Shading Language; see OslNoise.h.
-		//
-		// This is Cycles' "standard implementation" (the non-SIMD path),
-		// in float.  Its SSE / sse2neon path computes the same corners
-		// and interpolation with a different grouping of operations, so
-		// the two differ by float rounding, and it wraps 3D/4D
-		// coordinates with a - trunc(a/b)*b, which can depart from fmodf
-		// beyond |p| ~ 5.4e8 (OslNoise.h, AGAINST CYCLES; tests/OslNoiseTest.cpp
-		// prints both differences).
+		// kernel/svm/noise.h -- Perlin core (BSD-3-Clause, adapted by
+		// Blender from Open Shading Language; see OslNoise.h).
+		// Cycles' scalar-path float32 operation order with fmodf wrap.
 		//////////////////////////////////////////////////////////////
 
 		static inline float Fade( const float t )
@@ -465,11 +421,7 @@ namespace RISE
 		}
 
 		//////////////////////////////////////////////////////////////
-		// kernel/svm/fractal_noise.h (Apache-2.0)
-		//
-		// One function per fractal for all four dimensions: Cycles' four
-		// overloads of each have identical bodies, differing only in the
-		// coordinate type.
+		// kernel/svm/fractal_noise.h (Apache-2.0) -- unified 1D..4D
 		//////////////////////////////////////////////////////////////
 
 		namespace
@@ -503,15 +455,9 @@ namespace RISE
 				return r;
 			}
 
-			//! float_to_int(detail) and the remainder `detail - floorf(detail)`
-			//! Cycles reads for the partial octave.  Cycles' fractal kernels
-			//! have no bound on detail; this one has an upper bound of
-			//! kMaxDetail (a linked detail of 1e9 would otherwise loop 1e9
-			//! times; +infinity lands there too) and a lower bound of
-			//! kMinDetail, far below any detail that changes the result, only
-			//! so the int conversion stays defined.  NaN reads as 0.  Between
-			//! the bounds, including a negative detail, the loop count and
-			//! remainder are Cycles'.
+			//! Octave count and fractional remainder matching Cycles, clamped to
+			//! [kMinDetail, kMaxDetail] (NaN -> 0) to keep int conversion defined
+			//! and bound loop iterations.
 			inline void OctaveCount( float detail, int& octaves, float& rmd )
 			{
 				if( detail != detail ) detail = 0.0f;	// NaN
@@ -701,10 +647,7 @@ namespace RISE
 			if( color ) color[0] = color[1] = color[2] = Scalar(0);
 			if( dims < 1 || dims > 4 ) return;
 
-			// svm_node_tex_noise: detail = clamp(detail, 0, 15) and
-			// roughness = fmaxf(roughness, 0).  Cycles' clamp is
-			// min(max(d, 0), 15) with comparison min/max, so a NaN detail
-			// lands on 0 and +infinity on 15, exactly as here.
+			// svm_node_tex_noise clamps: detail in [0, 15] (NaN -> 0), roughness >= 0.
 			float detail = (float)detailIn;
 			if( detail != detail || detail < 0.0f ) detail = 0.0f;
 			if( detail > 15.0f ) detail = 15.0f;

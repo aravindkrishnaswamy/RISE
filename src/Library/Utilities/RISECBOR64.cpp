@@ -5,7 +5,9 @@
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: August 6, 2026
 //  Tabs: 4
-//  Comments:
+//  Comments: Implements Unicode 17.0.0 NFC verification, canonical
+//    RISE-CBOR64-v1 encoding/decoding, and SHA-256 (portable scalar +
+//    Apple Silicon ARMv8 SHA-2 hardware path).
 //
 //  License Information: Please see the attached LICENSE.TXT file
 //
@@ -76,6 +78,8 @@ namespace
 		return entry ? entry->value : 0;
 	}
 
+	// Strict UTF-8 decoder: rejects overlong encodings, UTF-16 surrogates
+	// (U+D800..U+DFFF), and code points above U+10FFFF.
 	static bool DecodeUTF8(
 		const std::string& text,
 		std::vector<std::uint32_t>& codePoints
@@ -120,6 +124,8 @@ namespace
 		return true;
 	}
 
+	// Canonical decomposition (NFD step 1): handles algorithmic Hangul
+	// syllables (U+AC00..U+D7A3) and recursive table lookup for all others.
 	static void DecomposeCodePoint(
 		const std::uint32_t codePoint,
 		std::vector<std::uint32_t>& output
@@ -205,6 +211,8 @@ namespace
 		return true;
 	}
 
+	// Full Unicode NFC check: NFD decompose -> canonical combining-class
+	// sort -> canonical recomposition, then compare against original input.
 	static bool IsNFC( const std::vector<std::uint32_t>& input )
 	{
 		std::vector<std::uint32_t> decomposed;
@@ -252,6 +260,7 @@ namespace
 		if( error ) *error = message;
 	}
 
+	// Unsigned bytewise lexicographical order (RFC 8949 / RISE-CBOR64-v1 map keys).
 	static bool KeyLess( const std::string& a, const std::string& b )
 	{
 		return std::lexicographical_compare(
@@ -262,6 +271,7 @@ namespace
 			} );
 	}
 
+	// Emits a CBOR major-type header with shortest-form big-endian argument.
 	static void AppendUnsigned(
 		const unsigned int major,
 		const std::uint64_t value,
@@ -325,6 +335,7 @@ namespace
 				SetError(error,"RISE-CBOR64-v1 forbids NaN and infinity");
 				return false;
 			}
+			// Canonicalize -0.0 to +0.0 (IEEE-754 binary64 big-endian, 0xfb).
 			if( (bits&0x7fffffffffffffffull) == 0u ) bits = 0u;
 			output.push_back(0xfbu);
 			for( int shift = 56; shift >= 0; shift -= 8 ) {
@@ -384,6 +395,9 @@ namespace
 		return false;
 	}
 
+	// Single-pass strict CBOR64-v1 parser: enforces shortest-form arguments,
+	// finite binary64 floats (no -0.0), NFC text, sorted unique text keys,
+	// no tags/indefinite lengths, max depth 64, and no trailing bytes.
 	class Decoder
 	{
 		const unsigned char* m_bytes;
@@ -764,6 +778,8 @@ RISECBOR64::Value RISECBOR64::Value::Unsigned( const std::uint64_t value )
 	return result;
 }
 
+// Maps signed int64 to CBOR major type 0 (>=0) or type 1 (<0: arg = -(v+1)),
+// avoiding signed overflow on INT64_MIN.
 RISECBOR64::Value RISECBOR64::Value::Signed( const std::int64_t value )
 {
 	return value >= 0 ? Unsigned(static_cast<std::uint64_t>(value)) :
@@ -873,6 +889,8 @@ bool RISECBOR64::DecodeCanonical(
 	Decoder decoder(encoded,encodedSize,error);
 	Value decoded;
 	if( !decoder.Decode(decoded) ) return false;
+	// Defense-in-depth canonicality check: re-encode the decoded tree and
+	// require byte-for-byte identity with the input stream.
 	Bytes canonical;
 	std::string encodeError;
 	if( !Encode(decoded,canonical,&encodeError) ) {

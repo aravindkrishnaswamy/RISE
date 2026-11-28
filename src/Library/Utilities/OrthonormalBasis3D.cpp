@@ -5,7 +5,9 @@
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: October 20, 2001
 //  Tabs: 4
-//  Comments: Much here is influenced by ggLibrary
+//  Comments: Much here is influenced by ggLibrary.
+//    Note: CreateFromVU produces a left-handed frame (U x V = -W), and
+//    CreateFromVW references existing W when computing Cross(U, W).
 //
 //  License Information: Please see the attached LICENSE.TXT file
 //
@@ -34,6 +36,8 @@ void OrthonormalBasis3D::CreateFromV( const Vector3& v )
 	W = Vector3Ops::Cross( U, V );
 }
 
+// Uses +Y (canonicalV) as the preferred up-reference for U, with explicit
+// pole fallbacks when W is aligned with +/-Y to keep the frame right-handed.
 void OrthonormalBasis3D::CreateFromW( const Vector3& w )
 {
 	W = Vector3Ops::Normalize(w);

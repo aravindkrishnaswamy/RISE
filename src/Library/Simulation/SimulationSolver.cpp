@@ -1,3 +1,15 @@
+//////////////////////////////////////////////////////////////////////
+//
+//  SimulationSolver.cpp - Solver registry, verification evidence, and port relays
+//
+//  Manages global solver factories, build-keyed CBOR evidence persistence,
+//  fidelity gating, port compatibility checks, in-memory/cached port feeds,
+//  and streamed checkpoint fallback adapters.
+//  Tabs: 4
+//  License Information: Please see the attached LICENSE.TXT file
+//
+//////////////////////////////////////////////////////////////////////
+
 #include "pch.h"
 #include "SimulationSolver.h"
 #include "SimulationProcess.h"
@@ -54,6 +66,7 @@ const char* BackendStatusName(BackendStatus status)
 	return "unsupported";
 }
 
+// Canonical SHA-256 digest over CBOR ["rise.simulation.evidence.v1", id, config, error, tol, passed].
 std::string EvidenceDigest(const std::string& id,const V& configuration,double error,double tolerance,bool passed)
 {
 	Bytes encoded;
@@ -74,6 +87,7 @@ constexpr std::uintmax_t EvidenceEntryBytes = 1u << 20;        // larger files a
 std::uint64_t DoubleBits(double d) { std::uint64_t b; std::memcpy(&b,&d,8); return b; }
 double BitsDouble(std::uint64_t b) { double d; std::memcpy(&d,&b,8); return d; }
 
+// Encodes Evidence to CBOR, storing error/tolerance as raw IEEE-754 uint64 bits for exact round-trip.
 V EvidenceToValue(const Evidence& e)
 {
 	V::Values cases;
@@ -144,6 +158,8 @@ std::filesystem::path EvidenceStoreDirectory()
 }
 }
 
+// Returns the current binary's Mach-O LC_UUID on macOS so persisted evidence invalidates
+// on rebuild; returns empty on other platforms (disabling on-disk evidence reuse).
 const std::string& EvidenceBuildIdentity()
 {
 	static const std::string identity = [] {
@@ -169,6 +185,8 @@ const std::string& EvidenceBuildIdentity()
 	return identity;
 }
 
+// Loads and verifies a cached CBOR evidence record [format, space, key, buildId, body, sha256(body)]
+// and bumps its mtime for LRU retention.
 bool LoadPersistedEvidence(const std::string& space,const V& key,Evidence& evidence)
 {
 	if (EvidenceStoreOff()) return false;
@@ -197,6 +215,8 @@ bool LoadPersistedEvidence(const std::string& space,const V& key,Evidence& evide
 	return true;
 }
 
+// Atomically writes a verified evidence entry via temp-file rename and evicts oldest files
+// down to 75% of the entry/byte limits when the store overflows.
 void PersistEvidence(const std::string& space,const V& key,const Evidence& evidence)
 {
 	if (EvidenceStoreOff()) return;
@@ -265,6 +285,8 @@ std::string ScopedEvidenceDigest(const std::string& caseDigest,const EvidenceCon
 	return RISECBOR64::SHA256Hex(encoded);
 }
 
+// Downgrades "predictive" to "preview" unless scope, conditions, and every case pass
+// with finite error <= tolerance (tolerance >= 0) and a valid 64-hex digest.
 std::string EffectiveFidelity(const Evidence& evidence)
 {
 	if (evidence.fidelity!="predictive" || evidence.cases.empty() || evidence.scope.empty() ||
@@ -275,6 +297,9 @@ std::string EffectiveFidelity(const Evidence& evidence)
 	return "predictive";
 }
 
+// ------------------------------------------------------------------ ports & registry
+
+// Rejects paths, hidden names, and cache/worker-reserved filenames or suffixes.
 bool ValidSideOutputName(const std::string& name)
 {
 	if (name.empty() || name.size()>64 || name[0]=='.' || name.find_first_of("/\\:")!=std::string::npos)
@@ -285,6 +310,8 @@ bool ValidSideOutputName(const std::string& name)
 		(name.size()<7 || name.compare(name.size()-7,7,".static")!=0);
 }
 
+// Checks direct (adapter-free) compatibility: direction, codec, quantity/units,
+// ordered channel schemas, and domain digest when both ports specify one.
 bool PortsCompatible(const PortDeclaration& offer,const PortDeclaration& accept,std::string& error)
 {
 	if (!offer.offers || accept.offers) return Fail(error,"port binding must connect an offered port to an accepted port");
@@ -356,6 +383,7 @@ bool NoSceneInputs::Sample(const std::string& name,double,std::shared_ptr<const 
 	return Fail(error,"no scene input named "+name);
 }
 
+// Registers a unique NFC solver factory ID in the process-wide thread-safe registry.
 bool RegisterSolver(const std::string& id,SolverFactory factory,std::string& error)
 {
 	if (id.empty() || id.find('\0')!=std::string::npos || !RISECBOR64::IsUTF8NFC(id) || !factory)
@@ -391,6 +419,9 @@ std::vector<std::string> RegisteredSolvers()
 	return ids;
 }
 
+// ------------------------------------------------------------------ port relays
+
+// In-memory coupling relay: enforces monotonic offer times and deduplicates static payloads.
 void PortRelay::Connect(const std::string& accepted,const std::string& offered)
 {
 	routes_.emplace_back(accepted,offered);
@@ -430,6 +461,7 @@ PortStatus PortRelay::ResolveStatic(const std::string& digest,std::size_t budget
 	return PortStatus::Unavailable;
 }
 
+// Resolves route (or direct port name when unrouted) and returns latest sample at or before `time`.
 PortStatus PortRelay::Accept(const std::string& port,double time,std::shared_ptr<const Bytes>& encoded,std::string& error)
 {
 	std::string source=port;
@@ -445,6 +477,7 @@ PortStatus PortRelay::Accept(const std::string& port,double time,std::shared_ptr
 	return PortStatus::Ready;
 }
 
+// Read-only port feed backed by a cache snapshot; serves latest entry <= requested time.
 CachedPortFeed::CachedPortFeed(std::shared_ptr<const IReadOnlyCacheSnapshot> snapshot,std::size_t byteBudget)
 	: snapshot_(std::move(snapshot)), budget_(byteBudget)
 {
@@ -503,6 +536,7 @@ bool MemoryCheckpointSource::Read(std::uint8_t* data, std::size_t size, std::str
 	return true;
 }
 
+// Default whole-buffer fallback for solvers that do not override streaming checkpoints.
 bool ISimulationSolver::CheckpointTo(ICheckpointSink& sink, std::string& error)
 {
 	Bytes state;

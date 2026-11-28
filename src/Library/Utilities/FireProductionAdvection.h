@@ -2,6 +2,14 @@
 //
 //  FireProductionAdvection.h - fp32 conservative production remap
 //
+//  Declares the 1D batched PPM conservative remap interface (CPU oracle
+//  in FireProductionAdvection.cpp; Metal kernels in
+//  FireProductionAdvectionMac.mm; non-Metal fail-closed stub in
+//  FireProductionAdvectionUnsupported.cpp), plus shared CPU worker-pool,
+//  sliced FNV-1a, and SHA-256 Merkle payload-digest utilities.
+//  Values use SoA layout [component][line][cell] and face velocities
+//  [line][face] on uniform cells (dx in m, dt in s, u in m/s).
+//
 //  License Information: Please see the attached LICENSE.TXT file
 //
 //////////////////////////////////////////////////////////////////////
@@ -91,6 +99,7 @@ namespace RISE
 		unsigned int dispatchWidth,FireProductionPayloadDigestV2& result,
 		double& deviceMS,std::string* error=0,unsigned int qualificationFailTreeAllocation=0u);
 
+	//! Per-end boundary condition for a 1D uniform-grid remap line.
 	enum FireProductionRemapBoundary
 	{
 		FireProductionRemapPeriodic,
@@ -126,6 +135,8 @@ namespace RISE
 			upperBoundary(FireProductionRemapPeriodic),lineSpecificAmbientValues(false) {}
 	};
 
+	//! Output of a 1D batched PPM remap: updated cell averages, time-integrated
+	//! face fluxes (units: value*m), and per-cell shared limiter alpha in [0,1].
 	struct FireProductionRemapResult
 	{
 		std::vector<float> updatedValues;
@@ -141,6 +152,8 @@ namespace RISE
 		const FireProductionRemapRequest& request,
 		std::uint64_t& bytes );
 
+	//! Validates dimensions, 2 GiB working-set cap, boundary pairing, finiteness,
+	//! periodic seam equality, and monotone (unfolded) backtraced face departures.
 	bool ValidateFireProductionRemapRequest(
 		const FireProductionRemapRequest& request,
 		std::string* error=0 );

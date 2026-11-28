@@ -6,7 +6,10 @@
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: January 13, 2002
 //  Tabs: 4
-//  Comments:  
+//  Comments: Thread-safe log fan-out to registered ILogPrinter sinks
+//    (mutexPrinters guards printer registration, Print/PrintEx, and Flush).
+//    AddPrinter() addref()s each sink; RemoveAllPrinters() / ~Log() release
+//    them. memTracker is non-null only when LOG_TRACK_MEMORY is enabled.
 //
 //  License Information: Please see the attached LICENSE.TXT file
 //

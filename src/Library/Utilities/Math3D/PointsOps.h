@@ -5,7 +5,10 @@
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: November 6, 2003
 //  Tabs: 4
-//  Comments:
+//  Comments: Affine operations on Point2/Point3. Transform() uses RISE's
+//    row-vector affine convention ([p 1] * M, no perspective divide).
+//    Note WeightedAverage2(p0, p1, alpha) computes alpha*p0 + (1-alpha)*p1
+//    (alpha=1 selects p0, opposite of standard lerp).
 //
 //  License Information: Please see the attached LICENSE.TXT file
 //
@@ -38,7 +41,7 @@ namespace RISE
 			return Vector2Ops::Magnitude( Vector2Ops::mkVector2( b, a ) );
 		}
 
-		// Matrix transforms a point
+		// Affine point transform [p.x, p.y, 1] * m (translation in bottom row _20/_21).
 		inline Point2 Transform( const Matrix3& m, const Point2& p )
 		{
 			return Point2(
@@ -122,7 +125,7 @@ namespace RISE
 			return Vector3Ops::Magnitude( Vector3Ops::mkVector3( b, a ) );
 		}
 
-		// Matrix transforms a point
+		// Affine point transform [p.x, p.y, p.z, 1] * m (translation in bottom row _30.._32).
 		inline Point3 Transform( const Matrix4& m, const Point3& p )
 		{
 			return Point3(

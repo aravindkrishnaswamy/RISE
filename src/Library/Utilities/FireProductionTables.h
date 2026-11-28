@@ -2,6 +2,11 @@
 //
 //  FireProductionTables.h - record-derived fp32 production fire tables
 //
+//  Compiles certified binary64 NASA-9 thermochemistry and HITEMP gas
+//  opacity records into deterministic fp32 lookup tables packaged with
+//  a canonical CBOR/SHA-256 manifest. Shared by CPU and Metal fire
+//  backends; units are SI (K, J/kg, J/(kg*K), m^2/molecule).
+//
 //  License Information: Please see the attached LICENSE.TXT file
 //
 //////////////////////////////////////////////////////////////////////
@@ -16,6 +21,8 @@
 
 namespace RISE
 {
+	//! Adaptive 1D fp32 lookup table of sensible enthalpy h(T) and Cp(T) for one
+	//! species, with certified worst-case interpolation + quantization bounds.
 	struct FireProductionThermochemistryTable
 	{
 		std::string speciesId;
@@ -29,6 +36,8 @@ namespace RISE
 			maximumCpIntegratedErrorJPerKG(0.0) {}
 	};
 
+	//! Uniformly refined 2D fp32 Planck-mean cross-section table over
+	//! (gasTemperatureK x radiationTemperatureK), row-major in gas temperature.
 	struct FireProductionOpacityTable
 	{
 		std::string speciesId;
@@ -40,6 +49,8 @@ namespace RISE
 		FireProductionOpacityTable() : maximumRelativeError(0.0) {}
 	};
 
+	//! Immutable bundle of compiled fp32 thermochemistry and opacity tables
+	//! bound by a SHA-256 package ID over its canonical CBOR payload.
 	class FireProductionTablePackage
 	{
 		std::string m_tablePackageId;
@@ -56,10 +67,12 @@ namespace RISE
 		}
 		const std::vector<FireProductionOpacityTable>& Opacity() const { return m_opacity; }
 
+		//! Piecewise-linear lookup of sensible enthalpy and Cp within the compiled T range.
 		bool ThermochemistryValues(
 			const char* speciesId, double temperatureK,
 			double& sensibleEnthalpyJPerKG, double& cpJPerKGK,
 			std::string* error=0 ) const;
+		//! Bilinear lookup of Planck-mean absorption cross-section (m^2/molecule).
 		bool PlanckMeanM2PerMolecule(
 			const char* speciesId, double gasTemperatureK,
 			double radiationTemperatureK, double& result,

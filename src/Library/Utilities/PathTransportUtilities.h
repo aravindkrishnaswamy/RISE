@@ -1,40 +1,14 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  PathTransportUtilities.h - Shared transport decision utilities
-//
-//  Pure helper functions used by both the unidirectional path tracer
-//  (PathTracingShaderOp) and the bidirectional path tracer
-//  (BDPTIntegrator).  Each function is a stateless decision or
-//  computation that was previously duplicated across both integrators.
-//
-//  RUSSIAN ROULETTE:
-//    The survival probability is:
-//      rrProb = min(1, currentThroughput / max(prevThroughput, threshold))
-//    where currentThroughput is the throughput magnitude at the current
-//    vertex and prevThroughput is the throughput at the previous vertex.
-//    The threshold prevents runaway compensation on low-energy paths.
-//    This formula is used identically in PT and BDPT (Veach thesis
-//    Section 10.4.1).  The caller is responsible for dividing throughput
-//    by survivalProb after the call.
-//
-//  CONTRIBUTION CLAMPING:
-//    Clamp the maximum channel of an RGB contribution (or absolute
-//    value of a scalar spectral contribution) to a user-specified
-//    limit.  Used for both direct and indirect sample clamping.
-//
-//  PER-TYPE BOUNCE LIMITS:
-//    Enforce independent depth limits for diffuse, glossy, transmission,
-//    and translucent ray types.  Two variants: one for the PT's
-//    RAY_STATE propagation model, one for BDPT's standalone counters.
-//
-//  PATH GUIDING HELPERS (requires RISE_ENABLE_OPENPGL):
-//    One-sample MIS blending between BSDF and guiding distributions,
-//    plus RIS-based candidate selection.  The RIS helpers draw N=2
-//    candidates (one from BSDF, one from the guide), evaluate a
-//    target function at each, and select proportional to RIS weight.
-//    The adaptive alpha scaling that drives how much weight the
-//    guiding distribution receives lives in the rasterizers; see
-//    PixelBasedPelRasterizer.cpp and BDPTRasterizerBase.cpp.
+//  PathTransportUtilities.h - Shared stateless transport utilities
+//  for unidirectional (PT) and bidirectional (BDPT/VCM/MLT) integrators:
+//    - Sampler stream layouts for PT volume walks and HWSS SMS lanes
+//    - Russian roulette (Veach §10.4.1):
+//        rrProb = min(1, currentThroughput / max(prevThroughput, threshold))
+//      Caller divides throughput by survivalProb on survival.
+//    - Contribution clamping (RISEPel max-channel / Scalar abs)
+//    - Per-type bounce limit tracking (diffuse, glossy, transmission, translucent)
+//    - OpenPGL path guiding MIS, partition weights, and RIS helpers
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: April 2, 2026
@@ -90,58 +64,15 @@ namespace RISE
         }
 
 		//////////////////////////////////////////////////////////////////////
-		// PTVolumeWalkStream (DL-247; moved here from PathTracingIntegrator.cpp
-		// by DL-283 so SobolDimensionBudgetTest Test G2 enumerates the real
-		// layout instead of a copy of it).
+		// PTVolumeWalkStream (DL-247 / DL-283; checked by SobolDimensionBudgetTest).
 		//
-		// The sampler stream a PT volumetric random WALK draws scatter event
-		// `scatterIndex` of wavelength lane `lane` from.
-		//
-		// The PT main loops give every vertex its own stream
-		// (`StartStream( 16 + depth )`, and a volume scatter there bumps
-		// `depth`).  The three walks -- IntegrateRayTemplated's camera walk,
-		// IntegrateRayHWSS's camera walk and IntegrateFromHitHWSS's in-loop
-		// walk -- used to run every scatter event, and under HWSS every
-		// wavelength lane, SEQUENTIALLY off one stream.  SobolSampler's
-		// `Get1D` simply increments the dimension, so a walk ran straight
-		// past its stream's `kStreamStride` (32) slots into `16 + depth + 1`,
-		// `+ 2`, ... -- exactly the streams its own surface hand-off
-		// (`IntegrateFromHit*( startDepth = depth + 1 )`) then re-opens.  The
-		// same Sobol dimension then drove two DIFFERENT decisions on ONE path
-		// (a walk's NEE or phase draw and the hand-off's BSDF draw), which is
-		// a correlation inside a single estimator sample and therefore a
-		// bias, not just noise.  With four HWSS lanes at ~6 draws per scatter
-		// the overrun happens on the FIRST scatter: +3.1 % on the absorbing
-		// box of tests/MediumInsideOutsideInvariantTest.cpp (hwss TRUE camera
-		// inside, black floor: 0.2923 vs 0.2820 for per-lane streams, NM and
-		// the camera-outside render).
-		//
-		// Every walk scatter event opens a stream of its own at
-		// `4096 + 1024 * lane + (scatterIndex mod 1024)`, lanes 0..3
-		// (`SampledWavelengths::N`), so [4096, 8192).  A path runs at most
-		// one walk (each ends in a hand-off to the NM/RGB main loop or an
-		// escape) and `scatterIndex` is the path's running volume-bounce
-		// count, so no (lane, scatterIndex) pair repeats within a path.
-		//
-		// CEILINGS (DL-283, previously undocumented):
-		//   - `max_volume_bounce` <= 1024.  Past it, events k and k + 1024 of
-		//     one lane share a stream exactly (the `mod`).
-		//   - PT main-loop depth <= 4080.  `StartStream( 16 + depth )` reaches
-		//     4096 = walk (lane 0, event 0) at depth 4080, and
-		//     `SetMaxPathDepth` is not clamped.  (BDPT's eye walk is a
-		//     different layout -- 16 + d for d < 31, a deep block past
-		//     that, BDPTUtilities::EyeWalkStream (DL-286) -- and never
-		//     shares a sampler with PT's: PT's own loop cap is
-		//     `mMaxPathDepth`, default 128.)
-		// Every stream here is past SobolSampler's 8192-dimension table
-		// (stream 256), so every walk draw is a WRAPPED Get1D: table row
-		// `32 * (event mod 256) + slot`, index Owen-permuted by the wrap
-		// count `16 + 4 * lane + event / 256` (DL-81).  Walk event k
-		// therefore shares its table rows with main-loop stream k -- at a
-		// different index block and value seed (harmless by the 8-spp
-		// per-pixel variance check, DL-81 doc section 9; ParityTest H's
-		// collapse is only a floor).  IndependentSampler ignores streams; PT is never
-		// driven by PSSMLTSampler (MLT runs BDPT).
+		// Dedicated stream per (wavelength lane, volume scatterIndex) in
+		// [4096, 8192): `4096 + 1024 * lane + (scatterIndex % 1024)` for
+		// lanes 0..3. Keeps open-ended volume walks and HWSS lanes from
+		// overrunning the vertex stream (`16 + depth`, stride 32) into the
+		// surface hand-off's streams. Ceilings: `max_volume_bounce <= 1024`
+		// and PT main-loop depth `<= 4080`. Streams lie in SobolSampler's
+		// Owen-permuted wrap region (past stream 256).
 		//////////////////////////////////////////////////////////////////////
 		static const int kPTVolumeWalkStreamBase = 4096;
 		static const unsigned int kPTVolumeWalkLaneStride = 1024;
@@ -153,28 +84,13 @@ namespace RISE
 		}
 
 		//////////////////////////////////////////////////////////////////////
-		// PTSMSLaneStream (sms-ext Phase 4 review; DL-453).
+		// PTSMSLaneStream (DL-453; checked by SobolDimensionBudgetTest).
 		//
-		// The sampler stream one HWSS-lane SMS evaluation (light sample
-		// plus the solver's seeds, extended or legacy) draws from at PT
-		// vertex `depth`, wavelength lane / RGB component `lane` (0..3).
-		// PT's vertex stream (`StartStream( 16 + depth )`) holds NEE, SMS
-		// and the PART 3 scatter in order; an HWSS vertex runs NEE and SMS
-		// once per lane, which overran the stream's kStreamStride slots
-		// into the next vertex's (SobolDimensionBudgetTest Test I).  Every
-		// HWSS lane's SMS evaluation therefore draws from a forked sampler
-		// positioned at this stream (SobolSampler::ForkStream) -- extended
-		// since Phase 4, legacy since DL-453 (one bundle is either legacy
-		// or extended, so the two never share a (depth, lane) stream in
-		// one sample).  The RGB and NM bodies run SMS once per vertex and
-		// keep the vertex stream.  (Named PTExtendedSMSStream until
-		// DL-453.)
-		//
-		// [141312, 145408): past BDPT/VCM's fixed-budget deep-walk block
-		// (which ends at 141266; PT never shares a sampler with BDPT, but
-		// the documented map stays collision-free), wrap counts 552..567.
-		// `depth` is taken mod 1024: PT depths >= 1024 (SetMaxPathDepth is
-		// unclamped, default 128) share streams with depth - 1024.
+		// Dedicated forked stream (`SobolSampler::ForkStream`) per HWSS-lane
+		// SMS evaluation (extended or legacy) at PT `depth` and `lane` 0..3,
+		// preventing per-lane NEE+SMS from overrunning the vertex stream.
+		// Occupies [141312, 145408), past BDPT/VCM's deep-walk block (141266);
+		// `depth` wraps mod 1024. RGB/NM run SMS once per vertex on the vertex stream.
 		//////////////////////////////////////////////////////////////////////
 		static const int kPTSMSLaneStreamBase = 141312;
 		static const unsigned int kPTSMSLanes = 4;
@@ -257,23 +173,9 @@ namespace RISE
 		}
 
 		//////////////////////////////////////////////////////////////////////
-		// Contribution Clamping
-		//
-		// Single function template `ClampContribution<T>` handles both
-		// RGB (RISEPel) and spectral (Scalar) contributions.  Argument
-		// deduction picks the right type — callers write
-		// `ClampContribution(contrib, limit)` without a suffix.
-		//
-		// Type-specific magnitude computed via the `ClampMagnitude`
-		// overload set:
-		//    RISEPel -> ColorMath::MaxValue
-		//    Scalar  -> std::fabs
-		// preserving the exact semantics of the pre-templated
-		// `ClampContribution` / `ClampContributionNM` pair.
+		// Contribution Clamping (RISEPel via MaxValue, Scalar via fabs)
 		//////////////////////////////////////////////////////////////////////
 
-		/// Internal helper: unsigned magnitude for clamping.  Overloaded
-		/// per value type so `ClampContribution<T>` is a single body.
 		inline Scalar ClampMagnitude( const RISEPel& v )
 		{
 			return ColorMath::MaxValue( v );
@@ -460,16 +362,7 @@ namespace RISE
 		//////////////////////////////////////////////////////////////////////
 		// Path Guiding MIS Helpers
 		//
-		// One-sample MIS blending between a BSDF-sampled direction and a
-		// guiding-distribution-sampled direction.  The combined PDF is:
-		//   combinedPdf = alpha * guidePdf + (1 - alpha) * bsdfPdf
-		// where alpha is the probability of sampling from the guide.
-		//
-		// These helpers are intentionally minimal: they compute the PDF
-		// combination and the sampling decision, leaving BSDF/PDF
-		// evaluation at each call site.  This keeps the abstraction thin
-		// enough that Stage 8's RIS-based replacement can swap them out
-		// without large refactoring.
+		// One-sample MIS blend: combinedPdf = alpha * guidePdf + (1-alpha) * bsdfPdf.
 		//////////////////////////////////////////////////////////////////////
 
 		/// Computes the one-sample MIS combined PDF for a guiding blend.
@@ -511,38 +404,19 @@ namespace RISE
 		}
 
 		//////////////////////////////////////////////////////////////////////
-		// DL-67: the ONE partition a guided continuation is built on
-		// (docs/DEBT_LEDGER.md).
+		// Guided continuation partition (DL-67; docs/DEBT_LEDGER.md).
 		//
-		// A guided vertex runs two techniques on the same integral
-		// `integral f(w) cos(w) L(w) dw`: the BSDF technique (Scatter +
-		// RandomlySelect, lobe `I` drawn with realized probability `q_I`)
-		// and the guide technique (a direction drawn from the trained
-		// field `g`).  The choice between them is made with a probability
-		// `a` that does NOT depend on the Scatter realization, and they
-		// are combined through one deterministic partition of directions
-		//
+		// Combines BSDF (Scatter + RandomlySelect, weight kray_I/q_I * W_b/(1-a))
+		// and guide (weight f*cos/g * W_g/a) via the deterministic partition:
 		//   W_g(w) = a g(w) / (a g(w) + (1 - a) p_agg(w)),  W_b = 1 - W_g
-		//
-		// with `p_agg` the material's AGGREGATE `ISPF::Pdf()`.  Each
-		// technique prices its own UNWEIGHTED estimator times its weight
-		// over the probability it fired (`kray_I/q_I * W_b/(1-a)`,
-		// `f cos/g * W_g/a`).  Unbiased for any deterministic W under
-		// four premises (doc §2): (1) the technique choice is
-		// realization-independent; (2) `IBSDF::value` and the SPF's kray
-		// describe ONE function (`polished_material` violated it until
-		// DL-285's PolishedBRDF, 2026-09-28);
-		// (3) 0 < a < 1 wherever the BSDF technique owns mass the guide
-		// cannot reach (delta lobes) -- `GuidingOneSampleProbability`;
-		// (4) the continuation state after the choice does not depend on
-		// which technique chose the direction -- NOT met under a per-type
-		// bounce cap (a guide draw continues as `eRayDiffuse`), a
-		// documented limitation.
+		// with `p_agg = ISPF::Pdf()`. Unbiased when: (1) technique choice `a` is
+		// realization-independent; (2) IBSDF::value matches SPF kray; (3) 0 < a < 1
+		// wherever BSDF owns delta mass (`GuidingOneSampleProbability`); (4) post-
+		// choice continuation state is technique-independent (not met under per-type
+		// bounce caps for mixed-label guide draws).
 		//////////////////////////////////////////////////////////////////////
 
-		/// The guide technique's partition weight `W_g(w)`.  Zero when the
-		/// guide has no density there (the guide cannot produce that
-		/// direction, so the BSDF side must own it).
+		/// Guide partition weight `W_g(w)` (0 when `guidePdf <= 0`).
 		inline Scalar GuidingPartitionGuideWeight(
 			const Scalar mixA,
 			const Scalar guidePdf,
@@ -554,12 +428,8 @@ namespace RISE
 			return den > 0 ? num / den : Scalar( 0 );
 		}
 
-		/// The BSDF technique's partition weight `W_b(w) = 1 - W_g(w)` at a
-		/// direction a NON-DELTA lobe generated.  Returns 1 where the
-		/// aggregate density reads zero there: the aggregate does not
-		/// describe that lobe (DL-103's guard -- no known production
-		/// inhabitant since DL-41 closed), so the lobe is priced
-		/// un-partitioned exactly as it is with guiding off.
+		/// BSDF partition weight `W_b(w) = 1 - W_g(w)` for a non-delta lobe.
+		/// Returns 1 when `aggregatePdf <= 0` so unrepresented lobes stay un-partitioned.
 		inline Scalar GuidingPartitionBsdfWeight(
 			const Scalar mixA,
 			const Scalar guidePdf,
@@ -574,20 +444,9 @@ namespace RISE
 			return den > 0 ? num / den : Scalar( 1 );
 		}
 
-		/// DL-67 round 3 (docs/DEBT_LEDGER.md §2,
-		/// premise 3): the one-sample guide technique's firing probability
-		/// `a` must satisfy 0 < a < 1 wherever the BSDF technique owns mass
-		/// the guide cannot reach.  A DELTA lobe is such mass (the guide
-		/// cannot produce a delta direction, so W_b = 1 there): it is
-		/// priced `kray/q/(1 - a)` and is LOST outright at a = 1 -- a
-		/// smooth `subsurfacescattering_material` read exactly 0 under
-		/// one-sample alpha 1.0, which PT's learned alpha reached for any
-		/// `pathguiding_alpha` above ~0.5 in a saturated cell.  The same
-		/// clamp keeps a configured alpha above 1 from making the mixture
-		/// density `a g + (1-a) p_agg` negative.  The ceiling also bounds
-		/// the delta lobe's amplification `1/(1 - a)` (and hence its
-		/// variance factor) at 10; the guide's own share barely moves
-		/// between 0.9 and 1 because `p_agg` is small wherever it matters.
+		/// Upper clamp on one-sample guide probability `a` (DL-67; docs/DEBT_LEDGER.md):
+		/// keeps `0 < a < 1` so delta lobes (priced `kray/q/(1-a)`) are never dropped
+		/// and their variance amplification `1/(1-a)` stays <= 10x.
 		static const Scalar kGuidingMaxOneSampleProbability = 0.9;
 
 		/// The clamped one-sample firing probability: 0 for a non-positive
@@ -619,25 +478,10 @@ namespace RISE
 		//////////////////////////////////////////////////////////////////////
 		// RIS-Based Path Guiding Helpers
 		//
-		// Resampled Importance Sampling draws N candidates from a mixture
-		// of the BSDF and guiding distributions, evaluates a target
-		// function at each, and selects one proportional to its RIS
-		// weight.  This produces lower variance than one-sample MIS at
-		// modest additional cost.
-		//
-		// The target function follows the Cycles formulation:
-		//   target = avgBsdfEval * ((1-p) / (2*PI) + p * incomingRadPdf)
-		// where p is the guiding sampling probability and
-		// incomingRadPdf is the raw learned radiance PDF from OpenPGL
-		// (before cosine product).
-		//
-		// The proposal PDF for each candidate is:
-		//   proposalPdf = 0.5 * (bsdfPdf + guidePdf)
-		// reflecting equal probability of drawing from either source.
-		//
-		// After selection, the effective PDF for the chosen candidate is:
+		// Draws N candidates from the 50/50 BSDF/guide proposal mixture:
+		//   target       = avgBsdfEval * cosTheta * ((1-p)/(2*PI) + p*incomingRadPdf)
+		//   proposalPdf  = 0.5 * (bsdfPdf + guidePdf)
 		//   effectivePdf = risTarget * (N / sumWeights)
-		// which is the properly normalized RIS estimator.
 		//////////////////////////////////////////////////////////////////////
 
 		/// RIS candidate.  One candidate is drawn from the BSDF, one

@@ -1,3 +1,17 @@
+//////////////////////////////////////////////////////////////////////
+//
+//  SimulationWorker.cpp - Standalone rise-sim worker CLI engine.
+//
+//  Handles JSON/CBOR parameter decoding, job/status/checkpoint sidecars
+//  (v1 monolithic and v2 streamed), advisory GPU locking, cooperative
+//  signal/stop-file shutdown, and bake/resume/status execution.
+//
+//  Tabs: 4
+//
+//  License Information: Please see the attached LICENSE.TXT file
+//
+//////////////////////////////////////////////////////////////////////
+
 #include "pch.h"
 #include "SimulationWorker.h"
 #include "SimulationHost.h"
@@ -106,6 +120,8 @@ bool LoadParameters(const fs::path& file,std::size_t budget,V& parameters,std::s
 
 } // namespace
 
+// Decodes solver parameters from either a JSON object or a canonical CBOR map
+// within the byte budget, rejecting duplicate or non-NFC keys.
 bool ParseSolverParameters(const Bytes& bytes,std::size_t budget,V& parameters,std::string& error)
 {
 	std::size_t first=0;
@@ -387,6 +403,9 @@ std::uint64_t CommittedIndices(const CacheSnapshot& s)
 	return outputs ? s.Entries().size()/outputs : 0;
 }
 
+// Drives ISimulationSolver::Advance to completion or cooperative stop, with a
+// watcher thread polling SIGINT/SIGTERM and rise-sim.stop, periodic status/
+// checkpoint writes, and final cache sealing.
 int Run(ISimulationSolver& solver,const SolverDescription& d,CacheWriter& writer,const fs::path& root,
 	const Job& job,const Options& options,double priorWall,std::ostream& out,std::ostream& err)
 {
@@ -528,6 +547,8 @@ double PriorWall(const fs::path& root)
 
 int Resume(const fs::path& root,const Options& options,const ISceneInputs& inputs,std::ostream& out,std::ostream& err);
 
+// Configures a solver for a fresh or forced bake (auto-resuming a matching
+// partial cache when replace is set), acquires the GPU lock, and enters Run.
 int BakeWith(const std::string& id,const V& parameters,const ISceneInputs& inputs,const fs::path& root,
 	const Options& options,bool replace,std::ostream& out,std::ostream& err)
 {
@@ -590,6 +611,8 @@ int Bake(const std::string& id,const fs::path& parameterFile,const fs::path& roo
 	return BakeWith(id,parameters,EmptySceneInputs(),root,options,false,out,err);
 }
 
+// Reloads rise-sim.job.cbor, verifies solver/parameter/key/epoch reproduction,
+// restores a v1 or v2 checkpoint if present, and continues Run.
 int Resume(const fs::path& root,const Options& options,const ISceneInputs& inputs,std::ostream& out,std::ostream& err)
 {
 	std::string error;
@@ -881,6 +904,8 @@ std::uint64_t GetWord(const std::uint8_t* p, unsigned width)
 }
 }
 
+// Writes a v2 streamed checkpoint: "RISESIMC" + u32(2) + u64(hdrLen) + hdr +
+// streamed payload + u64(payloadLen) + SHA-256 hex + "RISESIME", atomically committed.
 bool WriteStreamedCheckpoint(const fs::path& directory, const std::string& name, const Bytes& header,
 	const std::function<bool(ICheckpointSink&, std::string&)>& write, std::string& error)
 {
@@ -910,6 +935,8 @@ bool IsStreamedCheckpoint(const fs::path& directory, const std::string& name)
 		std::memcmp(prefix, checkpointMagic, 8) == 0 && GetWord(prefix + 8, 4) == 2;
 }
 
+// Reads a v2 streamed checkpoint in two passes: pass 1 validates trailer and
+// SHA-256 before the solver sees any byte; pass 2 re-hashes to detect concurrent edits.
 bool ReadStreamedCheckpoint(const fs::path& directory, const std::string& name, std::size_t budget,
 	Bytes& header, const std::function<bool(ICheckpointSource&, std::string&)>& read, std::string& error)
 {

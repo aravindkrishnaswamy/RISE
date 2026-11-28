@@ -1,3 +1,16 @@
+//////////////////////////////////////////////////////////////////////
+//
+//  FireProductionOwnerConvergenceProbe.h - Diagnostic-only serializer
+//  for captured projected-Heun owner iteration traces (v1 and v2).
+//
+//  Has no production publication API and supplies no convergence
+//  tolerance; inter-iteration deltas are evidence, not error bounds.
+//
+//  Tabs: 4
+//
+//  License Information: Please see the attached LICENSE.TXT file
+//
+//////////////////////////////////////////////////////////////////////
 #ifndef RISE_TEST_FIRE_PRODUCTION_OWNER_CONVERGENCE_PROBE_H
 #define RISE_TEST_FIRE_PRODUCTION_OWNER_CONVERGENCE_PROBE_H
 
@@ -58,6 +71,7 @@ inline bool ConsumedTailDemand(const std::vector<float>& values,const std::size_
 	return true;
 }
 
+// Verifies sealed frozen source timing and rejects requests run with diagnostic flags enabled.
 template<class Request>
 bool MatchesAcceptedEvent(const Request& request,const double beginningTimeS,
 	const double representedStepS,std::string& error)
@@ -136,6 +150,8 @@ bool SameAcceptedOwner(const Owner& accepted,const Owner& diagnostic,std::string
 // The digest function is supplied by the test's existing SHA-256 implementation.
 // The resulting binding authenticates this diagnostic transcript only; it never
 // substitutes for a device authority seal or an accepted checkpoint identity.
+// Serializes v1 column traces across R0/R1/R2 (bootstrap -> Picard -> terminal
+// reprojection), computing per-iteration deltas and a SHA-256 transcript binding.
 template<class Trace,class Digest>
 bool Serialize(const std::array<const std::vector<Trace>*,3>& stages,
 	const Geometry& geometry,const Context& context,const Digest& digest,
@@ -264,6 +280,7 @@ bool Serialize(const std::array<const std::vector<Trace>*,3>& stages,
 // v2 adds producer dynamics without changing the meaning of any v1 operand.
 // All face arrays are shape/finite checked, while published rows cover exactly
 // the same staggered column as v1. No convergence enclosure is inferred here.
+// Verifies R0/R1 terminal nextCandidateMomentum matches the next stage's provisional input byte-for-byte.
 template<class Trace>
 bool ProducerTerminalMatchesNextInput(const std::array<const std::vector<Trace>*,3>& stages,
 	std::string& error)
@@ -284,6 +301,7 @@ bool ProducerTerminalMatchesNextInput(const std::array<const std::vector<Trace>*
 	return true;
 }
 
+// Extends v1 output with R0/R1 next-candidate momentum and R1-alpha R0 advection dynamics.
 template<class Trace,class Digest>
 bool SerializeV2(const std::array<const std::vector<Trace>*,3>& stages,
 	const Geometry& geometry,const Context& context,const Digest& digest,

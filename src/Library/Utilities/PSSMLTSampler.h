@@ -1,42 +1,12 @@
 //////////////////////////////////////////////////////////////////////
 //
 //  PSSMLTSampler.h - Primary Sample Space Metropolis Light Transport
-//    sampler.  Implements the ISampler interface by recording,
-//    replaying, and mutating the random number stream consumed by
-//    BDPT.  This is the heart of PSSMLT (Kelemen et al. 2002).
+//    sampler (Kelemen et al. 2002; Veach 1997).
 //
-//    CONTEXT AND APPROACH:
-//    Every BDPT path is fully determined by the sequence of random
-//    numbers consumed during subpath generation and connection.
-//    Instead of drawing fresh i.i.d. samples each time (as
-//    IndependentSampler does), PSSMLTSampler maintains a "primary
-//    sample vector" X = {x_0, x_1, ...} in [0,1) and produces
-//    new candidate paths by mutating this vector:
-//
-//      - Large step: replace all consumed samples with fresh
-//        uniform randoms.  This ensures ergodicity -- the chain
-//        can jump to any path in the space.
-//      - Small step: perturb each consumed sample by a small
-//        amount using an exponential distribution (Kelemen's
-//        log-uniform trick), wrapped to [0,1).  This explores
-//        the neighborhood of the current path for correlated
-//        improvements.
-//
-//    After BDPT evaluates the candidate path, the MLTRasterizer
-//    calls Accept() or Reject().  On rejection, all proposed
-//    mutations are reverted from backups.
-//
-//    The vector grows lazily: if BDPT requests sample index i
-//    and i >= X.size(), a fresh uniform value is appended.  This
-//    means PSSMLTSampler automatically adapts to paths of any
-//    length without pre-allocation.
-//
-//    REFERENCES:
-//    - Kelemen, C., Szirmay-Kalos, L., Antal, G., Csonka, F.
-//      "A Simple and Robust Mutation Strategy for the Metropolis
-//      Light Transport Algorithm." Computer Graphics Forum, 2002.
-//    - Veach, E. "Robust Monte Carlo Methods for Light Transport
-//      Simulation." PhD Thesis, Stanford University, 1997.
+//  Implements ISampler by maintaining a lazily-grown primary sample
+//  vector in [0,1) with large-step (fresh uniform) and small-step
+//  (symmetric Kelemen log-uniform) mutations and Accept()/Reject()
+//  rollback for Metropolis-Hastings path-space exploration.
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: March 20, 2026
@@ -63,20 +33,9 @@ namespace RISE
 {
 	namespace Implementation
 	{
-		//////////////////////////////////////////////////////////////
-		// PSSMLTSamplerTestHooks (DL-468) -- the PSSMLT twin of
-		// SobolSamplerTestHooks::ValueSalt.  MLT is otherwise a fully
-		// deterministic function of the scene and its parameters: the
-		// bootstrap samplers are seeded by their index, the chains by
-		// (bootstrap index, chain index), so repeated renders return the
-		// IDENTICAL image and the run-to-run spread is zero.  A nonzero
-		// salt is mixed into every PSSMLT seed (sampler construction,
-		// the chain proposal re-seed, the chain acceptance RNG and the
-		// bootstrap-CDF selection RNG), making each salt an independent
-		// MLT replicate.  Zero (the default, and every production
-		// render) leaves every seed bit-identical.  Set it between
-		// renders, never during one.
-		//////////////////////////////////////////////////////////////
+		// Test-only seed salt mixed into every PSSMLT RNG seed for independent
+		// MLT replicates.  Zero (default) preserves bit-identical determinism;
+		// set only between renders.
 		struct PSSMLTSamplerTestHooks
 		{
 			static std::atomic<uint32_t>& SeedSalt()
@@ -109,16 +68,9 @@ namespace RISE
 		{
 		protected:
 
-			/// A single element of the primary sample vector.
-			/// Tracks the current accepted value, a backup for rejection,
-			/// and the iteration at which it was last modified (for lazy
-			/// catch-up of mutations across iterations).
-			///
-			/// The iteration stamps are 64-bit, matching the 64-bit
-			/// per-chain mutation budget (MLTMutationSchedule::perChain):
-			/// a chain may run more than UINT_MAX iterations, and the lazy
-			/// catch-up below compares and subtracts these stamps, which a
-			/// 32-bit counter would wrap mid-chain (2026-11-14).
+			/// Single primary sample slot with rollback backup and 64-bit
+			/// iteration stamps (matching MLTMutationSchedule::perChain so
+			/// lazy catch-up never wraps).
 			struct PrimarySample
 			{
 				Scalar		value;				///< Current accepted value in [0,1)
@@ -135,118 +87,19 @@ namespace RISE
 				}
 			};
 
-			// STORAGE (DL-08 follow-up, 2026-09-17 -- debt 29 review P1):
-			//
-			// Stream multiplexing gives each stream its own lane so that
-			// mutations to one part of the path don't disturb others.
-			// BDPTIntegrator uses streams 0-47 internally (light
-			// source=0, light bounces 1.., eye bounces 16.., SMS
-			// reserved 31-46, (s,t) strategy select=47) -- see
-			// BDPTCameraUtilities::kBdptShallowWalkStreamEndUnderPSSMLT
-			// (CameraUtilities.h; deep walk iterations use lanes
-			// 2049..4050 since DL-286) for the derived bound on how high
-			// the shallow eye-walk bounce stream can reach (46).  The
-			// MLT rasterizers reserve
-			// BDPTCameraUtilities::kPSSMLTFilmLensApertureStream (2048)
-			// for the film/lens/aperture block.
-			//
-			// The original design multiplexed EVERY stream into one
-			// flat vector via `idx = streamIndex + kNumStreams *
-			// sampleIndex` (a base-kNumStreams positional encoding).
-			// That's collision-free by construction, but its lazy-grow
-			// loop (`while (idx >= X.size()) X.push_back(...)`)
-			// materialises every slot up to idx -- cost proportional to
-			// `streamIndex`, not to how many samples were actually
-			// drawn.  The DL-08 collision fix (`d7ebd453`) moved the
-			// reserved stream to 2048 and kNumStreams to 4096 to clear
-			// BDPT's own reachable ceiling, which made that cost
-			// catastrophic: the film/lens/aperture block's first 6
-			// draws alone (stream 2048, sample 0..5) require
-			// `idx = 2048 + 4096*5 = 22528`, i.e. 22529 materialised
-			// `PrimarySample` slots (~528 KB at the 24-byte slots of that time; see
-			// docs/DEBT_LEDGER.md for the exact byte count
-			// and the measured bootstrap-time regression, ~5x on
-			// `scenes/Tests/Legacy/cornellbox_mlt_fast.RISEscene`) on
-			// EVERY fresh sampler, vs 294 slots (~6.9 KB) before the
-			// DL-08 collision fix.  The
-			// analogy drawn at the time -- "this is like SobolSampler's
-			// `kNumDimensions` table, just a bigger constant" -- does
-			// NOT hold: Sobol's direction-number table
-			// (`SobolDirectionNumbers.cpp`) is ONE GLOBAL ~1 MiB array
-			// shared by every sampler instance and built once per
-			// process; `X` here is PER PSSMLTSampler INSTANCE and its
-			// materialised size scales with `reservedStreamIndex *
-			// kNumStreams * samplesDrawn` -- raising kNumStreams is not
-			// "a bigger table", it MULTIPLIES the per-draw cost of every
-			// stream, including the ordinary ones at 0-47.
-			//
-			// Fix: two-tier storage, not one flat vector.
-			//
-			//  - `X`: the ORIGINAL flat vector, but its row width is
-			//    pinned to `kLegacyNumStreams` (49) FOREVER, matching
-			//    the pre-DL-08 layout exactly -- used only while
-			//    `streamIndex < kLegacyNumStreams`.  A chain that only
-			//    ever touches streams 0-48 (every shallow/ordinary BDPT
-			//    walk) reproduces the base commit's draws bit-for-bit,
-			//    because it is running the identical formula on the
-			//    identical row width.
-			//  - `XExtra`: a small (stream, vector) association list for
-			//    `streamIndex >= kLegacyNumStreams` (the MLT reserved
-			//    stream at 2048, and any BDPT eye-walk depth deep enough
-			//    to pass 48), searched linearly and grown by
-			//    `FindOrCreateExtraStream()`.  In production this list
-			//    has exactly ONE entry per sampler instance for almost
-			//    every render (the MLT reserved stream; BDPT-under-MLT
-			//    scenes rarely reach eye/light depth 33+), so a linear
-			//    scan is not just adequate but faster in practice than a
-			//    hash map: `std::unordered_map` was tried first and
-			//    measured ~2x slower bootstrap wall-clock than even the
-			//    pre-DL-08 base commit on
-			//    `scenes/Tests/Legacy/cornellbox_mlt_fast.RISEscene`
-			//    (100,000 bootstrap samples, each constructing and
-			//    destroying its OWN `PSSMLTSampler` --
-			//    `MLTRasterizer.cpp`'s bootstrap loop -- so a hash
-			//    table's bucket-array allocation on first insert is paid
-			//    100,000 times over) -- see
-			//    docs/DEBT_LEDGER.md for the measured
-			//    numbers.  Touching stream 2048 for 6 samples still
-			//    costs exactly 6 `PrimarySample` slots -- independent of
-			//    the stream's numeric value -- and there is still no
-			//    multiplicative encoding here, so no two distinct
-			//    streams can ever alias in this tier regardless of how
-			//    large a stream number some future caller picks --
-			//    `kPSSMLTFilmLensApertureStream`'s specific value (2048)
-			//    no longer has to be load-bearing for collision safety,
-			//    though it is kept where DL-08 placed it (outside every
-			//    walk lane -- `kBdptShallowWalkStreamEndUnderPSSMLT` below
-			//    it, DL-286's deep walk lanes 2049..4050 above it) for
-			//    clarity and defense in depth.  A deep MLT walk (DL-286)
-			//    puts up to one extra-tier lane per iteration past the
-			//    shallow ones here -- a few dozen on a dense-fog chain, as
-			//    before DL-286 (the eye walk's lanes >= 49 were already
-			//    extra-tier then).  If a future consumer ever reserves
-			//    MANY distinct extra streams per instance, revisit this
-			//    (a small sorted vector with binary search, or a map,
-			//    would beat linear scan past a few dozen entries) --
-			//    not a concern for the two known consumers today.
-			//
-			// `modifiedIndices` (below) is a `ModifiedLane` per touched
-			// sample, tagging which tier and which storage index/key
-			// owns it, so `Reject()` can find the sample back without
-			// re-deriving stream/sampleIndex arithmetic.
-			//
-			// See docs/DEBT_LEDGER.md for the measured
-			// before/after slot counts and bootstrap timings, and
-			// tests/PSSMLTStreamAliasingTest.cpp's memory-cost and
-			// determinism rows for the red-proof.
+			// Two-tier stream storage (docs/DEBT_LEDGER.md):
+			//  - X: flat vector with fixed row width kLegacyNumStreams (49) for
+			//    streams 0..48 (idx = streamIndex + 49 * sampleIndex), keeping
+			//    shallow BDPT walks bit-identical without multiplicative blow-up.
+			//  - XExtra: linear (stream, vector) list for streamIndex >= 49
+			//    (MLT film/lens 2048, alpha 3072, deep walk lanes 2049..4050).
+			//    Collision-free with O(drawn) memory; linear scan beats hash maps
+			//    for the tiny per-instance stream count (revisit if >~32 streams).
+			//  - modifiedIndices tags (tier, location) for O(k) Reject() rollback.
 			std::vector<PrimarySample>		X;					///< Legacy flat vector, streamIndex < kLegacyNumStreams only
 			std::vector<std::pair<int, std::vector<PrimarySample> > > XExtra; ///< (stream, vector) list for streamIndex >= kLegacyNumStreams, searched linearly
 
-			/// Finds (creating if necessary) the per-stream vector for
-			/// `stream` in `XExtra`.  Linear scan by design -- see the
-			/// `XExtra` comment above for why this beats a hash map for
-			/// the tiny number of distinct extra streams any one
-			/// instance actually touches.
+			/// Finds or creates the per-stream vector in `XExtra` (linear scan).
 			std::vector<PrimarySample>& FindOrCreateExtraStream( int stream )
 			{
 				for( size_t i = 0; i < XExtra.size(); i++ )
@@ -274,31 +127,12 @@ namespace RISE
 			unsigned int					sampleIndex;		///< Current consumption position within current stream
 			std::uint64_t					currentIteration;	///< Global mutation counter (64-bit: see PrimarySample)
 
-			// kLegacyNumStreams is the row width of the ORIGINAL flat
-			// vector `X` -- fixed at 49 forever (BDPT's streams 0-47 plus
-			// the historical single reserved slot at 48), independent of
-			// kNumStreams below.  This is what makes shallow chains
-			// (streamIndex always < 49) bit-identical to the pre-DL-08
-			// base commit: same formula, same row width, unchanged.
+			// Fixed row width of flat vector `X` (streams 0..48).
 			static const int				kLegacyNumStreams = 49;
 
-			// kNumStreams / kDefaultNumStreams is now a SANITY BOUND
-			// only, not a collision-avoidance requirement -- with the
-			// two-tier storage above, a stream index can never alias
-			// another one, at any magnitude, because streams >=
-			// kLegacyNumStreams route through XExtra, searched by the
-			// literal stream number.  The bound still exists to catch
-			// programming errors (a negative or absurdly large
-			// streamIndex, e.g. from an uninitialized or overflowed
-			// depth counter) loudly rather than silently building an
-			// unbounded XExtra entry.  See Get1D()'s runtime check
-			// (NOT a debug-only assert -- see its comment for why).
-			//
-			// kNumStreams was historically a static const; it became a
-			// regular member so a future subclass can reserve additional
-			// lanes above this default via the protected constructor
-			// below.  When constructed via the public ctor, kNumStreams
-			// = kDefaultNumStreams exactly as before.
+			// Per-instance runtime sanity bound on streamIndex (not a collision
+			// bound — XExtra keys by literal stream ID).  Subclasses may raise
+			// this via the protected constructor.
 			static const int				kDefaultNumStreams = 4096;
 			int								kNumStreams;		///< Sanity bound on streamIndex (per-instance)
 			int								streamIndex;		///< Current active stream
@@ -364,12 +198,8 @@ namespace RISE
 			/// Returns a 2D uniform random sample in [0,1)^2.
 			Point2 Get2D();
 
-			/// Switch to a new sample stream and reset the within-stream
-			/// sample index.  Streams 0-47 are used by BDPTIntegrator;
-			/// stream `BDPTCameraUtilities::kPSSMLTFilmLensApertureStream`
-			/// (2048, DL-08) is reserved for the MLT film/lens/aperture
-			/// block -- see `kDefaultNumStreams`'s comment above for why
-			/// it is no longer the literal 48.
+			/// Switch to a new sample stream and reset sampleIndex.
+			/// BDPT uses 0..47; MLT film/lens uses 2048; alpha uses 3072.
             Scalar GetAlpha1D();
 
 			void StartStream( int streamIndex );
@@ -398,14 +228,9 @@ namespace RISE
 			/// \return The current iteration number.
 			std::uint64_t GetCurrentIteration() const { return currentIteration; }
 
-			/// Re-seed the internal mutation RNG without disturbing the
-			/// primary sample vector or iteration counters.  Used by
-			/// MLTRasterizer::InitChain to make every chain start at
-			/// the bootstrap-selected path (so the bootstrap CDF's
-			/// importance sampling is preserved) but then diverge per
-			/// chain via different mutation deltas.  Called between
-			/// the chain's first Accept() and any subsequent
-			/// StartIteration().
+			/// Re-seed mutation RNG without disturbing X or iteration counters.
+			/// Called by MLTRasterizer::InitChain after the first Accept() so
+			/// chains diverge from the same bootstrap path.
 			void ReSeedRNG( const unsigned int newSeed )
 			{
 				rng = RandomNumberGenerator( PSSMLTSamplerTestHooks::Salted( newSeed ) );

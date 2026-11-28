@@ -1,5 +1,15 @@
 //////////////////////////////////////////////////////////////////////
-// FireCase.cpp - Canonical fire-case-v1 record and r54 derivations
+//
+//  FireCase.cpp - Canonical fire-case-v1 record and r54 derivations
+//
+//  Implements deterministic methane fire-case derivation (Heskestad
+//  flame height, D* cell sizing, burner perturbation pattern, pilot
+//  annulus & temperature ramp), r244/r246 domain studies, r270 floor
+//  radiation, r271 inert-plume diagnostics, CFL timestep selection,
+//  and byte-exact CBOR64 envelope validation.
+//
+//  License Information: Please see the attached LICENSE.TXT file
+//
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
@@ -25,6 +35,9 @@ using RISE::RISECBOR64::Value;
 
 namespace
 {
+	// ------------------------------------------------------------------
+	// Basic CBOR/validation helpers and r244/r246 doubled-domain baseline
+	// ------------------------------------------------------------------
 	bool Fail(std::string& error,const char* text) { error=text; return false; }
 	bool FinitePositive(const double x) { return std::isfinite(x) && x>0.0; }
 	std::uint64_t CeilCells(const double extent,const double dx)
@@ -53,6 +66,8 @@ namespace
 		for(const char c:value) if(!((c>='0'&&c<='9')||(c>='a'&&c<='f'))) return false;
 		return true;
 	}
+	// Recovers the canonical un-doubled tier-6 capstone grid so r244/r246 studies
+	// can translate the exact source pattern and pilot mask into the doubled lattice.
 	bool LateralStudyBaseline(const RISE::FireCase::AuthoredV1& authored,
 		const RISE::FireCase::DerivedV1& derived,RISE::FireCase::DerivedV1& baseline,
 		std::string& error)
@@ -84,6 +99,9 @@ namespace
 	}
 }
 
+// ==================================================================
+// Source perturbation pattern and pilot annulus geometry
+// ==================================================================
 std::uint64_t RISE::FireCase::SplitMix64(std::uint64_t value)
 {
 	value += UINT64_C(0x9E3779B97F4A7C15);
@@ -123,6 +141,9 @@ namespace
 	}
 }
 
+// Selects cell centers within the equivalent burner circle, applies zero-mean
+// +-1% SplitMix64 variation, and nudges the last active cell via nextafter so
+// the discrete sum matches sourceAreaM2 / dx^2 exactly.
 bool RISE::FireCase::BuildSourcePattern(const AuthoredV1& authored,
 	const DerivedV1& derived,std::vector<double>& result,std::string& error)
 {
@@ -222,6 +243,9 @@ bool RISE::FireCase::BuildPilotMask(const AuthoredV1& authored,
 	return active>0 || Fail(error,"fire case pilot annulus contains no cell centres");
 }
 
+// ==================================================================
+// Inert-plume diagnostics, pilot temperature ramp, and CFL timestep
+// ==================================================================
 double RISE::FireCase::ScheduleFlowThroughTimeS(const DerivedV1& derived)
 {
 	return derived.matchedScheduleFlowThroughTimeS==0.0 ?
@@ -338,6 +362,8 @@ float RISE::FireCase::ProductionScalarVremanOverride()
 	return coefficient;
 }
 
+// Minimum of advective CFL (0.5 default), buoyant gravity-wave, diffusive
+// (dx^2 / 8D), and 1.1x growth-rate caps; returns 0 on invalid/unconstrained inputs.
 double RISE::FireCase::SelectTimeStepS(const double dx,const double speed,
 	const double reducedGravity,const double diffusivity,const double previous)
 {
@@ -359,6 +385,12 @@ double RISE::FireCase::SelectTimeStepS(const double dx,const double speed,
 	return selected>0.0&&!std::isnan(selected)?selected:0.0;
 }
 
+// ==================================================================
+// Canonical fire-case-v1 builder and envelope validators
+// ==================================================================
+// Validates authored inputs (including envelope knot spacing >= one puffing
+// period sqrt(D)/1.5 and dx <= D/4), computes Heskestad L_f, D*, grid dims,
+// discard/pre-roll window, and emits canonical CBOR64 payload + envelope.
 bool RISE::FireCase::BuildMethaneV1(const AuthoredV1& a,
 	const FireSimulationMethaneRecord& fuel,const std::vector<std::string>& recordIds,
 	RecordV1& output,std::string& error)
@@ -593,6 +625,8 @@ bool RISE::FireCase::ValidateEnvelopeV1(const RISECBOR64::Bytes& bytes,
 	output.envelopeBytes=bytes; output.caseRecordId=id->GetText(); return true;
 }
 
+// Parses authored fields and referenced record IDs, re-derives the full record
+// via BuildMethaneV1, and requires byte-identical canonical envelope reproduction.
 bool RISE::FireCase::ValidateMethaneEnvelopeV1(const RISECBOR64::Bytes& bytes,
 	const FireSimulationMethaneRecord& fuel,RecordV1& output,std::string& error)
 {

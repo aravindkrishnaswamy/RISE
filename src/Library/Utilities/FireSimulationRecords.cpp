@@ -2,6 +2,11 @@
 //
 //  FireSimulationRecords.cpp - Phase-C open physical-property record subsets
 //
+//  Implements canonical CBOR64 record loading, exact arbitrary-precision
+//  rational verification of §3.7 nullspace/stoichiometry certificates,
+//  NASA-9 thermochemistry and r60 accepted-state inversion, Wilke/WMS
+//  and Vreman transport laws, and C1 bicubic HITEMP gas opacity lookup.
+//
 //  License Information: Please see the attached LICENSE.TXT file
 //
 //////////////////////////////////////////////////////////////////////
@@ -28,6 +33,12 @@ namespace RISE
 		const char* kPentacosaneSpeciesSHA256 =
 			"0cdb2a537e18c2db27994c2a8889badf32dae32cf352f973de35c68c2bff7ded";
 
+		// ------------------------------------------------------------------
+		// Exact arbitrary-precision rational arithmetic for §3.7 proofs
+		// ------------------------------------------------------------------
+		// Base-10^9 unsigned/signed/rational arithmetic and exact IEEE-754 binary64
+		// dyadic conversion used to verify rank factorizations, projectors,
+		// conditioning bounds, and stoichiometry without floating-point rounding.
 		class ExactUnsigned
 		{
 			static const std::uint32_t kBase = 1000000000u;
@@ -633,6 +644,13 @@ namespace RISE
 				Fail(error,"fire-simulation binary64 matrix digest mismatch");
 		}
 
+		// ------------------------------------------------------------------
+		// §3.7 nullspace certificate verifier (exact rational + fp64 envelopes)
+		// ------------------------------------------------------------------
+		// Replays exact rank factorization (L*R = A, nonzero pivot minor),
+		// nullspace basis (A*B = 0, full-rank minor), symmetric idempotent exact
+		// projector, outward Gram-determinant sigma_min bound, and exact-dyadic
+		// fp64 residual envelopes (128, 128, 1024 eps64) on the orthonormal basis.
 		bool ValidateNullspaceCertificate(
 			const RISECBOR64::Value& encoded,
 			const char* expectedKind,
@@ -917,6 +935,9 @@ namespace RISE
 			return true;
 		}
 
+		// ------------------------------------------------------------------
+		// CBOR readers, provenance/uncertainty, and thermochemistry certificates
+		// ------------------------------------------------------------------
 		bool ReadText(
 			const RISECBOR64::Value& map,
 			const char* key,
@@ -1252,6 +1273,8 @@ namespace RISE
 				Fail(error,"fire-simulation CH2 increment residual bound is false");
 		}
 
+		// Verifies the C25H52 n-pentacosane assumption_bound_certificate built by
+		// least-squares CH2-increment extrapolation from NASA CEA C4-C8 alkanes.
 		bool ValidatePentacosaneCertificate(
 			const RISECBOR64::Value& species,
 			std::string* error
@@ -1415,6 +1438,10 @@ namespace RISE
 				Fail(error,"preview-only fire-simulation record has no predictive blocker");
 		}
 
+		// ------------------------------------------------------------------
+		// NASA-9 polynomials, PCHIP transport curves, and bicubic opacity math
+		// ------------------------------------------------------------------
+		// Evaluates NASA-9 cp/R = a0*T^-2 + a1*T^-1 + a2 + a3*T + ... + a6*T^4.
 		double CpOverR( const double* a, const double temperatureK )
 		{
 			return a[0]/(temperatureK*temperatureK)+a[1]/temperatureK+a[2]+
@@ -1436,6 +1463,9 @@ namespace RISE
 				4.0*std::fabs(a[6])*maximumK*maximumK*maximumK;
 		}
 
+		// Computes a conservative lower bound on cp(T) (J/(kg*K)) over a segment by
+		// partitioning into <= 65536 subintervals, subtracting 0.5*h*max|d(cp/R)/dT|,
+		// and stepping one ULP downward.
 		double CertifiedCpLower(
 			const FireThermochemistrySegment& segment,
 			const double molecularWeight
@@ -1527,6 +1557,8 @@ namespace RISE
 			return slopes;
 		}
 
+		// Loads and verifies a PCHIP viscosity/conductivity curve (column 1 or 2)
+		// including slope agreement (within 64*eps) and quadratic derivative enclosures.
 		bool LoadCurve(
 			const RISECBOR64::Value& model,
 			const std::size_t valueColumn,
@@ -1633,6 +1665,8 @@ namespace RISE
 			return k <= n && n <= 4 ? values[n][k] : 0.0;
 		}
 
+		// Transforms 2x2 corner (f, f_Tg, f_Tr, f_TgTr) values into a 4x4 bicubic
+		// Hermite monomial coefficient matrix over normalized [0, 1]^2 cell coords.
 		void BicubicCoefficients(
 			const double corners[2][2][4],
 			const double gasSpacing,
@@ -1663,6 +1697,8 @@ namespace RISE
 			}
 		}
 
+		// Converts the chosen partial derivative polynomial into the Bernstein basis
+		// so its control points give an outward-rounded [min, max] enclosure over [0,1]^2.
 		void BicubicDerivativeBounds(
 			const double coefficients[4][4],
 			const double spacing,
@@ -1721,6 +1757,9 @@ namespace RISE
 		}
 	}
 
+	// ==================================================================
+	// FireCertifiedNullspace: orthogonal projection N * (N^T * input)
+	// ==================================================================
 	bool FireCertifiedNullspace::Project(
 		const std::vector<double>& input,
 		std::vector<double>& output,
@@ -1894,6 +1933,9 @@ namespace RISE
 		}
 	}
 
+	// ==================================================================
+	// FireSimulationMethaneRecord: r51 methane substrate and r60 gate
+	// ==================================================================
 	FireSimulationMethaneRecord::FireSimulationMethaneRecord() :
 		m_valid(false), m_temperatureMinK(0.0), m_temperatureMaxK(0.0),
 		m_referenceTemperatureK(0.0), m_pressurePa(0.0),
@@ -1906,6 +1948,9 @@ namespace RISE
 	{
 	}
 
+	// Validates header, ignition taxonomy, 7 NASA-9 species, exact-rational
+	// element matrix/boundary states/reaction & soot-oxidation balances, physical
+	// kernel directions, r60 feasibility envelope, and both §3.7 nullspace proofs.
 	bool FireSimulationMethaneRecord::LoadSemanticRecord(
 		const RISECBOR64::Value& record,
 		std::string* error
@@ -2805,6 +2850,9 @@ namespace RISE
 		result=0.5*(lower+upper);return true;
 	}
 
+	// Enforces the single r60 admissibility gate over [rhoTotalZ, 7 species, Hs]:
+	// non-negative mass/species, mass closure, enthalpy bracket, and certified
+	// affine C/H/O constraint rows within kappa * eps * scale.
 	bool FireSimulationMethaneRecord::AcceptedConservativeStateAdmissibleByComponentOrder(
 		const double* state,const std::size_t count,
 		const double* lowerEnthalpy,const double* upperEnthalpy,
@@ -2888,6 +2936,8 @@ namespace RISE
 			m_temperatureMinK,m_temperatureMaxK,producerPrecision,temperature,result,error);
 	}
 
+	// Exact linearized volume-expansion divergence tangent (1/s) from a physical
+	// conservative state rate dQ/dt using positive-part gas properties and cp.
 	bool FireSimulationMethaneRecord::DivergenceFromDiscreteRateByComponentOrder(
 		const double* state,const std::size_t stateCount,const double* rate,
 		const std::size_t rateCount,const double temperatureK,
@@ -2944,6 +2994,9 @@ namespace RISE
 		result=candidate;return true;
 	}
 
+	// Certifies positive mixture heat capacity over [lowerTemperatureK, upperTemperatureK],
+	// clamps boundary energies within the r60 roundoff tolerance, otherwise runs
+	// 96-iteration bisection on signed-density sensible energy and computes p/P0.
 	bool FireSimulationMethaneRecord::InvertAcceptedConservativeStateByComponentOrder(
 		const double* state,const std::size_t count,const double lowerTemperatureK,
 		const double upperTemperatureK,const FireStateProducerPrecision producerPrecision,
@@ -3120,6 +3173,9 @@ namespace RISE
 			Fail(error,"methane referenced soot density is invalid");
 	}
 
+	// ==================================================================
+	// FireSimulationSolverFixtureRecords: pinned synthetic RED fixtures
+	// ==================================================================
 	const RISECBOR64::Bytes& FireSimulationSolverFixtureRecords::NearRankDeficientV1()
 	{
 		static const RISECBOR64::Bytes bytes(kFireSimSolverNearRankDeficientFixtureV1,
@@ -3180,6 +3236,9 @@ namespace RISE
 		return true;
 	}
 
+	// ==================================================================
+	// FireSimulationThermochemistryRecord: open NASA-9 species subset
+	// ==================================================================
 	FireSimulationThermochemistryRecord::FireSimulationThermochemistryRecord() :
 		m_valid(false), m_temperatureMinK(0.0), m_temperatureMaxK(0.0),
 		m_referenceTemperatureK(0.0)
@@ -3515,6 +3574,9 @@ namespace RISE
 		return true;
 	}
 
+	// ==================================================================
+	// FireSimulationTransportRecord: Wilke/WMS mixing and Vreman SGS
+	// ==================================================================
 	FireSimulationTransportRecord::FireSimulationTransportRecord() :
 		m_valid(false), m_temperatureMinK(0.0), m_temperatureMaxK(0.0),
 		m_turbulentPrandtl(0.0), m_turbulentSchmidt(0.0), m_vremanCv(0.0),
@@ -4000,6 +4062,9 @@ namespace RISE
 			Fail(error,"fire-simulation effective transport overflowed");
 	}
 
+	// ==================================================================
+	// FireSimulationGasOpacityRecord: HITEMP CO2/H2O bicubic Planck mean
+	// ==================================================================
 	FireSimulationGasOpacityRecord::FireSimulationGasOpacityRecord() :
 		m_valid(false), m_temperatureMinK(0.0), m_temperatureMaxK(0.0)
 	{

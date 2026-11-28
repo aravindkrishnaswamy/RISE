@@ -1,3 +1,14 @@
+//////////////////////////////////////////////////////////////////////
+//
+//  SimulationField.cpp - Canonical binary codec for "field.v1" payloads
+//
+//  Wire layout: "RISEFELD" | u32 version(1) | 32B domain | u32 count |
+//               u16 channels | (u16 name, u16 units, u8 comps, f32[] values)*
+//  Tabs: 4
+//  License Information: Please see the attached LICENSE.TXT file
+//
+//////////////////////////////////////////////////////////////////////
+
 #include "pch.h"
 #include "SimulationField.h"
 #include "../Utilities/RISECBOR64.h"
@@ -26,6 +37,7 @@ std::size_t Product(std::size_t a, std::size_t b)
 	return a*b;
 }
 
+// Tracks remaining memory budget across input, output, candidate, and NFC scratch.
 struct Budget {
 	std::size_t left;
 	void Take(std::size_t bytes) {
@@ -61,6 +73,8 @@ bool HexDigest(const std::string& d)
 	});
 }
 
+// Validates canonical invariants: 64-hex domain, sorted unique NFC channel
+// names, 1..16 components, matching sample counts, and finite binary32 bits.
 void CheckFrame(const FieldFrame& f, Budget& scratch)
 {
 	Require(HexDigest(f.domain), "field domain must be 64 lower-case hex digits");
@@ -76,6 +90,7 @@ void CheckFrame(const FieldFrame& f, Budget& scratch)
 	}
 }
 
+// Two-pass little-endian writer: null `data` measures wire size before allocation.
 struct Sink {
 	Bytes* data;
 	std::size_t count=0;
@@ -120,6 +135,7 @@ std::string Hex(const std::uint8_t* p)
 	return s;
 }
 
+// Little-endian binary reader that enforces remaining-byte and memory budgets.
 struct Source {
 	const Bytes& bytes;
 	std::size_t pos=0;
@@ -161,6 +177,9 @@ void ReadHeader(Source& src,std::string& domain,std::uint32_t& count)
 }
 }
 
+// ------------------------------------------------------------------ public API
+
+// Encodes canonically into a temporary buffer and swaps `out` only on success.
 bool RISE::Simulation::EncodeField(const FieldFrame& frame,std::size_t budget,Bytes& out,std::string& error)
 {
 	try {
@@ -181,6 +200,7 @@ bool RISE::Simulation::EncodeField(const FieldFrame& frame,std::size_t budget,By
 	} catch (const std::exception& e) { error=e.what(); return false; }
 }
 
+// Decodes and validates a "field.v1" payload, leaving `out` unchanged on failure.
 bool RISE::Simulation::DecodeField(const Bytes& bytes,std::size_t budget,FieldFrame& out,std::string& error)
 {
 	try {
@@ -213,6 +233,7 @@ bool RISE::Simulation::DecodeField(const Bytes& bytes,std::size_t budget,FieldFr
 	} catch (const std::exception& e) { error=e.what(); return false; }
 }
 
+// Reads only the header (domain digest and element count) without decoding channels.
 bool RISE::Simulation::PeekFieldDomain(const Bytes& bytes,std::string& domain,std::uint32_t& count,std::string& error)
 {
 	try {

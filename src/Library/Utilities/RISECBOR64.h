@@ -5,7 +5,10 @@
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: August 6, 2026
 //  Tabs: 4
-//  Comments:
+//  Comments: Deterministic CBOR subset (no tags, no indefinite lengths,
+//    shortest-form big-endian ints, finite binary64 floats with -0.0 -> +0.0,
+//    Unicode 17 UTF-8 NFC text/keys, UTF-8 byte-sorted unique map keys,
+//    max nesting depth 64) plus SHA-256 content-addressing helpers.
 //
 //  License Information: Please see the attached LICENSE.TXT file
 //
@@ -25,6 +28,8 @@ namespace RISE
 {
 	namespace RISECBOR64
 	{
+		// Tagged union for one RISE-CBOR64-v1 data item.
+		// NegativeInteger stores CBOR major-type-1 argument `n`, representing (-1 - n).
 		class Value
 		{
 		public:
@@ -80,6 +85,7 @@ namespace RISE
 			const Values& GetArray() const { return m_array; }
 			const Members& GetMap() const { return m_map; }
 
+			// Linear O(N) lookup over Map members; returns nullptr for non-Map values.
 			const Value* Find( const std::string& key ) const;
 		};
 

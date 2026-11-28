@@ -1,3 +1,17 @@
+//////////////////////////////////////////////////////////////////////
+//
+//  LittleEndian.h - Portable, alignment-safe little-endian binary
+//    encoding and decoding for integers and IEEE-754 floats.
+//
+//  Tabs: 4
+//  Comments: Host-endian-independent and strict-aliasing-safe via
+//    byte shifts and std::memcpy. Caller must ensure `bytes` has at
+//    least sizeof(Bits) accessible bytes.
+//
+//  License Information: Please see the attached LICENSE.TXT file
+//
+//////////////////////////////////////////////////////////////////////
+
 #ifndef RISE_LITTLE_ENDIAN_H
 #define RISE_LITTLE_ENDIAN_H
 
@@ -9,6 +23,7 @@
 namespace RISE::Implementation
 {
 	// The binary buffer formats store integer and IEEE-754 bits least significant byte first.
+	// Note template parameter order: Decode takes <Value, Bits>; Encode takes <Bits, Value>.
 	template<class Value, class Bits>
 	Value DecodeLittleEndian( const unsigned char* bytes )
 	{

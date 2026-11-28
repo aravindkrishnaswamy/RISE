@@ -1,3 +1,18 @@
+//////////////////////////////////////////////////////////////////////
+//
+//  RadiometricCheckpoint.cpp - Binary checkpoint codec and atomic
+//    persistence for RadiometricFilm snapshots (schema v3).
+//
+//  Wire format: 16-byte magic ("RISE-RAD-CKPT3\r\n") + LE u64 header
+//  length + canonical CBOR header + 48-byte LE per-pixel records
+//  (count, nextSampleIndex, mean, m2, meanCorrection, m2Correction) +
+//  64-byte lowercase hex SHA-256 digest over all preceding bytes.
+//
+//  Tabs: 4
+//  License Information: Please see the attached LICENSE.TXT file
+//
+//////////////////////////////////////////////////////////////////////
+
 #include "pch.h"
 #include "RadiometricCheckpoint.h"
 #include "RadiometricPublication.h"
@@ -41,6 +56,8 @@ bool ExactKeys(const Value& value,const std::vector<std::string>& keys) {
     for(const auto& key:keys) if(!value.Find(key)) return false;
     return true;
 }
+// Checks header cap and overflow-safe total byte size:
+// 24-byte prefix + CBOR header + 48 bytes/pixel + 64-byte SHA-256 hex digest.
 bool CheckSize(std::size_t pixels,std::size_t header,std::size_t budget,std::size_t& total,std::string& error) {
     const auto fixed=prefixSize+digestSize;
     if(header>maxHeaderBytes || budget<fixed || header>budget-fixed || pixels>(budget-fixed-header)/48u)
@@ -49,6 +66,9 @@ bool CheckSize(std::size_t pixels,std::size_t header,std::size_t budget,std::siz
     return true;
 }
 }
+
+// Validates snapshot invariants, encodes the canonical CBOR v3 header and
+// packed 48-byte compensated Welford pixel records, and appends the SHA-256 digest.
 bool EncodeRadiometricCheckpoint(const RadiometricSnapshot& snapshot,Bytes& output,
     std::string& error,const RadiometricLimits& limits) {
     if(!ValidateRadiometricSnapshot(snapshot,error,limits)) return false;
@@ -74,6 +94,8 @@ bool EncodeRadiometricCheckpoint(const RadiometricSnapshot& snapshot,Bytes& outp
         return true;
     } catch(const std::exception& ex) { error=ex.what(); return false; }
 }
+// Verifies magic, byte budget, and SHA-256 before decoding canonical CBOR,
+// then checks exact key set, expected resume identity, pixel extent, and snapshot invariants.
 bool DecodeRadiometricCheckpoint(const Bytes& bytes,const RadiometricIdentity& expected,
     RadiometricSnapshot& output,std::string& error,const RadiometricLimits& limits) {
     error.clear();
@@ -120,6 +142,8 @@ bool DecodeRadiometricCheckpoint(const Bytes& bytes,const RadiometricIdentity& e
         return true;
     } catch(const std::exception& ex) { error=ex.what(); return false; }
 }
+// Writes checkpoint atomically via required staging; invokes optional
+// beforePublication hook prior to rename and reports recovery path on failure.
 bool RadiometricDetail::SaveCheckpointObserved(const std::string& path,const RadiometricSnapshot& snapshot,
     std::string& error,const RadiometricLimits& limits,const std::function<void()>& beforePublication) {
     Bytes bytes;

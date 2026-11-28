@@ -1,3 +1,15 @@
+//////////////////////////////////////////////////////////////////////
+//
+//  SimulationCache.cpp - Durable content-addressed simulation cache store
+//
+//  Implements CBOR manifest v1/v2 encoding, conservative decode/working-memory
+//  budgets, symlink-safe directory trust checks, fsync-ordered atomic commits,
+//  sidecar I/O, time-to-frame mapping, and single-writer cache locking.
+//  Tabs: 4
+//  License Information: Please see the attached LICENSE.TXT file
+//
+//////////////////////////////////////////////////////////////////////
+
 #include "pch.h"
 #include "SimulationCache.h"
 #include <algorithm>
@@ -59,6 +71,8 @@ bool InRange(const CacheDescription& d, std::int64_t index)
 		static_cast<std::uint64_t>(index) - static_cast<std::uint64_t>(d.firstIndex) < d.count;
 }
 
+// Validates manifest metadata: 64-hex digests, NFC strings, count <= 2^53 (exact f64 step),
+// positive interval, representable time extent, fidelity/evidence, and unique outputs/channels.
 bool DescriptionValid(const CacheDescription& d, std::string& error)
 {
 	const auto maxIndex = std::numeric_limits<std::int64_t>::max();
@@ -126,6 +140,7 @@ bool Extended(const CacheDescription& d)
 	return !d.evidenceConditions.empty() || !d.evidenceScope.empty();
 }
 
+// Encodes manifest CBOR: v1 ("format","description","frames","complete") or v2 (+ "statics").
 bool EncodeManifest(const CacheSnapshot& snapshot, Bytes& encoded, std::string& error)
 {
 	V::Values frames;
@@ -351,6 +366,7 @@ bool SyncDirectory(const fs::path& path,std::string& error)
 #endif
 
 #if defined(_WIN32)
+// Crash-safe Windows publish: write pending -> FlushFileBuffers -> MoveFileExW -> SyncDirectory.
 bool WindowsWrite(const fs::path& root,const std::string& name,const Parts& parts,bool replace,std::string& error,
 	const char* pendingName)
 {
@@ -611,6 +627,8 @@ bool SecureCacheDirectory(const fs::path& root,bool create,fs::path& location,st
 }
 
 #if !defined(_WIN32)
+// Crash-safe POSIX publish: write pending -> fsync -> renameat (replace) or linkat+unlinkat
+// (immutable payloads) -> fsync directory.
 bool SyncWrite(int dir,const std::string& name,const Parts& parts,bool replace,std::string& error,
 	const char* pending=".cache.pending")
 {
@@ -682,6 +700,7 @@ bool ValidateCacheDescription(const CacheDescription& description,std::string& e
 }
 
 namespace {
+// Rejects path separators and cache-owned filenames/suffixes (manifest, writer.lock, *.frame/.static/.pending).
 bool SidecarName(const std::string& name)
 {
 	return TextValid(name) && name.size()<=200 && name!="." && name!=".." && name!=manifestName &&
@@ -917,6 +936,9 @@ bool SidecarReader::Seek(std::uint64_t offset,std::string& error)
 	return true;
 }
 
+// ------------------------------------------------------------------ cache keys & snapshots
+
+// SHA-256 over canonical CBOR ["rise.simulation.key.v1", solver, version, params, [[input, digest],...]].
 bool MakeCacheKey(const std::string& solver,const std::string& version,const V& params,
 	const std::vector<std::pair<std::string,std::string>>& inputs,std::string& key,std::string& error)
 {
@@ -935,6 +957,8 @@ bool MakeCacheKey(const std::string& solver,const std::string& version,const V& 
 	return true;
 }
 
+// Opens and strictly validates manifest.cbor (v1/v2), checks sorted frames/statics and
+// sealed coverage, indexes per-output spans, and hashes raw manifest bytes as Digest().
 bool CacheSnapshot::Open(const fs::path& root,std::size_t budget,CacheSnapshot& output,std::string& error)
 {
 	CacheSnapshot candidate;
@@ -986,6 +1010,8 @@ bool CacheSnapshot::Open(const fs::path& root,std::size_t budget,CacheSnapshot& 
 	return true;
 }
 
+// Maps sceneTime into cache time (start + scale*(sceneTime - origin)) and selects the
+// frame index via binary search over authored boundaries (clamping when `hold` is set).
 bool IReadOnlyCacheSnapshot::MapTime(double sceneTime,std::int64_t& index,std::string& error) const
 {
 	const auto& d=Description();
@@ -1006,6 +1032,7 @@ bool IReadOnlyCacheSnapshot::MapTime(double sceneTime,std::int64_t& index,std::s
 	return true;
 }
 
+// Reads an immutable "<sha256>.frame" payload under budget and verifies its SHA-256 digest.
 FrameStatus CacheSnapshot::Read(std::int64_t index,const std::string& output,std::size_t budget,
 	std::shared_ptr<const Bytes>& result,std::string& error) const
 {
@@ -1109,6 +1136,8 @@ StaticPayloadResolver IReadOnlyCacheSnapshot::Resolver() const
 	};
 }
 
+// Full predictive qualification pass: checks sealed state, key match, "predictive" fidelity,
+// snapshot callback, and digest + callback verification of every static and frame payload.
 bool IReadOnlyCacheSnapshot::PreflightPredictive(const std::string& expectedKey,
 	const Qualification& qualification,std::size_t budget,std::string& error) const
 {
@@ -1127,6 +1156,9 @@ bool IReadOnlyCacheSnapshot::PreflightPredictive(const std::string& expectedKey,
 	return true;
 }
 
+// ------------------------------------------------------------------ writer locking & commits
+
+// Exclusive single-writer lock on "writer.lock" (flock on POSIX, LockFileEx on Windows).
 struct CacheWriter::Lock {
 #if defined(_WIN32)
 	HANDLE handle=INVALID_HANDLE_VALUE;
@@ -1165,6 +1197,7 @@ struct CacheWriter::Lock {
 #endif
 };
 
+// Probes directory, writer.lock contention, and manifest.cbor to classify cache state.
 CacheState InspectCache(const fs::path& root,std::size_t budget,std::string& error)
 {
 	std::error_code ec;
@@ -1217,6 +1250,8 @@ bool CacheWriter::PrepareExtend(const fs::path& root,const CacheDescription& d,
 	return Open(root,d,"",OpenMode::ExtendCurrent,budget,error);
 }
 
+// Acquires the directory lock and opens/initializes a cache epoch:
+// NewEpoch requires a new epoch ID; ResumeVerified re-reads all payloads; ExtendCurrent waits on lock.
 bool CacheWriter::Open(const fs::path& root,const CacheDescription& d,const std::string& expectedParent,
 	OpenMode mode,std::size_t budget,std::string& error)
 {
@@ -1287,6 +1322,8 @@ bool CacheWriter::Publish(CacheSnapshot& next,std::string& error)
 	return true;
 }
 
+// Publishes a content-addressed "<sha256>.frame" payload (deduplicating/verifying existing
+// files and enforcing declared static references) then atomically advances manifest.cbor.
 bool CacheWriter::Append(std::int64_t index,const std::string& output,double time,
 	const Bytes& frame,std::string& error,const Bytes& receipt)
 {
@@ -1331,6 +1368,8 @@ bool CacheWriter::Append(std::int64_t index,const std::string& output,double tim
 	return Publish(next,error);
 }
 
+// Publishes an immutable "<sha256>.static" payload (idempotent on identical digest/type)
+// and commits it to manifest.cbor so subsequent frames may reference it.
 bool CacheWriter::AppendStatic(const std::string& type,const Bytes& payload,std::string& digest,std::string& error)
 {
 	if (!lock_ || !TextValid(type) || payload.size()>budget_ || payload.size()>maximumBytes)

@@ -6,6 +6,10 @@
 //  Date of Birth: August 6, 2026
 //  Tabs: 4
 //  Comments:
+//    Implements canonical CBOR64 decoding and provenance/source-binding
+//    validation for embedded and explicit fire-optics presets, PCHIP
+//    monotone cubic-Hermite interpolation with derivative-enclosure
+//    verification, spectral constituent queries, and fidelity gating.
 //
 //  License Information: Please see the attached LICENSE.TXT file
 //
@@ -26,6 +30,9 @@ namespace RISE
 	{
 #include "FireOpticsRecordData.inc"
 
+		// ------------------------------------------------------------------
+		// Frozen SS8 policy strings, provenance schema SHA-256, and CBOR readers
+		// ------------------------------------------------------------------
 		const double kPi = 3.141592653589793238462643383279502884;
 		const char kPhiConsistency[] =
 			"the hot-soot and cool-carbon records must carry bit-identical phi_T fields at record freeze (one optical record in the final SS8 CBOR encoding)";
@@ -202,6 +209,12 @@ namespace RISE
 				value.GetFloat() == 0.0);
 		}
 
+		// ------------------------------------------------------------------
+		// Draft-3 uncertainty, provenance envelope, and table-metadata checks
+		// ------------------------------------------------------------------
+		// Validates an uncertainty block against the pinned draft-3 enum; enforces
+		// zero magnitude on exact kinds, required basis on modeled kinds, and
+		// ordered numeric intervals or spans for range/sensitivity kinds.
 		bool ValidateUncertainty(
 			const RISECBOR64::Value& uncertainty,
 			const char* requiredKind,
@@ -393,6 +406,8 @@ namespace RISE
 			return envelope && ValidateFixtureEnvelope(*envelope, result, error);
 		}
 
+		// Verifies table_metadata uses per_table granularity (rejecting row/cell
+		// metadata unsupported in v1) and checks any column_metadata envelopes.
 		bool ValidateTableMetadata(
 			const RISECBOR64::Value& metadata,
 			const RISECBOR64::Value& table,
@@ -542,6 +557,10 @@ namespace RISE
 					Fail(error,"fire-optics source record header does not match its frozen component"));
 		}
 
+		// ------------------------------------------------------------------
+		// Operational-vs-source cross-binding and phi(T) partition checks
+		// ------------------------------------------------------------------
+		// Confirms the embedded provenance_schema map matches the pinned draft-3 SHA-256.
 		bool ValidateProvenanceSchema(
 			const RISECBOR64::Value& schema,
 			std::string* error
@@ -720,6 +739,8 @@ namespace RISE
 			return minimum < maximum || Fail(error, "fire-optics domain is not increasing");
 		}
 
+		// Requires hot-soot and cool-carbon phi_T_partition maps to be bit-identical
+		// canonical CBOR matching the frozen cubic-Hermite C1 smoothstep definition.
 		bool ReadPhiPartition(
 			const RISECBOR64::Value& hot,
 			const RISECBOR64::Value& cool,
@@ -908,6 +929,8 @@ namespace RISE
 			return true;
 		}
 
+		// Cross-checks operational tables, scalars, policies, and metadata for all
+		// four predictive constituents against their embedded source_records entries.
 		bool ValidatePredictiveSourceBindings(
 			const RISECBOR64::Value& sourceEffective,
 			const RISECBOR64::Value& sourceHot,
@@ -1096,6 +1119,11 @@ namespace RISE
 			return true;
 		}
 
+		// ------------------------------------------------------------------
+		// PCHIP monotone cubic-Hermite slopes and derivative enclosures
+		// ------------------------------------------------------------------
+		// Fritsch-Carlson weighted harmonic mean slopes for interior knots with
+		// non-overshooting one-sided three-point endpoint slopes.
 		std::vector<double> PCHIPSlopes(
 			const std::vector<double>& wavelengths,
 			const std::vector<double>& values
@@ -1140,6 +1168,8 @@ namespace RISE
 			return slopes;
 		}
 
+		// Computes exact min/max of the quadratic derivative of a cubic Hermite
+		// segment over [x0, x1] by checking endpoints and any interior vertex.
 		void DerivativeExtrema(
 			const double x0, const double x1,
 			const double y0, const double y1,
@@ -1165,6 +1195,8 @@ namespace RISE
 			}
 		}
 
+		// Verifies stored PCHIP slopes (within 64*eps) and certifies that each
+		// segment's true derivative range lies inside its stored enclosure.
 		bool ReadInterpolation(
 			const RISECBOR64::Value& map,
 			const char* key,
@@ -1283,6 +1315,9 @@ namespace RISE
 		}
 	}
 
+	// ==================================================================
+	// DifferentiableSpectrum: clamped C1 cubic-Hermite evaluation
+	// ==================================================================
 	DifferentiableSpectrum::DifferentiableSpectrum() : m_valid(false)
 	{
 	}
@@ -1366,6 +1401,9 @@ namespace RISE
 			(3.0*t*t-2.0*t)*m_slopes[upper];
 	}
 
+	// ==================================================================
+	// FireOpticsPreset: canonical loading and semantic/physics gates
+	// ==================================================================
 	FireOpticsPreset::FireOpticsPreset() :
 		m_valid(false), m_recordClass(InvalidRecord), m_domainMinNM(0.0),
 		m_domainMaxNM(0.0), m_hotFractionMinK(0.0), m_hotFractionMaxK(0.0),
@@ -1399,6 +1437,9 @@ namespace RISE
 		return true;
 	}
 
+	// Validates header, provenance schema, source records, phi(T) consistency,
+	// constituent tables/envelopes, and numerical/physical gate invariants
+	// (including E_eff = MAC * rho * lambda / (6*pi) for predictive presets).
 	bool FireOpticsPreset::LoadSemanticRecord(
 		const RISECBOR64::Value& record,
 		std::string* error
@@ -2096,6 +2137,9 @@ namespace RISE
 		return Fail(error, "unsupported fire-optics record class or interpolation");
 	}
 
+	// ==================================================================
+	// Embedded preset singletons and explicit synthetic fixture builder
+	// ==================================================================
 	const FireOpticsPreset& FireOpticsPreset::PredictiveV1()
 	{
 		static const FireOpticsPreset preset = LoadEmbedded(
@@ -2296,6 +2340,10 @@ namespace RISE
 		return result;
 	}
 
+	// ==================================================================
+	// Constituent optical evaluators, visible majorants, and fidelity gate
+	// ==================================================================
+	// Cubic Hermite smoothstep phi(T) = 3u^2 - 2u^3 over [m_hotFractionMinK, m_hotFractionMaxK].
 	double FireOpticsPreset::HotFraction( const double temperatureK ) const
 	{
 		if( temperatureK <= m_hotFractionMinK ) return 0.0;
@@ -2314,6 +2362,8 @@ namespace RISE
 			(m_densityGCM3*1000000.0*wavelengthNM*1.0e-9);
 	}
 
+	// Predictive presets derive E_eff from normative MAC(lambda) via
+	// E_eff = MAC * rho_g_per_m3 * lambda_m / (6*pi); synthetic fixtures are constant.
 	double FireOpticsPreset::EffectiveAbsorption( const double wavelengthNM ) const
 	{
 		if( m_recordClass == PredictiveOpticalPreset ) {
@@ -2392,6 +2442,8 @@ namespace RISE
 			m_condensedG.Evaluate(wavelengthNM) : m_condensedFixtureG;
 	}
 
+	// Conservative upper bound on mass extinction (m^2/g) across all constituents
+	// over the visible band; PCHIP monotonicity guarantees extrema occur at knots.
 	double FireOpticsPreset::MaximumExtinctionMassVisible() const
 	{
 		const SpectralConfig visibleBand;

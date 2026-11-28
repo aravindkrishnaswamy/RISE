@@ -1,9 +1,13 @@
 //////////////////////////////////////////////////////////////////////
 //
 //  CompletePathGuide.h - Experimental recorder for BDPT complete-path
-//    statistics. This records whole successful paths into coarse
+//    statistics. Records whole successful paths into coarse
 //    technique/spatial buckets so we can measure whether reusable
 //    complete-path structure exists before changing sampling.
+//
+//  Tabs: 4
+//
+//  License Information: Please see the attached LICENSE.TXT file
 //
 //////////////////////////////////////////////////////////////////////
 
@@ -23,11 +27,16 @@ namespace RISE
 {
 	namespace Implementation
 	{
+		// Aggregates per-iteration and cross-iteration BDPT (s, t) path
+		// energy (Rec.709 luminance) into a coarse 16^3 spatial grid.
+		// Mutating calls synchronize on `mutex`; QueryStrategyWeight() is
+		// unlocked and must only be called between iterations.
 		class CompletePathGuide :
 			public virtual IReference,
 			public virtual Reference
 		{
 		public:
+			// Per-(s, t) technique sample count and summed luminance energy.
 			struct TechniqueStats
 			{
 				size_t	count;
@@ -40,6 +49,7 @@ namespace RISE
 				}
 			};
 
+			// Summary metrics logged at EndIteration() for the most recent pass.
 			struct IterationSummary
 			{
 				size_t	sampleCount;
@@ -92,6 +102,8 @@ namespace RISE
 
 			virtual ~CompletePathGuide();
 
+			// Packs (s, t, hitsEmitter, quantized eye/light 16^3 voxels) into
+			// the low 33 bits of a uint64_t bucket key (s, t masked to 4 bits).
 			uint64_t MakeBucketKey(
 				unsigned int s,
 				unsigned int t,
@@ -100,6 +112,7 @@ namespace RISE
 				bool hitsEmitter
 				) const;
 
+			// Flat row-major index into (maxLightDepth+1) x (maxEyeDepth+1) stats tables.
 			static inline size_t TechniqueIndex(
 				const unsigned int maxLightDepth,
 				const unsigned int maxEyeDepth,
@@ -119,8 +132,11 @@ namespace RISE
 				unsigned int maxEyeDepth_
 				);
 
+			// Resets per-iteration counters and enables sample collection.
 			void BeginIteration();
 
+			// Records a non-splat, positive-luminance complete (s, t) path.
+			// Thread-safe; skips paths when not collecting or needsSplat is set.
 			void AddSample(
 				unsigned int s,
 				unsigned int t,
@@ -131,8 +147,11 @@ namespace RISE
 				bool needsSplat
 				);
 
+			// Finalizes collection, computes summary stats, and logs a report.
 			void EndIteration();
 
+			// Lock-free heuristic weight sqrt(bucketEnergy + globalEnergy)
+			// from aggregate stats. Call only when no iteration is mutating.
 			Scalar QueryStrategyWeight(
 				unsigned int s,
 				unsigned int t,

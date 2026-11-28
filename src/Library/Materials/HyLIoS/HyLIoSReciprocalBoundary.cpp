@@ -2,8 +2,11 @@
 //
 //  HyLIoSReciprocalBoundary.cpp - Strict-FP implementation of the
 //    named reciprocal dielectric microfacet boundary extension
-//    (`rise_reciprocal_boundary_v1`).
+//    (`rise_reciprocal_boundary_v1`): isotropic GGX VNDF reflection
+//    and Walter et al. 2007 radiance-transport transmission satisfying
+//    eta_i^2 * f_t(wi -> wo) == eta_o^2 * f_t(wo -> wi).
 //
+//  Tabs: 4
 //  License Information: Please see the attached LICENSE.TXT file
 //
 //////////////////////////////////////////////////////////////////////
@@ -54,6 +57,8 @@ double ClampUnit( const double u ) noexcept
 
 } // namespace
 
+// Validates boundary domain: roughnessAlpha == 0 (smooth Dirac delta) or
+// [1e-3, 1.0] (isotropic GGX), with strictly positive finite refractive indices.
 HyLIoSReciprocalBoundary::HyLIoSReciprocalBoundary(
 	const double roughnessAlpha,
 	const double etaExterior,
@@ -73,6 +78,10 @@ HyLIoSReciprocalBoundary::HyLIoSReciprocalBoundary(
 		throw std::invalid_argument( "rise_reciprocal_boundary_v1: refractive indices must be finite and positive" );
 	}
 }
+
+//////////////////////////////////////////////////////////////////////
+// Fresnel, GGX NDF & Height-Correlated Smith Masking-Shadowing
+//////////////////////////////////////////////////////////////////////
 
 double HyLIoSReciprocalBoundary::FresnelDielectric(
 	const double cosThetaI,
@@ -130,6 +139,11 @@ double HyLIoSReciprocalBoundary::EvalG2( const SlabVector& wi, const SlabVector&
 	return 1.0 / ( 1.0 + Lambda( wi ) + Lambda( wo ) );
 }
 
+//////////////////////////////////////////////////////////////////////
+// Reflection & Transmission Evaluation / PDFs
+//////////////////////////////////////////////////////////////////////
+
+// Evaluates same-hemisphere GGX microfacet reflection BSDF (0 for smooth delta).
 double HyLIoSReciprocalBoundary::EvalReflection( const SlabVector& wi, const SlabVector& wo ) const noexcept
 {
 	if( IsSmooth() ) {
@@ -202,6 +216,8 @@ double HyLIoSReciprocalBoundary::PdfReflectionBranch( const SlabVector& wi, cons
 	return F * PdfReflection( wi, wo );
 }
 
+// Evaluates opposite-hemisphere radiance-transport microfacet transmission BSDF
+// (0 for smooth delta or index-matched interfaces).
 double HyLIoSReciprocalBoundary::EvalTransmission( const SlabVector& wi, const SlabVector& wo ) const noexcept
 {
 	if( IsSmooth() ) {
@@ -329,6 +345,10 @@ double HyLIoSReciprocalBoundary::PdfTransmissionBranch( const SlabVector& wi, co
 	const double F = FresnelDielectric( std::fabs( Dot( wo, h ) ), etaO, etaI );
 	return ( 1.0 - F ) * PdfTransmission( wi, wo );
 }
+
+//////////////////////////////////////////////////////////////////////
+// VNDF & Coupled Reflection/Transmission Importance Sampling
+//////////////////////////////////////////////////////////////////////
 
 SlabVector HyLIoSReciprocalBoundary::SampleVNDF(
 	const SlabVector& woUpper,
@@ -507,6 +527,9 @@ ReciprocalBoundarySample HyLIoSReciprocalBoundary::SampleTransmission(
 	return out;
 }
 
+// Coupled boundary sampler: draws one visible microfacet normal h (or macro
+// normal when smooth), selects reflection with Fresnel probability F or
+// transmission with 1-F; weights cancel F and D to G2/G1 (times etaRatio^2 on T).
 ReciprocalBoundarySample HyLIoSReciprocalBoundary::SampleFull(
 	const SlabVector& wo,
 	const double uBranch,

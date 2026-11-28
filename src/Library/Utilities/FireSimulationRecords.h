@@ -2,6 +2,13 @@
 //
 //  FireSimulationRecords.h - Phase-C open physical-property record subsets
 //
+//  Canonical CBOR64-backed physical-property records for fire simulation:
+//  methane fuel/thermochemistry and certified §3.7 constraint nullspaces
+//  (FireSimulationMethaneRecord), multi-species NASA-9 thermochemistry
+//  (FireSimulationThermochemistryRecord), molecular/LES transport closure
+//  (FireSimulationTransportRecord), optically thin HITEMP CO2/H2O
+//  Planck-mean opacity (FireSimulationGasOpacityRecord), and RED fixtures.
+//
 //  License Information: Please see the attached LICENSE.TXT file
 //
 //////////////////////////////////////////////////////////////////////
@@ -18,6 +25,8 @@
 
 namespace RISE
 {
+	//! Floating-point precision of the solver that produced a conservative
+	//! state, selecting kappaEpsilon64 vs. kappaEpsilon32 in r60 admissibility.
 	enum class FireStateProducerPrecision : unsigned char
 	{
 		Unknown=0u,
@@ -25,6 +34,9 @@ namespace RISE
 		Binary32=2u
 	};
 
+	//! One NASA-9 cp/R polynomial temperature segment [temperatureMinK, temperatureMaxK] (K).
+	//! coefficients[0..6] hold a0..a6 for T^-2..T^4; sensibleEnthalpyOffsetJPerKG ensures
+	//! C0 continuity and h_s(T_ref) = 0; certifiedCpLowerJPerKGK bounds cp from below (J/(kg*K)).
 	struct FireThermochemistrySegment
 	{
 		double temperatureMinK;
@@ -34,6 +46,8 @@ namespace RISE
 		double certifiedCpLowerJPerKGK;
 	};
 
+	//! Thermochemical species entry: molecular weight (kg/kmol), formation enthalpy
+	//! at 298.15 K (J/kmol), and contiguous NASA-9 temperature segments.
 	struct FireThermochemistrySpecies
 	{
 		std::string id;
@@ -42,6 +56,9 @@ namespace RISE
 		std::vector<FireThermochemistrySegment> segments;
 	};
 
+	//! Certified linear constraint matrix A (constraintRows x stateDimension) and
+	//! orthonormal nullspace basis N (stateDimension x nullity, row-major), verified
+	//! in exact rationals at load time. Project() computes N * (N^T * input).
 	struct FireCertifiedNullspace
 	{
 		std::vector<std::string> stateOrder;
@@ -71,6 +88,8 @@ namespace RISE
 			) const;
 	};
 
+	//! Roundoff budget factors (in units of machine epsilon for binary64/binary32)
+	//! defining the single r60 accepted-state feasibility envelope (kappa * eps * scale).
 	struct FireAcceptedStateFeasibilityEnvelope
 	{
 		double limiterOutwardFactorEpsilon64;
@@ -160,11 +179,14 @@ namespace RISE
 	public:
 		FireSimulationMethaneRecord();
 
+		//! Decodes and verifies canonical CBOR64 bytes against the pinned adopted
+		//! methane preset SHA-256, exact stoichiometry, and §3.7 nullspace proofs.
 		bool LoadCanonicalRecord(
 			const RISECBOR64::Bytes& bytes,
 			std::string* error = 0
 			);
 
+		//! Built-in embedded methane record (preview_only; verified against pinned SHA-256).
 		static const FireSimulationMethaneRecord& PhysicalV1();
 
 		bool IsValid() const { return m_valid; }
@@ -195,6 +217,8 @@ namespace RISE
 		double SootOxidationTemperatureK() const { return m_sootOxidationTemperatureK; }
 		double SootYieldKGPerKGFuel() const { return m_sootYieldKGPerKGFuel; }
 		double DefaultRadiativeFraction() const { return m_defaultRadiativeFraction; }
+		//! Returns default chi_r unless hasCaseOverride is set with a valid 64-hex
+		//! caseRecordId and caseOverride in [0, 1].
 		bool ResolveRadiativeFraction(
 			const char* caseRecordId,
 			bool hasCaseOverride,
@@ -202,6 +226,8 @@ namespace RISE
 			double& result,
 			std::string* error = 0
 			) const;
+		//! Resolves soot density (kg/m^3) from the adopted predictive FireOpticsPreset
+		//! matching this record's pinned optics name and SHA-256 ID; rejects synthetic presets.
 		bool ResolveSootDensityKGPerM3(
 			const FireOpticsPreset& optics,
 			double& result,
@@ -209,6 +235,8 @@ namespace RISE
 			) const;
 		const std::vector<std::string>& SpeciesOrder() const { return m_speciesOrder; }
 		const FireThermochemistrySpecies* FindSpecies( const char* id ) const;
+		//! NASA-9 cp (J/(kg*K)) and sensible enthalpy h_s (J/kg, zero at ReferenceTemperatureK());
+		//! all temperature queries reject strictly outside the species' certified domain.
 		bool CpJPerKGK( const char* speciesId, double temperatureK,
 			double& result, std::string* error = 0 ) const;
 		//! Evaluates cp for the complete record order without name lookups or allocation.
@@ -325,6 +353,9 @@ namespace RISE
 		}
 	};
 
+	//! Open multi-species NASA-9 thermochemistry subset (preview_only; carries
+	//! measured condensed-organics cp, pentacosane CH2-increment certificate, and
+	//! owner-gated missing-record stubs). Rejects out-of-domain temperature queries.
 	class FireSimulationThermochemistryRecord
 	{
 		bool m_valid;
@@ -395,6 +426,8 @@ namespace RISE
 			) const;
 	};
 
+	//! Per-species temperature-indexed PCHIP curves for dynamic viscosity (Pa*s)
+	//! and thermal conductivity (W/(m*K)), reusing DifferentiableSpectrum over K.
 	struct FireTransportSpecies
 	{
 		std::string id;
@@ -402,6 +435,9 @@ namespace RISE
 		DifferentiableSpectrum conductivity;
 	};
 
+	//! Molecular and LES subgrid transport closure record (preview_only): per-species
+	//! PCHIP viscosity/conductivity tables, Wilke viscosity and Wassiljewa-Mason-Saxena
+	//! conductivity mixing laws, Vreman eddy viscosity, and effective transport coupling.
 	class FireSimulationTransportRecord
 	{
 		bool m_valid;
@@ -459,6 +495,7 @@ namespace RISE
 		}
 
 		const FireTransportSpecies* FindSpecies( const char* id ) const;
+		//! Pure-species viscosity (Pa*s) and thermal conductivity (W/(m*K)); rejects out-of-domain K.
 		bool ViscosityPaS(
 			const char* speciesId,
 			double temperatureK,
@@ -471,6 +508,7 @@ namespace RISE
 			double& result,
 			std::string* error = 0
 			) const;
+		//! Wilke mixture viscosity (Pa*s) and Wassiljewa-Mason-Saxena mixture conductivity (W/(m*K)).
 		bool MixtureViscosityPaS(
 			const std::vector<std::pair<std::string,double> >& massFractions,
 			const FireSimulationThermochemistryRecord& thermochemistry,
@@ -506,12 +544,17 @@ namespace RISE
 			double temperatureK, double& viscosityPaS,
 			double& conductivityWPerMK, std::string* error = 0
 			) const;
+		//! Anisotropic Vreman SGS eddy viscosity (m^2/s) from alpha_ij = du_j/dx_i (1/s)
+		//! and directional MAC filter widths Delta_m (m); returns 0 when ||alpha||_F = 0.
 		bool VremanEddyViscosityM2PerS(
 			const double velocityGradientPerS[3][3],
 			const double directionalWidthsM[3],
 			double& result,
 			std::string* error = 0
 			) const;
+		//! Combines molecular and SGS transport (zeroing SGS terms when dns is true):
+		//! D_mol = k_mol/(rho*cp), D_sgs = nu_sgs/Sc_t, mu_eff = mu_mol + rho*nu_sgs,
+		//! k_eff = k_mol + rho*cp*nu_sgs/Pr_t.
 		bool EffectiveTransport(
 			double molecularViscosityPaS,
 			double molecularConductivityWPerMK,
@@ -528,6 +571,8 @@ namespace RISE
 			) const;
 	};
 
+	//! One 50 K x 50 K cell of the C1 bicubic-Hermite Planck-mean cross-section surface
+	//! in local normalized coordinates (u, v) in [0, 1]^2, with certified partial-derivative bounds.
 	struct FireGasOpacityCell
 	{
 		double coefficients[4][4];
@@ -537,6 +582,8 @@ namespace RISE
 		double radiationDerivativeMaximum;
 	};
 
+	//! Tabulated HITEMP species ("H2O" or "CO2") on a 45 x 45 [300, 2500] K lattice
+	//! (50 K spacing) yielding 44 x 44 row-major bicubic cells.
 	struct FireGasOpacitySpecies
 	{
 		std::string id;

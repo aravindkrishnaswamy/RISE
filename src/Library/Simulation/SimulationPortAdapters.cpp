@@ -1,3 +1,15 @@
+//////////////////////////////////////////////////////////////////////
+//
+//  SimulationPortAdapters.cpp - Built-in coupling port adapters and registry
+//
+//  Provides unit_scale, field_relabel, rigid_surface, aerodynamic_drag, and
+//  contact_reaction adapters, canonical CBOR parameter validation, trilinear
+//  sparse grid sampling, and the adapter factory registry.
+//  Tabs: 4
+//  License Information: Please see the attached LICENSE.TXT file
+//
+//////////////////////////////////////////////////////////////////////
+
 // Simulation M6: see SimulationPortAdapters.h.
 #include "pch.h"
 #include "SimulationPortAdapters.h"
@@ -110,6 +122,7 @@ const UnitRow Units[] = {
 	{"dimensionless", "1", 1}};
 }
 
+// Computes multiplicative scale factor between compatible units of the same physical quantity.
 bool UnitFactor(const std::string& from, const std::string& to, double& factor)
 {
 	if (from == to) { factor = 1; return true; }
@@ -120,6 +133,7 @@ bool UnitFactor(const std::string& from, const std::string& to, double& factor)
 	return true;
 }
 
+// SHA-256 identity over CBOR ["rise.simulation.adapter.v1", id, version, effectiveParams].
 std::string PortAdapterIdentity(const std::string& id, const std::string& version, const V& parameters)
 {
 	Bytes encoded;
@@ -134,6 +148,7 @@ namespace {
 
 bool ScaleableCodec(const std::string& c) { return c == "field.v1" || c == "transform.v1" || c == "grid.v1"; }
 
+// Scales field.v1, transform.v1 (position/velocity), or grid.v1 channels between compatible units.
 class UnitScaleAdapter final : public IPortAdapter {
 public:
 	bool Handles(const PortDeclaration& offer, const PortDeclaration& accept) const override {
@@ -208,6 +223,7 @@ public:
 
 // ------------------------------------------------------------------ field_relabel
 
+// Renames field.v1 channels via explicit pairs or positional order and re-sorts canonically.
 class FieldRelabelAdapter final : public IPortAdapter {
 public:
 	FieldRelabelAdapter() = default;
@@ -264,6 +280,8 @@ private:
 
 // ------------------------------------------------------------------ rigid_surface
 
+// Places a rigid body's reference mesh in world meters (x = p + R*p_local, v_pt = v + w x r)
+// with area-weighted unit vertex normals for mesh.v1 / mesh.v2 consumers.
 class RigidSurfaceAdapter final : public IPortAdapter {
 public:
 	RigidSurfaceAdapter(std::string body, std::vector<double> vertices, std::vector<std::uint32_t> triangles, V effective)
@@ -427,6 +445,8 @@ struct DragSettings {
 	std::string velocity = "velocity", densityChannel, temperature;
 };
 
+// Unvalidated preview drag model: computes per-vertex quadratic traction
+// 0.5*rho*scale*(Cn*|un|*un*n + Ct*|ut|*ut) from fluid grid velocity + auxiliary surface mesh.
 class AerodynamicDragAdapter final : public IPortAdapter {
 public:
 	AerodynamicDragAdapter(DragSettings s, V effective) : s_(std::move(s)), effective_(std::move(effective)) {}
@@ -519,6 +539,8 @@ private:
 
 // ------------------------------------------------------------------ contact_reaction
 
+// Sums per-collider contact (force, point, torque) onto sorted rigid bodies, shifting
+// each collider's torque to the body's first contact point via (p_k - p_body) x F_k.
 class ContactReactionAdapter final : public IPortAdapter {
 public:
 	ContactReactionAdapter(std::vector<std::string> targets, std::vector<std::string> bodies, V effective)
@@ -733,6 +755,9 @@ std::shared_ptr<const IPortAdapter> MakeContactReaction(const V& p, const PortAd
 }
 } // namespace
 
+// ------------------------------------------------------------------ adapter factory registry
+
+// Registers a named factory for parameterized port adapters (thread-safe, unique NFC IDs).
 bool RegisterPortAdapterFactory(const std::string& id, PortAdapterFactory factory, std::string& error)
 {
 	if (id.empty() || !RISECBOR64::IsUTF8NFC(id) || !factory) return Fail(error, "invalid port adapter factory id or factory");
@@ -772,6 +797,7 @@ std::vector<std::string> RegisteredPortAdapterFactories()
 	return ids;
 }
 
+// Idempotently registers all 5 built-in factories plus automatic unit_scale/field_relabel instances.
 bool RegisterBuiltinPortAdapters(std::string& error)
 {
 	static std::mutex once;

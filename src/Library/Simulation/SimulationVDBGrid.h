@@ -1,4 +1,16 @@
-// Import-only projection. Include exclusively in an OpenVDB-enabled translation unit.
+//////////////////////////////////////////////////////////////////////
+//
+//  SimulationVDBGrid.h - Import-only OpenVDB-to-grid.v1 projection.
+//
+//  Include exclusively in OpenVDB-enabled translation units. Preflights
+//  the archive preimage, decodes float/vec3f grids, and packs active and
+//  non-background inactive values under a caller-supplied byte budget.
+//
+//  Tabs: 4
+//
+//  License Information: Please see the attached LICENSE.TXT file
+//
+//////////////////////////////////////////////////////////////////////
 #ifndef RISE_SIMULATION_VDB_GRID_H
 #define RISE_SIMULATION_VDB_GRID_H
 
@@ -16,6 +28,7 @@
 
 namespace RISE { namespace Simulation {
 namespace VDBProjection {
+// Bit-exact binary32 storage preserving signed zero across scalar/vec3f values.
 using Bits = std::array<std::uint32_t,3>;
 
 inline Bits Tuple(float value) {
@@ -34,6 +47,7 @@ inline void Spend(std::size_t& budget,std::size_t bytes) {
 	budget-=bytes;
 }
 
+// Converts an inclusive OpenVDB CoordBBox into grid.v1 origin and positive extents.
 inline void Extents(const openvdb::CoordBBox& box,std::array<std::int32_t,3>& origin,
 	std::array<std::uint32_t,3>& dimensions)
 {
@@ -46,6 +60,7 @@ inline void Extents(const openvdb::CoordBBox& box,std::array<std::int32_t,3>& or
 	}
 }
 
+// Doubles block vector capacity while charging peak reallocation against the budget.
 inline void GrowBlocks(GridChannel& c,std::size_t& budget) {
 	if (c.blocks.size()<c.blocks.capacity()) return;
 	const auto old=c.blocks.capacity();

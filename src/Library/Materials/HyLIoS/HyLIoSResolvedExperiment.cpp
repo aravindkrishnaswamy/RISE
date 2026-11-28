@@ -1,3 +1,14 @@
+//////////////////////////////////////////////////////////////////////
+//
+//  HyLIoSResolvedExperiment.cpp - Strict UTF-8/JSON specimen validator
+//    and single-wavelength 6-layer skin resolver (SI units: m, m^-1,
+//    nm, kg/m^3; 64 MiB budget; <= 2^53 JSON numeric magnitude guard).
+//
+//  Tabs: 4
+//  License Information: Please see the attached LICENSE.TXT file
+//
+//////////////////////////////////////////////////////////////////////
+
 #include "pch.h"
 #include "HyLIoSResolvedExperiment.h"
 #include "HyLIoSOptics.h"
@@ -134,6 +145,8 @@ void ValidateNumericToken(const std::string &token) {
     const double value = parsed.asNumber();
     Require(std::isfinite(value) && value != 0.0, "JSON number underflows finite binary64 support");
 }
+// Pre-parse lexical scan enforcing valid UTF-8 and <= 2^53 numeric tokens
+// before delegating to the permissive Agent JSON parser.
 void ValidateSourceTokens(const std::string &bytes) {
     ValidateUnicode(bytes);
     for (std::size_t position = 0; position < bytes.size();) {
@@ -185,6 +198,9 @@ std::vector<double> Spectrum(const J &values, std::size_t size, const std::strin
 }
 }
 void ValidateExperimentUnicode(const std::string& text) {ValidateUnicode(text);}
+// Parses and validates a resolved specimen JSON at one exact wavelength node,
+// enforcing SI units, provenance/coverage profile consistency, ordered 6-layer
+// skin stack, optional spheroid/complex-pack organelles, and SHA-256 hashing.
 ResolvedExperiment ResolveExperiment(const std::string& bytes, const ResolveExperimentConfig& options) {
     Require(bytes.size() <= 64 * 1024 * 1024, "specimen exceeds 64MiB input budget");
     Require(std::isfinite(options.wavelengthNm) && options.wavelengthNm > 0,

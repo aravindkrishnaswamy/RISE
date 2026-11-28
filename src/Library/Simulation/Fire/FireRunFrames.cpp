@@ -43,6 +43,9 @@ namespace RISE
 		}
 	}
 
+	// ------------------------------------------------------------------ burner policy and auxiliary records
+
+	// Canonical numerical-policy preimage embedded into production manifests and case references.
 	const RISECBOR64::Bytes& ProductionBurnerPolicyBytes()
 	{
 		static const std::string preimage="rise.fire.production.burner.v5:"
@@ -73,6 +76,7 @@ namespace RISE
 		return true;
 	}
 
+	// Canonical CBOR64 record describing the solid C(gr) soot phase for methane (zero organic yield).
 	RISECBOR64::Bytes AerosolRecord()
 	{
 		RISECBOR64::Bytes bytes; std::string error;
@@ -138,6 +142,9 @@ namespace RISE
 		return bytes;
 	}
 
+	// ------------------------------------------------------------------ sequence manifest and partial observer
+
+	// Encodes one channel descriptor (velocity gets a 1-voxel halo on each side).
 	RISECBOR64::Value Channel( const char* name, const char* type,
 		const char* units, const char* semantics, const std::vector<double>& background,
 		const std::array<std::uint64_t,3> scalarDimensions={{2u,2u,2u}},
@@ -168,6 +175,8 @@ namespace RISE
 		});
 	}
 
+	// Builds a canonical CBOR64 fire sequence manifest envelope (payload + SHA-256 sequence_id)
+	// embedding build, thermochemistry, transport, optics, case, channel, and frame records.
 	RISECBOR64::Bytes ManifestBytes( const std::string& firstDigest,
 		const std::string& secondDigest, const char* endPolicy,
 		const bool useProductionOptics, const bool syntheticChem,
@@ -327,6 +336,8 @@ namespace RISE
 		const char* value=std::getenv("RISE_FIRE_PARTIAL_MANIFEST");
 		return !value||std::strcmp(value,"0")!=0;
 	}
+	// Returns an observer that atomically publishes a rolling partial sequence manifest
+	// after each streamed temporal frame (disabled when RISE_FIRE_PARTIAL_MANIFEST=0).
 	std::function<bool(const SolverFrameValues&,std::uint64_t)> MakePartialTemporalManifestObserver(
 		const std::filesystem::path& runDirectory,const std::filesystem::path& frameDirectory,
 		const double resolutionTier,const double frameCadenceS,const double targetTimeS,
@@ -389,6 +400,10 @@ namespace RISE
 	}
 
 #if defined(RISE_ENABLE_OPENVDB)
+	// ------------------------------------------------------------------ OpenVDB frame export and publication
+
+	// Exports carbon (kg/m3 -> g/m3), temperature (K), reaction (W/m3), haloed velocity (m/s),
+	// and optional preview chemiluminescence bands to a canonicalized, fsynced OpenVDB file.
 	bool WriteLegacyFireFrame(const std::filesystem::path& path,const float carbonValue,
 		const bool includeChem,const SolverFrameValues solver,const float chemScale,
 		const FireLegacyFrameTestMutation* mutation)
@@ -497,6 +512,7 @@ namespace RISE
 #endif
 
 #if defined(RISE_ENABLE_OPENVDB)
+	// Stages a temporal VDB frame and atomically publishes it with an immutable .payload-v2.json seal.
 	bool WriteProductionTemporalFrame(const std::filesystem::path& path,
 		const SolverFrameValues& values)
 	{

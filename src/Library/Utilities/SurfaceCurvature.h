@@ -1,21 +1,14 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  SurfaceCurvature.h - The shape operator (Weingarten map) reduced to
-//  a signed MEAN CURVATURE, plus the process-wide consumption gate that
-//  decides whether a geometry pays to compute curvature at all.
+//  SurfaceCurvature.h - Weingarten shape operator, signed mean
+//  curvature, and process-wide curvature consumption gate.
 //
 //  Phase 1 of docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md (§5.1, §5.4).
-//  Header-only: this is ~15 lines of arithmetic plus an atomic counter,
-//  and a .cpp would buy nothing but a fifth build-project entry.
-//
-//  Two things live here because they are the two halves of ONE feature
-//  -- "what is the curvature at this hit" and "is anybody asking":
-//
-//    RISE::SurfaceCurvature::MeanCurvatureFromDerivatives()
-//        the shape operator, from (dpdu, dpdv, dndu, dndv).
-//    RISE::SurfaceCurvatureDemand
-//        the consumption gate (see its own comment for the mechanism
-//        and its documented conservatism).
+//  Header-only:
+//    - RISE::SurfaceCurvature::MeanCurvatureFromDerivatives()
+//    - RISE::SurfaceCurvature::ShapeOperatorFromSecondDerivatives()
+//    - RISE::SurfaceCurvature::ScaleHintFromBoundingBox()
+//    - RISE::SurfaceCurvatureDemand (atomic demand gate)
 //
 //  Tabs: 4
 //
@@ -36,54 +29,19 @@ namespace RISE
 {
 	namespace SurfaceCurvature
 	{
-		//! Signed MEAN curvature H from the first and second fundamental
-		//! forms, as carried on `RayIntersectionGeometric::derivatives`:
+		//! Signed mean curvature H from first/second fundamental forms:
+		//!   E = dpdu.dpdu, F = dpdu.dpdv, G = dpdv.dpdv
+		//!   e = dndu.dpdu, f = (dndu.dpdv + dndv.dpdu)/2, g = dndv.dpdv
+		//!   H = (e*G - 2*f*F + g*E) / (2*(E*G - F*F))
 		//!
-		//!     E = dpdu.dpdu   F = dpdu.dpdv   G = dpdv.dpdv
-		//!     e = dndu.dpdu   f = (dndu.dpdv + dndv.dpdu)/2   g = dndv.dpdv
-		//!     H = (e*G - 2*f*F + g*E) / (2*(E*G - F*F))
-		//!
-		//! SIGN CONVENTION -- pinned by tests/SurfaceCurvatureTest.cpp, not
-		//! by this comment.  The classical second fundamental form is
-		//! `II = -dn.dp`; this uses the NEGATED convention (`e = +dndu.dpdu`)
-		//! so an OUTWARD-normal sphere of radius r reports H = +1/r:
-		//!
-		//!     positive = convex, negative = concave, zero = flat
-		//!
-		//! which makes `clamp(curv,0,1)` an edge-wear mask and
-		//! `clamp(-curv,0,1)` a crevice mask, with no remapping in between.
-		//!
-		//! ORIENTATION.  This function takes NO normal, and that is
-		//! deliberate.  H's sign is fixed entirely by the orientation of the
-		//! normal FIELD that `dndu`/`dndv` differentiate, and RISE keeps that
-		//! field sign-paired with the GEOMETRIC normal at every site that
-		//! negates one (the 2026-08-29 sign-pairing family: CSG_SUBTRACTION's
-		//! three cavity-wall branches and both double-sided-mesh back-face
-		//! flips negate `dndu`/`dndv` alongside `vNormal`; see
-		//! docs/GEOMETRY_DERIVATIVES.md "World-space transform").  Modifiers
-		//! (bump map, normal map, glint, relief -- all four of the
-		//! normal-perturbing family) assign into `ri.vNormal` ONLY and never
-		//! touch the derivatives, so the result is bump-INVARIANT by
-		//! construction -- which is the §14-item-6 requirement, reached
-		//! without an explicit `vGeomNormal` orientation check.  Do NOT
-		//! "improve" this by orienting off `ri.vNormal`: that would make a
-		//! wear mask flip sign wherever a normal map tilts past the geometric
-		//! tangent plane, i.e. a texture artifact masquerading as geometry.
-		//!
-		//! DEGENERACY.  A pinched parameterization (a pole, a zero-area UV
-		//! triangle, a collapsed tangent frame) drives `E*G - F*F` to zero.
-		//! The guard is RELATIVE, not a bare NEARZERO compare: `E*G` carries
-		//! units of length^4, so an absolute 1e-12 floor is a scale-dependent
-		//! lie -- a legitimately tiny object would be rejected and a
-		//! legitimately huge one would sail through a genuinely singular
-		//! frame.  Requiring the determinant to hold a fixed FRACTION of
-		//! `E*G` is scale-free (it is exactly "F is not almost +/-sqrt(E*G)",
-		//! i.e. dpdu and dpdv are not almost parallel).  Returns false on
-		//! degeneracy and on a non-finite result; `outH` is untouched.  Never
-		//! returns a NaN.
-		//!
-		//! \return TRUE and writes outH when the shape operator is
-		//!         well-defined; FALSE (outH untouched) otherwise.
+		//! Sign convention (negated classical II): convex > 0, concave < 0,
+		//! flat = 0 (outward sphere of radius r gives H = +1/r).
+		//! Orientation comes solely from dndu/dndv, which RISE keeps
+		//! sign-paired with vGeomNormal (docs/GEOMETRY_DERIVATIVES.md) and
+		//! bump/normal-map invariant; do not orient off ri.vNormal.
+		//! Uses a scale-free relative degeneracy gate (det > 1e-12 * E * G).
+		//! \return TRUE and writes outH if well-defined and finite; FALSE
+		//!         (outH untouched) otherwise.
 		inline bool MeanCurvatureFromDerivatives(
 			const Vector3& dpdu,
 			const Vector3& dpdv,
@@ -97,11 +55,7 @@ namespace RISE
 
 			const Scalar det = E * G - F * F;
 
-			// Relative degeneracy gate -- see the DEGENERACY note above.
-			// `E*G` is non-negative by construction (both are squared
-			// magnitudes), so the second test also subsumes "either tangent
-			// collapsed to zero length": E*G == 0 makes the right-hand side 0
-			// and `det > 0` then fails too (det = -F*F <= 0 there).
+			// Scale-free degeneracy gate (also rejects zero-length tangents).
 			static const Scalar kRelDegenerate = Scalar( 1e-12 );
 			if( !( det > Scalar( 0 ) ) || !( det > kRelDegenerate * E * G ) ) {
 				return false;
@@ -113,9 +67,6 @@ namespace RISE
 
 			const Scalar H = ( e * G - Scalar( 2 ) * f * F + g * E ) / ( Scalar( 2 ) * det );
 
-			// The build pairs -ffast-math with -fno-finite-math-only on every
-			// platform that enables it (CLAUDE.md, 2026-07-29), so this test
-			// is real; IsFiniteDouble is the uniform in-tree helper.
 			if( !RISE::IsFiniteDouble( static_cast<double>( H ) ) ) {
 				return false;
 			}
@@ -124,43 +75,14 @@ namespace RISE
 			return true;
 		}
 
-		//! DL-20.  The Weingarten map itself, in raw vector form (dndu,
-		//! dndv), computed from a surface's first AND second position
-		//! derivatives -- one level below MeanCurvatureFromDerivatives,
-		//! which only ever gets to see dndu/dndv already built.  A geometry
-		//! that has closed-form second derivatives (a parametric patch: dpdu,
-		//! dpdv, d2P/du2, d2P/dudv, d2P/dv2) but no independent handle on its
-		//! own normal FIELD's derivative computes it here, exactly, instead
-		//! of falling back to a flat/fabricated (dndu=dndv=0) stand-in.
-		//!
-		//! DERIVATION.  Let Q(u,v) = dpdu(u,v) x dpdv(u,v) (unnormalized
-		//! normal) and N = Q / |Q|.  By the product rule,
-		//!   dQ/du = d2Pduu x dpdv + dpdu x d2Pduv
-		//!   dQ/dv = d2Pduv x dpdv + dpdu x d2Pdvv
-		//! and differentiating N = Q/|Q| (quotient rule, using |Q|' =
-		//! N . dQ, the standard derivative-of-a-norm identity):
-		//!   dN/du = ( dQ/du - N (N . dQ/du) ) / |Q|
-		//!   dN/dv = ( dQ/dv - N (N . dQ/dv) ) / |Q|
-		//! which is exactly the projection of dQ/du (resp. dQ/dv) onto the
-		//! tangent plane at N, scaled by 1/|Q| -- required because N is a
-		//! UNIT vector field, so its derivative must stay orthogonal to N
-		//! itself (differentiate N.N=1 to see d N/du . N = 0).
-		//!
-		//! SIGN.  This function derives N from dpdu x dpdv with NO
-		//! orientation correction -- if the caller's actual reported shading
-		//! normal is the NEGATION of that (e.g. flipped to face an incoming
-		//! ray), the caller must negate BOTH outDndu and outDndv too
-		//! (differentiating -N gives -dN/du, -dN/dv): a linear operation, so
-		//! there is no separate "flip" branch to get subtly wrong here.
-		//!
-		//! DEGENERACY.  Same relative gate as MeanCurvatureFromDerivatives
-		//! (a pinched (u, v) frame -- dpdu, dpdv nearly parallel or either
-		//! collapsed to zero length -- makes |Q|^2 = E*G - F*F small
-		//! relative to E*G).  Returns false (outDndu/outDndv untouched) on
-		//! degeneracy and on any non-finite result.
-		//!
-		//! \return TRUE and writes outDndu/outDndv when the shape operator is
-		//!         well-defined; FALSE otherwise.
+		//! Exact normal derivatives (dndu, dndv) from first and second position
+		//! derivatives of a parametric surface:
+		//!   Q = dpdu x dpdv,  N = Q / |Q|
+		//!   dQ/du = d2Pduu x dpdv + dpdu x d2Pduv,  dQ/dv = d2Pduv x dpdv + dpdu x d2Pdvv
+		//!   dN/d{u,v} = (dQ/d{u,v} - N (N . dQ/d{u,v})) / |Q|
+		//! Uses unflipped N = normalize(dpdu x dpdv); if the caller negates N,
+		//! negate both outputs. Same relative degeneracy gate (|Q|^2 > 1e-12*E*G).
+		//! \return TRUE and writes outDndu/outDndv if well-defined and finite.
 		inline bool ShapeOperatorFromSecondDerivatives(
 			const Vector3& dpdu,
 			const Vector3& dpdv,
@@ -176,9 +98,7 @@ namespace RISE
 			const Scalar E = Vector3Ops::Dot( dpdu, dpdu );
 			const Scalar G = Vector3Ops::Dot( dpdv, dpdv );
 
-			// qlen2 IS E*G - F*F (the same `det` MeanCurvatureFromDerivatives
-			// gates on) -- Lagrange's identity for the cross product -- so
-			// this is the identical relative-degeneracy test.
+			// qlen2 == E*G - F*F (Lagrange's identity).
 			static const Scalar kRelDegenerate = Scalar( 1e-12 );
 			if( !( qlen2 > Scalar( 0 ) ) || !( qlen2 > kRelDegenerate * E * G ) ) {
 				return false;
@@ -208,21 +128,9 @@ namespace RISE
 			return true;
 		}
 
-		//! THE `scaleHint` CONVENTION, in one place: the characteristic
-		//! length of a geometry is its BOUNDING-BOX DIAGONAL.  Every family
-		//! that stamps `SurfaceDerivativesInfo::scaleHint` goes through here
-		//! (or through an equivalent value it already caches, e.g.
-		//! SDFGeometry's `m_diagonal`, which is exactly this quantity) so the
-		//! dimensionless `curv` means the same thing across the geometry zoo
-		//! rather than each primitive picking its own idea of "size".
-		//!
-		//! UNBOUNDED and DEGENERATE boxes fall back to 1.0 -- the same
-		//! "this geometry did not say" default `SurfaceDerivativesInfo`
-		//! carries, which makes `curv` collapse to the raw `curvR` instead of
-		//! to 0 or to a garbage multiplier.  This is NOT hypothetical: a
-		//! default-constructed BoundingBox spans +/-RISE_INFINITY (the
-		//! DBL_MAX sentinel), which is what InfinitePlaneGeometry and a
-		//! not-yet-built mesh BVH report, and squaring those would overflow.
+		//! Characteristic length (`SurfaceDerivativesInfo::scaleHint`) is the
+		//! bounding-box diagonal so dimensionless `curv` is consistent across
+		//! geometries. Falls back to 1.0 for unbounded/degenerate/overflowing boxes.
 		inline Scalar ScaleHintFromBoundingBox( const BoundingBox& bb )
 		{
 			const Vector3 ext = bb.GetExtents();
@@ -231,8 +139,7 @@ namespace RISE
 			    !RISE::IsFiniteDouble( static_cast<double>( ext.z ) ) ) {
 				return Scalar( 1 );
 			}
-			// Reject the DBL_MAX sentinel BEFORE squaring.  Compare each
-			// extent, not the diagonal: the squares are what overflow.
+			// Guard against DBL_MAX sentinel before squaring.
 			static const Scalar kMaxSaneExtent = Scalar( 1e30 );
 			if( std::fabs( ext.x ) > kMaxSaneExtent ||
 			    std::fabs( ext.y ) > kMaxSaneExtent ||
@@ -244,93 +151,32 @@ namespace RISE
 		}
 	}
 
-	//! CONSUMPTION GATE for per-hit curvature computation (design doc
-	//! §5.4 bullet 3, "Cost gating").
+	//! Process-wide atomic consumption gate for per-hit curvature (e.g. SDF
+	//! finite-difference curvature; docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md
+	//! §5.4) and, OR'd with `SurfaceSignalDemand::Any()`, emitter surface
+	//! probing (`LightSampler::ProbeEmitterSurface`;
+	//! docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md §5).
 	//!
-	//! WHY.  `curv` / `curvR` are CONTEXT VARIABLES: unlike a lazily-called
-	//! builtin, they must be computed BEFORE the painter runs, so something
-	//! has to decide up front whether the hit pays.  For a triangle mesh or
-	//! an analytic primitive that is free (the derivatives are already on
-	//! the record).  For the SDF family it is NOT: mean curvature there is
-	//! `div n_hat` by finite difference, three extra `GradientNormal` calls
-	//! = ~18 extra `Map()` evaluations per hit, each O(#parts).  That must
-	//! cost exactly ZERO on the overwhelming majority of scenes, whose
-	//! expressions never mention curvature.
-	//!
-	//! MECHANISM.  `ExpressionProgram::Builder` already resolves every
-	//! identifier at COMPILE time, so a compiled program knows statically
-	//! whether its body (or any of its `def` stages) reads `curv`/`curvR` --
-	//! see `ExpressionProgram::UsesContextVar`.  The two expression painters
-	//! (`ExpressionPainter`, `ExpressionScalarPainter`) register a demand
-	//! reference at CONSTRUCTION when their program does, and drop it at
-	//! destruction.  Geometry then asks `Any()` at intersection time.
-	//!
-	//! WHY A PROCESS-WIDE COUNTER RATHER THAN A SCENE FLAG.  A geometry does
-	//! not know its scene: `IGeometry::IntersectRay` receives only a
-	//! `RayIntersectionGeometric`, which carries no scene / object / material
-	//! back-pointer, and RISE deliberately shares one `IGeometry` across
-	//! objects and scenes.  Routing a per-scene flag down to the geometry
-	//! would need either a new per-cast INPUT field stamped by every caster
-	//! (there are many, and a missed one silently disables the feature) or a
-	//! painter->material->object->scene aggregation walk that does not exist.
-	//! A counter keyed on "does any live expression painter read curvature"
-	//! answers the only question the gate actually needs, in one atomic load.
-	//!
-	//! THE DOCUMENTED CONSERVATISM: a curvature-reading painter ALIVE
-	//! ANYWHERE in the process enables SDF curvature for EVERY scene in it
-	//! (the GUI / MCP surface holds several scenes at once).  That costs
-	//! performance, never correctness -- the computed value is a pure
-	//! function of the hit -- and it is the conservative direction: the
-	//! failure mode is "computed and unread", not "read and absent".
-	//!
-	//! THREAD SAFETY.  The counter is `std::atomic<int>` and is mutated ONLY
-	//! at painter construction / destruction, i.e. at scene build and
-	//! teardown, outside the render phase (docs/ARCHITECTURE.md's
-	//! immutability rule). Render threads only ever LOAD it, relaxed -- no
-	//! lock, no per-sample synchronization, and no ordering requirement
-	//! (a stale read can only mean one hit's worth of extra or missing
-	//! curvature at a scene boundary, never a torn value).
-	//!
-	//! PHASE 2 NOTE: `occlusion()` / `thickness()` are demand-driven
-	//! builtins and need no gate of their own; but they DO read
-	//! `derivatives.scaleHint` for radius defaulting, which this gate also
-	//! controls today.  Widen the predicate (not the mechanism) then.
-	//!
-	//! SECOND CONSUMER (2026-09-11,
-	//! docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md §5 slice S3): this
-	//! counter OR'd with `SurfaceSignalDemand::Any()` also gates
-	//! `LightSampler::ProbeEmitterSurface` -- the one extra object-level
-	//! closest-hit per NEE sample / light-subpath root that recovers the
-	//! shading payload for a point `UniformRandomPoint` merely SAMPLED.
-	//! The same conservatism applies unchanged: a live curvature-reading
-	//! painter anywhere in the process buys one probe ray per light sample
-	//! on scenes that may not need it; a false positive of this counter is
-	//! a cost, not a new correctness risk -- the probe's own bounded
-	//! residual (a second surface of the same luminary inside its standoff
-	//! band, LightSampler.h) exists whether or not the gate was opened for
-	//! a reason.
+	//! Expression painters reading `curv`/`curvR` hold an active Registration
+	//! (mutated only at painter ctor/dtor; render threads load relaxed).
+	//! Conservatively process-wide because `IGeometry` is shared across scenes;
+	//! false positives cost work only, never correctness.
 	namespace SurfaceCurvatureDemand
 	{
-		//! The single counter.  A function-local static inside an inline
-		//! function has exactly one instance across all translation units
-		//! (no C++17 inline variable required, matching the rest of the
-		//! tree's language level).
+		//! Single process-wide counter (function-local static for pre-C++17 parity).
 		inline std::atomic<int>& Counter()
 		{
 			static std::atomic<int> counter( 0 );
 			return counter;
 		}
 
-		//! Is any live consumer asking for per-hit curvature?  One relaxed
-		//! atomic load; safe to call from every render thread.
+		//! True if any live consumer requests per-hit curvature (relaxed load).
 		inline bool Any()
 		{
 			return Counter().load( std::memory_order_relaxed ) > 0;
 		}
 
-		//! RAII demand reference.  `active=false` constructs an inert one, so
-		//! a painter whose program does not read curvature holds a member of
-		//! this type at zero cost and with no branch at the destructor.
+		//! RAII demand reference (`active=false` is inert).
 		class Registration
 		{
 		public:

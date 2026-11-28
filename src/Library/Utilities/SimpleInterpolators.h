@@ -6,7 +6,10 @@
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: February 11, 2002
 //  Tabs: 4
-//  Comments:
+//  Comments: Reference-counted ISimpleInterpolator/IFullInterpolator
+//    implementations. Parameter `x` is expected in [0, 1] (unclamped:
+//    0 -> a, 1 -> b). Interpolate2Values() ignores the full `values`
+//    vector because linear/cosine interpolation needs only *first and *second.
 //
 //  License Information: Please see the attached LICENSE.TXT file
 //
@@ -52,6 +55,7 @@ namespace RISE
 		}
 	};
 
+	// C1 half-cosine easing: f(x) = (1 - cos(x * PI)) / 2, zero slope at x = 0, 1.
 	template< class T >
 	class CosineInterpolator : 
 		public virtual ISimpleInterpolator<T>, 

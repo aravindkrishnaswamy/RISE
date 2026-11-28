@@ -2,6 +2,12 @@
 //
 //  FireProductionComputeMac.mm - Metal production-fire capability
 //
+//  Apple Metal compute probe for the production fire solver. Discovers
+//  the system default Metal device, verifies macOS 15+ MTLMathModeSafe
+//  compilation, and executes bit-exact fp32 identity and uint32 XOR
+//  challenge kernels to certify device availability before solver dispatch.
+//  Non-Apple builds link FireProductionComputeUnsupported.cpp instead.
+//
 //  License Information: Please see the attached LICENSE.TXT file
 //
 //////////////////////////////////////////////////////////////////////
@@ -95,6 +101,8 @@ namespace RISE
 			return "metal-family-unreported";
 		}
 
+		// Compiles the probe kernels under MTLMathModeSafe (macOS 15+) so the
+		// capability check enforces the same IEEE-safe math contract as solver TUs.
 		id<MTLLibrary> CompileLibrary( id<MTLDevice> device,
 			std::string* structuredError )
 		{
@@ -123,6 +131,10 @@ namespace RISE
 		}
 	}
 
+	// --- Public capability probe and deterministic GPU challenge ---
+
+	// Probes Metal device presence/family and runs an 8-lane fp32 bit-identity
+	// kernel (covering +/-0, subnormal/normal bounds) to verify GPU readiness.
 	bool QueryFireProductionComputeCapability(
 		FireProductionComputeCapability& capability )
 	{
@@ -205,6 +217,8 @@ namespace RISE
 		return true;
 	}
 
+	// Runs the deterministic per-lane uint32 XOR challenge kernel on the Metal
+	// device so callers can verify live GPU execution rather than a stub.
 	bool RunFireProductionComputeChallenge(
 		const std::uint32_t* inputBits, std::size_t count,
 		std::vector<std::uint32_t>& outputBits, std::string* structuredError )
