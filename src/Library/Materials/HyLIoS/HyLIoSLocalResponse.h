@@ -85,6 +85,11 @@ public:
     bool Covers(double firstNm, double lastNm) const noexcept;
     void RequireCoverage(double firstNm, double lastNm) const;
     double EvaluateContinuousNM(LocalResponsePoint wi, LocalResponsePoint wo, double nm) const;
+    // Cell-center multilinear angular interpolation (bilinear in (t_in, t_out)
+    // when azimuthally isotropic, periodic in phi when phiCells > 1) using the
+    // same spectral interpolation law. Guaranteed non-negative and passive.
+    double EvaluateContinuousInterpolatedNM(LocalResponsePoint wi, LocalResponsePoint wo, double nm) const;
+    double EvaluateMirrorInterpolatedNM(LocalResponsePoint wo, double nm) const;
     // Exact nodal represented-product totals with the shared exact convex law,
     // rounded once on output; does not sum rounded pointwise query values.
     double ForwardRowMassNM(LocalResponsePoint wi, double nm) const;
